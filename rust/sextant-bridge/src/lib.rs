@@ -50,6 +50,10 @@ impl NeuralBridge {
         }
     }
 
+    pub fn active_stream_count(&self) -> usize {
+        self.active_streams.len()
+    }
+
     pub fn capture_frame(&self, tab_id: &Uuid) -> MediaPacket {
         // In a real app, this would use wgpu or OS-level screen capture
         let metadata = format!("Tab {} active viewport capture", tab_id);

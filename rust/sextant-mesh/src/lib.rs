@@ -50,6 +50,10 @@ impl SextantMesh {
         self.peer_tunnels.insert(peer_did.to_string(), public_key.to_string());
     }
 
+    pub fn wireguard_interface(&self) -> &str {
+        &self.wg_interface
+    }
+
     pub fn add_peer(&mut self, peer: MeshPeer) {
         if !self.peers.iter().any(|p| p.did == peer.did) {
             self.peers.push(peer);

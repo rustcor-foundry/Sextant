@@ -72,7 +72,7 @@ The hull now tells the truth more clearly than earlier passes:
 |-----|----------|-------|
 | Full in-window interactive workflow exercise | High | backend path is stronger than live click-through validation |
 | Remaining workspace warnings | Medium | mostly `sextant-bridge` and `sextant-mesh`, plus a few low-noise leftovers |
-| CI workflow | Medium | repo is now on Gitea and ready for a build/test workflow |
+| CI workflow depth | Medium | basic Rust workspace CI exists, but it is still minimal |
 | Servo backend work | Medium | still optional and not the current blocker |
 | Local/mesh/sync/PQ feature surfaces | Low | intentionally deferred behind the core browser loop |
 

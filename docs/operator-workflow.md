@@ -27,6 +27,7 @@ Follow [next-work.md](next-work.md) as the active execution guide unless the tea
    - `cargo run -p sextant-hull`
 6. Update docs if the current state, workflow, or recovery story changed.
 7. Commit in coherent units and push to the canonical Gitea remote.
+8. Watch CI on Gitea and treat failures as part of the task, not a separate later chore.
 
 ## Preferred Verification Commands
 
@@ -56,6 +57,14 @@ cargo test -p sextant-engine --lib
 ```bash
 cd rust
 cargo run -p sextant-hull
+```
+
+### Full Workspace Guardrail
+
+```bash
+cd rust
+cargo check --workspace
+cargo test --workspace
 ```
 
 ## Documentation Rules
@@ -100,6 +109,8 @@ Prefer changes that make this loop more real, more observable, or more reliable.
 ## Commit And Push
 
 The canonical remote is `rustcor/Sextant` on Gitea.
+
+The repo also has a Gitea workflow at `.gitea/workflows/rust-ci.yml` that runs the Rust workspace check/test guardrail on pushes and pull requests.
 
 Normal finish:
 

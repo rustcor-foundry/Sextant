@@ -399,14 +399,12 @@ impl CitadelVault {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use argon2::password_hash::SaltString;
+    use ed25519_dalek::Verifier as EdVerifierTrait;
 
     #[test]
     fn test_multi_curve_vault() {
         let mut vault = CitadelVault::new();
-        let salt = SaltString::generate(&mut OsRng);
-        
-        vault.unlock("password123", salt.as_str()).unwrap();
+        vault.initialize_new("password123").unwrap();
 
         let persona = vault.create_persona("Default", "Primary persona").unwrap();
 

@@ -4,6 +4,17 @@ Audit trail of completed work sessions. Newest first.
 
 ---
 
+## 2026-04-19 — CI Bootstrap
+
+Full details in [archive/2026-04-19-ci-bootstrap.md](archive/2026-04-19-ci-bootstrap.md).
+
+- ✅ Added first Gitea workflow for the Rust workspace
+- ✅ CI now runs `cargo check --workspace`
+- ✅ CI now runs `cargo test --workspace`
+- ✅ Workflow triggers on push, pull request, and manual dispatch
+
+---
+
 ## 2026-04-19 — Docs Structure Refresh
 
 Full details in [archive/2026-04-19-docs-structure-refresh.md](archive/2026-04-19-docs-structure-refresh.md).
