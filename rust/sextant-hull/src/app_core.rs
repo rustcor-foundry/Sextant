@@ -90,6 +90,8 @@ pub enum AppEvent {
     AirgapToggled {
         next: AirGapStatus,
         forced_local: bool,
+        active_provider: AiProvider,
+        restored_online_provider: bool,
         snapshot: RefreshSnapshot,
     },
     PrivacyCycled {
@@ -106,7 +108,10 @@ pub enum AppEvent {
         provider: AiProvider,
         result: Result<String, String>,
     },
-    ProviderSettingsSaved(Result<(), String>),
+    ProviderSettingsSaved {
+        provider: AiProvider,
+        result: Result<(), String>,
+    },
     ProviderSettingsLoaded {
         provider: Option<AiProvider>,
         gemini_key: Option<String>,
@@ -138,9 +143,10 @@ pub struct AppSession {
     pub current_airgap: AirGapStatus,
     pub current_privacy: PrivacyLevel,
     pub active_tab_id: Option<Uuid>,
+    pub preferred_online_provider_config: ProviderConfig,
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ProviderConfig {
     pub provider: AiProvider,
     pub gemini_key: String,
@@ -247,20 +253,33 @@ pub fn spawn_command(
                     AirGapStatus::Hardened => AirGapStatus::Online,
                 };
                 let forced_local = next != AirGapStatus::Online;
+                let mut active_provider = provider_config.provider;
+                let mut restored_online_provider = false;
                 if forced_local {
                     let local_config = ProviderConfig {
                         provider: AiProvider::Local,
                         ..provider_config
                     };
+                    active_provider = AiProvider::Local;
                     if let Some(brain) = build_brain(&local_config) {
                         let mut pilot = services.pilot.lock().await;
                         pilot.switch_brain(brain);
+                    }
+                } else {
+                    let preferred_online = session.preferred_online_provider_config.clone();
+                    if let Some(brain) = build_brain(&preferred_online) {
+                        let mut pilot = services.pilot.lock().await;
+                        pilot.switch_brain(brain);
+                        active_provider = preferred_online.provider;
+                        restored_online_provider = true;
                     }
                 }
                 let snapshot = collect_refresh_snapshot(&services, session.persona_id).await;
                 send_event(AppEvent::AirgapToggled {
                     next,
                     forced_local,
+                    active_provider,
+                    restored_online_provider,
                     snapshot,
                 });
             }
@@ -348,7 +367,10 @@ pub fn spawn_command(
                         })
                         .and_then(|_| vault.store_secret("local_model", &provider_config.local_model))
                 };
-                send_event(AppEvent::ProviderSettingsSaved(result));
+                send_event(AppEvent::ProviderSettingsSaved {
+                    provider: provider_config.provider,
+                    result,
+                });
             }
             AppCommand::LoadProviderSettings => {
                 let result = {

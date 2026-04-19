@@ -4,6 +4,26 @@ Audit trail of completed work sessions. Newest first.
 
 ---
 
+## 2026-04-19 — Native Hull Validation Workflow Pass
+
+- ✅ Added a native in-window validation checklist panel for operator-guided testing
+- ✅ Added remaining-checks guidance and recent validation-trail visibility
+- ✅ Made checklist coverage session-aware across provider, consent, tab, Wake, and air-gap/privacy workflows
+- ✅ Added `RESET VALIDATION` so a fresh click-through pass can start without resetting real runtime state
+- ✅ Kept `cargo check -p sextant-hull` green through the batch
+
+---
+
+## 2026-04-19 — Runtime Sanity And Next-Work Refresh
+
+- ✅ Re-ran `cargo check --workspace` successfully
+- ✅ Re-ran Pilot regression coverage successfully
+- ✅ Re-exercised `cargo run -p sextant-hull` as a launch sanity check
+- ✅ Refreshed `next-work.md` to reflect the current native hull reality instead of earlier pending scaffolding tasks
+- ✅ Improved native-hull truthful UX: startup alerts, runtime status, clearer provider save/load/apply flow, empty states, and explicit mesh placeholder messaging
+
+---
+
 ## 2026-04-19 — CI Bootstrap
 
 Full details in [archive/2026-04-19-ci-bootstrap.md](archive/2026-04-19-ci-bootstrap.md).

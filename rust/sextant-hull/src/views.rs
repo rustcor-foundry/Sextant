@@ -42,12 +42,23 @@ fn header_view(
             },
             |state: &mut SextantState| {
                 state.is_settings_open = !state.is_settings_open;
+                state.set_command_summary(
+                    if state.is_settings_open {
+                        "Settings panel opened."
+                    } else {
+                        "Settings panel closed."
+                    },
+                    false,
+                );
             },
         ),
         button(if is_mesh_open { "CLOSE MESH" } else { "MESH" }, |state: &mut SextantState| {
             state.is_mesh_open = !state.is_mesh_open;
             if state.is_mesh_open {
+                state.set_command_summary("Mesh panel opened as a native placeholder.", false);
                 state.add_log("Mesh panel is a later native pass. Core workflow remains local-first.");
+            } else {
+                state.set_command_summary("Mesh panel closed.", false);
             }
         }),
     ))
@@ -63,13 +74,13 @@ fn intent_bar_view(intent: String) -> impl MasonryView<SextantState> {
                 let intent = state.intent.trim().to_string();
                 if intent.is_empty() {
                     state.set_command_summary("Enter an intent before running COMMAND.", true);
-                    state.add_log("COMMAND ignored: intent was empty.");
+                    state.add_log("Command ignored because the intent field was empty.");
                     return;
                 }
                 if !state.active_provider_ready() {
                     let message = state.active_provider_readiness_message();
                     state.set_command_summary(message.clone(), true);
-                    state.add_log(&format!("COMMAND blocked: {}", message));
+                    state.add_log(&format!("Command blocked: {}", message));
                     state.is_settings_open = true;
                     return;
                 }
@@ -81,16 +92,18 @@ fn intent_bar_view(intent: String) -> impl MasonryView<SextantState> {
                     false,
                 );
                 state.add_log(&format!(
-                    "Submitting intent '{}' via {}.",
+                    "Submitted intent '{}' via {}.",
                     intent,
                     state.applied_provider.label()
                 ));
                 state.queue_async_command(AppCommand::ProcessIntent(intent));
             }),
             button("TOGGLE AIRGAP", |state: &mut SextantState| {
+                state.set_command_summary("Cycling air-gap state.", false);
                 state.queue_async_command(AppCommand::ToggleAirgap);
             }),
             button("CYCLE PRIVACY", |state: &mut SextantState| {
+                state.set_command_summary("Cycling privacy level.", false);
                 state.queue_async_command(AppCommand::CyclePrivacy);
             }),
         ))
@@ -104,6 +117,10 @@ fn dashboard_view(
     did_prefix: String,
     airgap_status: String,
     privacy_status: String,
+    runtime_status: String,
+    runtime_status_color: Color,
+    startup_status: String,
+    startup_status_color: Color,
     command_summary: String,
     command_summary_color: Color,
     pending_jobs: usize,
@@ -116,14 +133,22 @@ fn dashboard_view(
         muted_text(format!("DID {}", did_prefix)),
         muted_text(format!("AIR GAP {}", airgap_status)),
         muted_text(format!("PRIVACY {}", privacy_status)),
+        label(runtime_status).color(runtime_status_color),
+        label(startup_status).color(startup_status_color),
         label(command_summary).color(command_summary_color),
         muted_text(format!("ASYNC JOBS {}", pending_jobs)),
         flex((
             button("NEW TAB", |state: &mut SextantState| {
+                state.set_command_summary("Opening a new tab.", false);
                 state.queue_async_command(AppCommand::CreateTab);
             }),
             button("CLOSE ACTIVE", |state: &mut SextantState| {
-                state.queue_async_command(AppCommand::CloseActiveTab);
+                if state.active_tab_id.is_some() {
+                    state.queue_async_command(AppCommand::CloseActiveTab);
+                } else {
+                    state.set_command_summary("No active tab is available to close.", true);
+                    state.add_log("Close-active ignored because no tab was active.");
+                }
             }),
         ))
         .direction(Axis::Horizontal),
@@ -137,8 +162,10 @@ fn viewport_view(
     page_url: String,
     page_content: String,
     consent_message: String,
+    consent_next_step: String,
     audit_status_line: String,
     consent_status_color: Color,
+    consent_next_step_color: Color,
 ) -> impl MasonryView<SextantState> {
     flex((
         section_title("VIEWPORT"),
@@ -148,6 +175,7 @@ fn viewport_view(
         muted_text(page_url),
         label(page_content).color(Color::rgba(0.8, 0.82, 0.85, 1.0)),
         label(consent_message).color(consent_status_color),
+        label(consent_next_step).color(consent_next_step_color),
         flex((
             button("AUTHORIZE", |state: &mut SextantState| {
                 if let PilotStatus::AwaitingConsent(msg) = state.pilot_status.clone() {
@@ -155,7 +183,7 @@ fn viewport_view(
                     state.queue_async_command(AppCommand::Authorize(msg));
                 } else {
                     state.set_command_summary("No consent request is waiting for authorization.", true);
-                    state.add_log("AUTHORIZE ignored: no consent request was pending.");
+                    state.add_log("Authorize ignored because no consent request was pending.");
                 }
             }),
             button("DENY", |state: &mut SextantState| {
@@ -164,7 +192,7 @@ fn viewport_view(
                     state.queue_async_command(AppCommand::DenyConsent);
                 } else {
                     state.set_command_summary("No consent request is waiting to be denied.", true);
-                    state.add_log("DENY ignored: no consent request was pending.");
+                    state.add_log("Deny ignored because no consent request was pending.");
                 }
             }),
         ))
@@ -185,9 +213,11 @@ fn wake_panel_view(
         }),
         flex((
             button("SEARCH", |state: &mut SextantState| {
+                state.set_command_summary("Running Wake search.", false);
                 state.queue_async_command(AppCommand::SearchWake(state.wake_search_query.clone()));
             }),
             button("CONSOLIDATE", |state: &mut SextantState| {
+                state.set_command_summary("Consolidating Wake entries.", false);
                 state.queue_async_command(AppCommand::ConsolidateWake);
             }),
         ))
@@ -198,6 +228,46 @@ fn wake_panel_view(
         flex(audit_views),
         section_title("SYSTEM LOG"),
         flex(log_views),
+    ))
+}
+
+fn mesh_panel_view() -> impl MasonryView<SextantState> {
+    flex((
+        section_title("MESH"),
+        label("Mesh is not wired into the native hull yet.").color(Color::rgba(1.0, 0.72, 0.3, 1.0)),
+        muted_text("Keep Sextant local-first for tonight's validation pass."),
+        muted_text("Future work here will cover peer discovery, chat, and shared artifacts."),
+    ))
+}
+
+fn validation_panel_view(
+    summary_line: String,
+    summary_color: Color,
+    remaining_checks: Vec<String>,
+    item_views: Vec<BoxedMasonryView<SextantState, ()>>,
+) -> impl MasonryView<SextantState> {
+    let remaining_views: Vec<_> = if remaining_checks.is_empty() {
+        vec![Box::new(muted_text(
+            "No current checklist gaps are detected in the native hull state.",
+        )) as BoxedMasonryView<SextantState, ()>]
+    } else {
+        remaining_checks
+            .into_iter()
+            .map(|check| Box::new(muted_text(format!("NEXT {}", check))) as BoxedMasonryView<SextantState, ()>)
+            .collect()
+    };
+
+    flex((
+        section_title("VALIDATION CHECKLIST"),
+        muted_text("Use this panel as the current click-through guide for native-hull testing."),
+        label(summary_line).color(summary_color),
+        button("RESET VALIDATION", |state: &mut SextantState| {
+            state.reset_validation_session();
+            state.set_command_summary("Validation session reset. Checklist coverage cleared.", false);
+            state.add_log("Validation session reset. Coverage markers cleared for a fresh pass.");
+        }),
+        flex(remaining_views),
+        flex(item_views),
     ))
 }
 
@@ -255,18 +325,25 @@ pub fn app_logic_native(state: &mut SextantState) -> impl MasonryView<SextantSta
         })
         .collect();
 
-    let wake_views: Vec<_> = state
-        .wake_search_results
-        .iter()
-        .take(8)
-        .map(|entry| {
-            flex((
-                label(entry.title.clone()).color(Color::rgba(0.9, 0.9, 0.9, 1.0)),
-                muted_text(entry.url.to_string()),
-                muted_text(format!("importance {:.2}", entry.importance)),
-            ))
-        })
-        .collect();
+    let wake_views: Vec<BoxedMasonryView<SextantState, ()>> = if state.wake_search_results.is_empty() {
+        vec![Box::new(flex((
+            muted_text("No Wake results are currently loaded."),
+            muted_text("Run SEARCH to query memory or submit an intent to record new pages."),
+        )))]
+    } else {
+        state
+            .wake_search_results
+            .iter()
+            .take(8)
+            .map(|entry| {
+                Box::new(flex((
+                    label(entry.title.clone()).color(Color::rgba(0.9, 0.9, 0.9, 1.0)),
+                    muted_text(entry.url.to_string()),
+                    muted_text(format!("importance {:.2}", entry.importance)),
+                ))) as BoxedMasonryView<SextantState, ()>
+            })
+            .collect()
+    };
 
     let engine_status_text = state
         .engine_status
@@ -311,28 +388,313 @@ pub fn app_logic_native(state: &mut SextantState) -> impl MasonryView<SextantSta
     } else {
         Color::rgba(0.7, 0.85, 1.0, 1.0)
     };
+    let consent_next_step_color = if matches!(state.pilot_status, PilotStatus::AwaitingConsent(_)) {
+        Color::rgba(1.0, 0.8, 0.3, 1.0)
+    } else {
+        Color::rgba(0.7, 0.85, 1.0, 1.0)
+    };
+    let runtime_status = state.runtime_status_message();
+    let runtime_status_color = match state.pilot_status {
+        PilotStatus::AwaitingConsent(_) => Color::rgba(1.0, 0.8, 0.3, 1.0),
+        PilotStatus::Reasoning
+        | PilotStatus::Navigating(_)
+        | PilotStatus::Distilling
+        | PilotStatus::ExecutingAction(_)
+        | PilotStatus::ReasoningComplete(_) => Color::rgba(0.7, 0.85, 1.0, 1.0),
+        PilotStatus::Idle if state.pending_async_jobs > 0 => Color::rgba(0.7, 0.85, 1.0, 1.0),
+        PilotStatus::Idle => Color::rgba(0.0, 0.95, 0.45, 1.0),
+    };
+    let startup_status = if state.startup_alerts.is_empty() {
+        "STARTUP STATUS nominal".to_string()
+    } else if state.startup_alerts.len() == 1 {
+        format!("STARTUP ALERT {}", state.startup_alerts[0])
+    } else {
+        format!(
+            "STARTUP ALERTS {} active. Latest: {}",
+            state.startup_alerts.len(),
+            state.startup_alerts.last().cloned().unwrap_or_default()
+        )
+    };
+    let startup_status_color = if state.startup_alerts.is_empty() {
+        Color::rgba(0.0, 0.95, 0.45, 1.0)
+    } else {
+        Color::rgba(1.0, 0.72, 0.3, 1.0)
+    };
+    let checklist_pass = Color::rgba(0.0, 0.95, 0.45, 1.0);
+    let checklist_warn = Color::rgba(1.0, 0.8, 0.3, 1.0);
+    let checklist_fail = Color::rgba(1.0, 0.3, 0.3, 1.0);
 
-    let tab_views: Vec<_> = state
-        .tabs
-        .iter()
-        .map(|tab| {
-            let title = tab
-                .url
-                .as_ref()
-                .map(|u| u.to_string())
-                .unwrap_or_else(|| "about:blank".to_string());
-            let active = Some(tab.id) == state.active_tab_id;
-            let label = if active {
-                format!("ACTIVE {}", title)
-            } else {
-                format!("OPEN {}", title)
-            };
-            let tab_id = tab.id;
-            button(label, move |state: &mut SextantState| {
-                state.queue_async_command(AppCommand::SwitchTab(tab_id));
+    let tab_views: Vec<BoxedMasonryView<SextantState, ()>> = if state.tabs.is_empty() {
+        vec![Box::new(flex((
+            muted_text("No tabs are open."),
+            muted_text("Use NEW TAB or submit an intent that opens a page."),
+        )))]
+    } else {
+        state
+            .tabs
+            .iter()
+            .map(|tab| {
+                let title = tab
+                    .url
+                    .as_ref()
+                    .map(|u| u.to_string())
+                    .unwrap_or_else(|| "about:blank".to_string());
+                let active = Some(tab.id) == state.active_tab_id;
+                let tab_label = if active {
+                    format!("ACTIVE {}", title)
+                } else {
+                    format!("OPEN {}", title)
+                };
+                let tab_id = tab.id;
+                let tab_title = title.clone();
+                Box::new(button(tab_label, move |state: &mut SextantState| {
+                    if Some(tab_id) == state.active_tab_id {
+                        state.set_command_summary("Selected tab is already active.", false);
+                        state.add_log(&format!("Tab switch ignored because {} was already active.", tab_title));
+                    } else {
+                        state.set_command_summary(
+                            format!("Switching to tab {}.", tab_title),
+                            false,
+                        );
+                        state.queue_async_command(AppCommand::SwitchTab(tab_id));
+                    }
+                })) as BoxedMasonryView<SextantState, ()>
             })
-        })
-        .collect();
+            .collect()
+    };
+
+    let provider_route_check: BoxedMasonryView<SextantState, ()> = if state.has_unapplied_provider_changes() {
+        Box::new(flex((
+            label("CHECK provider route pending").color(checklist_warn),
+            muted_text("Apply the selected provider settings before expecting command routing to change."),
+            muted_text(state.provider_validation_status_message()),
+        )))
+    } else if state.active_provider_ready() {
+        Box::new(flex((
+            label("CHECK provider route ready").color(checklist_pass),
+            muted_text(format!(
+                "Active route is {} and the current configuration is usable.",
+                state.applied_provider.label()
+            )),
+            muted_text(state.provider_validation_status_message()),
+        )))
+    } else {
+        Box::new(flex((
+            label("CHECK provider route blocked").color(checklist_fail),
+            muted_text(state.active_provider_readiness_message()),
+            muted_text(state.provider_validation_status_message()),
+        )))
+    };
+
+    let provider_test_check: BoxedMasonryView<SextantState, ()> =
+        if state.provider_load_exercised
+            && state.provider_apply_exercised
+            && state.provider_test_exercised
+            && state.provider_save_exercised
+            && state.last_tested_provider == Some(state.applied_provider)
+            && state.last_test_success
+        {
+            Box::new(flex((
+                label("CHECK provider workflow complete").color(checklist_pass),
+                muted_text(format!(
+                    "{} load/apply/test/save coverage is complete for this session.",
+                    state.applied_provider.label()
+                )),
+                muted_text(state.provider_validation_status_message()),
+            )))
+        } else if state.last_tested_provider == Some(state.applied_provider) && state.last_test_success {
+            Box::new(flex((
+                label("CHECK provider test passed").color(checklist_pass),
+                muted_text(format!(
+                    "{} was tested successfully with the current active settings.",
+                    state.applied_provider.label()
+                )),
+                muted_text(state.provider_validation_status_message()),
+            )))
+        } else if state.last_tested_provider == Some(state.applied_provider) {
+            Box::new(flex((
+                label("CHECK provider test failed").color(checklist_fail),
+                muted_text(format!(
+                    "{} needs attention before relying on this route.",
+                    state.applied_provider.label()
+                )),
+                muted_text(state.provider_validation_status_message()),
+            )))
+        } else {
+            Box::new(flex((
+                label("CHECK provider test pending").color(checklist_warn),
+                muted_text(format!(
+                    "Run TEST for the active {} route before deeper validation.",
+                    state.applied_provider.label()
+                )),
+                muted_text(state.provider_validation_status_message()),
+            )))
+        };
+
+    let airgap_check: BoxedMasonryView<SextantState, ()> =
+        if state.airgap_offline_exercised
+            && state.airgap_online_exercised
+            && state.privacy_cycle_exercised
+        {
+            Box::new(flex((
+                label("CHECK control workflow complete").color(checklist_pass),
+                muted_text("Air-gap offline/online transitions and privacy cycling have all been exercised in this session."),
+                muted_text(state.control_validation_status_message()),
+            )))
+        } else if state.airgap.get_status() == sextant_airgap::AirGapStatus::Online {
+            Box::new(flex((
+                label("CHECK air-gap online").color(checklist_pass),
+                muted_text("Online mode is active; the configured provider route can be exercised directly."),
+                muted_text(state.control_validation_status_message()),
+            )))
+        } else if state.provider_ready(AiProvider::Local) {
+            Box::new(flex((
+                label("CHECK offline local ready").color(checklist_pass),
+                muted_text("Air-gap is enforcing local inference and the local route is ready."),
+                muted_text(state.control_validation_status_message()),
+            )))
+        } else {
+            Box::new(flex((
+                label("CHECK offline local blocked").color(checklist_fail),
+                muted_text("Air-gap is active, but the local endpoint still needs configuration."),
+                muted_text(state.control_validation_status_message()),
+            )))
+        };
+
+    let consent_check: BoxedMasonryView<SextantState, ()> =
+        if matches!(state.pilot_status, PilotStatus::AwaitingConsent(_)) {
+            Box::new(flex((
+                label("CHECK consent pending").color(checklist_warn),
+                muted_text("A Captain's Key request is waiting. AUTHORIZE or DENY to continue."),
+                muted_text(state.consent_validation_status_message()),
+            )))
+        } else if state.consent_request_exercised
+            && state.consent_authorized_exercised
+            && state.consent_denied_exercised
+        {
+            Box::new(flex((
+                label("CHECK consent coverage complete").color(checklist_pass),
+                muted_text("Captain's Key request, authorize, and deny paths have all been exercised in this session."),
+                muted_text(state.consent_validation_status_message()),
+            )))
+        } else {
+            Box::new(flex((
+                label("CHECK consent coverage pending").color(checklist_warn),
+                muted_text("Run a protected intent, then exercise AUTHORIZE and DENY to complete Captain's Key coverage."),
+                muted_text(state.consent_validation_status_message()),
+            )))
+        };
+
+    let tab_check: BoxedMasonryView<SextantState, ()> =
+        if state.tab_open_exercised && state.tab_switch_exercised && state.tab_close_exercised {
+            Box::new(flex((
+                label("CHECK tab workflow complete").color(checklist_pass),
+                muted_text("Open, switch, and close tab paths have all been exercised in this session."),
+                muted_text(state.tab_validation_status_message()),
+            )))
+        } else if state.active_tab_id.is_some() {
+            Box::new(flex((
+                label("CHECK active tab ready").color(checklist_pass),
+                muted_text("A tab is active, so switch/close/navigation validation can proceed."),
+                muted_text(state.tab_validation_status_message()),
+            )))
+        } else {
+            Box::new(flex((
+                label("CHECK active tab missing").color(checklist_warn),
+                muted_text("Open a tab or submit an intent before testing tab and viewport behavior."),
+                muted_text(state.tab_validation_status_message()),
+            )))
+        };
+
+    let wake_check: BoxedMasonryView<SextantState, ()> =
+        if state.wake_search_exercised && state.wake_consolidate_exercised {
+            Box::new(flex((
+                label("CHECK wake workflow complete").color(checklist_pass),
+                muted_text("Wake search and consolidation have both been exercised in this session."),
+                muted_text(state.wake_validation_status_message()),
+            )))
+        } else if !state.wake_search_results.is_empty() || !state.recent_memory.is_empty() {
+            Box::new(flex((
+                label("CHECK wake visibility ready").color(checklist_pass),
+                muted_text("Wake results or recent memory entries are visible for inspection."),
+                muted_text(state.wake_validation_status_message()),
+            )))
+        } else {
+            Box::new(flex((
+                label("CHECK wake visibility pending").color(checklist_warn),
+                muted_text("Run SEARCH or complete an intent to confirm Wake persistence and display."),
+                muted_text(state.wake_validation_status_message()),
+            )))
+        };
+
+    let audit_check: BoxedMasonryView<SextantState, ()> = if !state.audit_trail.is_empty() {
+        Box::new(flex((
+            label("CHECK audit trail ready").color(checklist_pass),
+            muted_text("Captain's Log contains entries that can be compared against the current workflow."),
+        )))
+    } else {
+        Box::new(flex((
+            label("CHECK audit trail pending").color(checklist_warn),
+            muted_text("Run a command or protected flow to generate audit entries for validation."),
+        )))
+    };
+
+    let validation_trail_one = state
+        .validation_successes
+        .iter()
+        .rev()
+        .nth(0)
+        .cloned()
+        .unwrap_or_else(|| "No successful validation step recorded yet.".to_string());
+    let validation_trail_two = state
+        .validation_successes
+        .iter()
+        .rev()
+        .nth(1)
+        .cloned()
+        .unwrap_or_else(|| "Run a successful step to populate the trail.".to_string());
+    let validation_trail_three = state
+        .validation_successes
+        .iter()
+        .rev()
+        .nth(2)
+        .cloned()
+        .unwrap_or_else(|| "The latest successes will stay visible here.".to_string());
+
+    let validation_trail_check: BoxedMasonryView<SextantState, ()> = Box::new(flex((
+        label("CHECK recent validation trail").color(if state.validation_successes.is_empty() {
+            checklist_warn
+        } else {
+            checklist_pass
+        }),
+        muted_text(validation_trail_one),
+        muted_text(validation_trail_two),
+        muted_text(validation_trail_three),
+    )));
+
+    let remaining_validation_checks = state.remaining_validation_checks();
+    let validation_summary_line = state.validation_summary_line();
+    let validation_summary_color = if remaining_validation_checks.is_empty() {
+        checklist_pass
+    } else {
+        checklist_warn
+    };
+
+    let validation_panel = validation_panel_view(
+        validation_summary_line,
+        validation_summary_color,
+        remaining_validation_checks,
+        vec![
+            provider_route_check,
+            provider_test_check,
+            airgap_check,
+            consent_check,
+            tab_check,
+            wake_check,
+            audit_check,
+            validation_trail_check,
+        ],
+    );
 
     let settings_panel: BoxedMasonryView<SextantState, ()> = {
         let provider_ready = state.provider_ready(state.selected_provider);
@@ -346,7 +708,9 @@ pub fn app_logic_native(state: &mut SextantState) -> impl MasonryView<SextantSta
         } else {
             Color::rgba(0.8, 0.9, 1.0, 1.0)
         };
-        let route_status_color = if state.selected_provider == state.applied_provider {
+        let route_status_color = if state.has_unapplied_provider_changes() {
+            Color::rgba(1.0, 0.7, 0.3, 1.0)
+        } else if state.selected_provider == state.applied_provider {
             Color::rgba(0.7, 0.85, 1.0, 1.0)
         } else {
             Color::rgba(1.0, 0.7, 0.3, 1.0)
@@ -398,6 +762,16 @@ pub fn app_logic_native(state: &mut SextantState) -> impl MasonryView<SextantSta
         } else {
             "LAST TEST none yet".to_string()
         };
+        let next_step_color = if state.has_unapplied_provider_changes()
+            || (state.airgap.get_status() != sextant_airgap::AirGapStatus::Online
+                && !state.provider_ready(AiProvider::Local))
+            || (state.last_tested_provider == Some(state.applied_provider)
+                && !state.last_test_success)
+        {
+            Color::rgba(1.0, 0.8, 0.3, 1.0)
+        } else {
+            Color::rgba(0.0, 0.95, 0.45, 1.0)
+        };
 
         Box::new(flex((
             section_title("SETTINGS // AI & SYSTEM"),
@@ -420,6 +794,11 @@ pub fn app_logic_native(state: &mut SextantState) -> impl MasonryView<SextantSta
                             state.applied_provider.label()
                         )),
                         muted_text(format!("ACTIVE BRAIN {}", state.pilot_brain_name)),
+                        muted_text(if state.has_unapplied_provider_changes() {
+                            "PENDING CHANGES yes".to_string()
+                        } else {
+                            "PENDING CHANGES no".to_string()
+                        }),
                         label(if provider_ready {
                             "CONFIG STATUS READY"
                         } else {
@@ -438,6 +817,7 @@ pub fn app_logic_native(state: &mut SextantState) -> impl MasonryView<SextantSta
                         label(state.intent_route_message()).color(route_status_color),
                         label(last_test_text).color(route_status_color),
                         label(state.ai_status_message.clone()).color(action_status_color),
+                        label(state.provider_next_step_message()).color(next_step_color),
                     )),
                 )),
                 flex((
@@ -474,38 +854,74 @@ pub fn app_logic_native(state: &mut SextantState) -> impl MasonryView<SextantSta
                     section_title("CREDENTIALS"),
                     muted_text("Gemini API Key"),
                     textbox(state.gemini_key.clone(), |state: &mut SextantState, val| {
-                        state.gemini_key = val
+                        state.set_gemini_key(val)
                     }),
                     muted_text("OpenAI API Key"),
                     textbox(state.openai_key.clone(), |state: &mut SextantState, val| {
-                        state.openai_key = val
+                        state.set_openai_key(val)
                     }),
                     muted_text("Anthropic API Key"),
                     textbox(state.anthropic_key.clone(), |state: &mut SextantState, val| {
-                        state.anthropic_key = val
+                        state.set_anthropic_key(val)
                     }),
                     muted_text("Local Endpoint"),
                     textbox(state.local_endpoint.clone(), |state: &mut SextantState, val| {
-                        state.local_endpoint = val
+                        state.set_local_endpoint(val)
                     }),
                     muted_text("Local Model"),
                     textbox(state.local_model.clone(), |state: &mut SextantState, val| {
-                        state.local_model = val
+                        state.set_local_model(val)
                     }),
                 )),
                 flex((
                     section_title("ACTIONS"),
                     flex((
                         button("APPLY", |state: &mut SextantState| {
+                            if !state.provider_ready(state.selected_provider) {
+                                let message = format!(
+                                    "{} configuration is incomplete. Fill the required fields before applying.",
+                                    state.selected_provider.label()
+                                );
+                                state.set_command_summary(message.clone(), true);
+                                state.set_ai_status(message.clone(), true);
+                                state.add_log(&format!("Apply blocked: {}", message));
+                                return;
+                            }
+                            state.set_command_summary(
+                                format!(
+                                    "Applying {} provider settings.",
+                                    state.selected_provider.label()
+                                ),
+                                false,
+                            );
                             state.queue_async_command(AppCommand::ApplyProviderSettings);
                         }),
                         button("TEST", |state: &mut SextantState| {
+                            if !state.provider_ready(state.selected_provider) {
+                                let message = format!(
+                                    "{} configuration is incomplete. Fill the required fields before testing.",
+                                    state.selected_provider.label()
+                                );
+                                state.set_command_summary(message.clone(), true);
+                                state.set_ai_status(message.clone(), true);
+                                state.add_log(&format!("Test blocked: {}", message));
+                                return;
+                            }
+                            state.set_command_summary(
+                                format!(
+                                    "Testing {} provider settings.",
+                                    state.selected_provider.label()
+                                ),
+                                false,
+                            );
                             state.queue_async_command(AppCommand::TestProviderSettings);
                         }),
                         button("SAVE VAULT", |state: &mut SextantState| {
+                            state.set_command_summary("Saving AI settings to Vault.", false);
                             state.queue_async_command(AppCommand::SaveProviderSettings);
                         }),
                         button("LOAD VAULT", |state: &mut SextantState| {
+                            state.set_command_summary("Loading AI settings from Vault.", false);
                             state.queue_async_command(AppCommand::LoadProviderSettings);
                         }),
                     ))
@@ -540,6 +956,10 @@ pub fn app_logic_native(state: &mut SextantState) -> impl MasonryView<SextantSta
         state.active_did[..state.active_did.len().min(20)].to_string(),
         format!("{:?}", state.airgap.get_status()),
         format!("{:?}", state.privacy_level),
+        runtime_status,
+        runtime_status_color,
+        startup_status,
+        startup_status_color,
         state.last_command_summary.clone(),
         command_summary_color,
         state.pending_async_jobs,
@@ -551,18 +971,30 @@ pub fn app_logic_native(state: &mut SextantState) -> impl MasonryView<SextantSta
         page_title,
         page_url,
         page_content,
-        state.latest_audit_status_line(),
         consent_msg
             .as_ref()
             .map(|m| format!("CAPTAIN'S KEY REQUIRED — {}", m))
             .unwrap_or_else(|| "No consent request is pending.".to_string()),
+        state.consent_next_step_message(),
+        state.latest_audit_status_line(),
         consent_status_color,
+        consent_next_step_color,
     );
 
     let wake_panel =
         wake_panel_view(state.wake_search_query.clone(), wake_views, audit_views, log_views);
 
-    let main_content = flex((dashboard, viewport, wake_panel));
+    let main_content: BoxedMasonryView<SextantState, ()> = if state.is_mesh_open {
+        Box::new(flex((
+            dashboard,
+            viewport,
+            wake_panel,
+            validation_panel,
+            mesh_panel_view(),
+        )))
+    } else {
+        Box::new(flex((dashboard, viewport, wake_panel, validation_panel)))
+    };
 
     let body: BoxedMasonryView<SextantState, ()> = if state.is_settings_open {
         Box::new(flex((settings_panel, intent_bar, main_content)))

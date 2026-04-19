@@ -29,6 +29,7 @@ fn main() {
     let state = rt.block_on(async {
         let data_dir = app_data_dir();
         fs::create_dir_all(&data_dir).expect("Failed to create Sextant data directory");
+        let mut startup_alerts = Vec::new();
 
         let vault = Arc::new(Mutex::new(CitadelVault::new()));
         let engine = Arc::new(Mutex::new(sextant_engine::SextantEngine::new()));
@@ -36,6 +37,7 @@ fn main() {
         {
             let mut engine_guard = engine.lock().await;
             if let Err(e) = engine_guard.initialize_gpu().await {
+                startup_alerts.push(format!("GPU initialization failed: {}", e));
                 eprintln!("Failed to initialize GPU: {}", e);
             }
         }
@@ -118,6 +120,23 @@ fn main() {
             recent_memory: Vec::new(),
             audit_trail: Vec::new(),
             logs: vec!["Hull initialized.".to_string(), "Pilot online.".to_string()],
+            startup_alerts: Vec::new(),
+            validation_successes: Vec::new(),
+            consent_request_exercised: false,
+            consent_authorized_exercised: false,
+            consent_denied_exercised: false,
+            provider_load_exercised: false,
+            provider_apply_exercised: false,
+            provider_test_exercised: false,
+            provider_save_exercised: false,
+            tab_open_exercised: false,
+            tab_switch_exercised: false,
+            tab_close_exercised: false,
+            wake_search_exercised: false,
+            wake_consolidate_exercised: false,
+            airgap_offline_exercised: false,
+            airgap_online_exercised: false,
+            privacy_cycle_exercised: false,
             last_command_summary: "Awaiting first command.".to_string(),
             last_command_is_error: false,
             is_vault_unlocked: true,
@@ -129,6 +148,22 @@ fn main() {
             active_tab_id: None,
             is_settings_open: false,
             applied_provider: selected_provider,
+            applied_provider_config: app_core::ProviderConfig {
+                provider: selected_provider,
+                gemini_key: gemini_key.clone(),
+                openai_key: openai_key.clone(),
+                anthropic_key: anthropic_key.clone(),
+                local_endpoint: "http://localhost:8080".to_string(),
+                local_model: "llama-3-8b".to_string(),
+            },
+            preferred_online_provider_config: app_core::ProviderConfig {
+                provider: selected_provider,
+                gemini_key: gemini_key.clone(),
+                openai_key: openai_key.clone(),
+                anthropic_key: anthropic_key.clone(),
+                local_endpoint: "http://localhost:8080".to_string(),
+                local_model: "llama-3-8b".to_string(),
+            },
             selected_provider,
             gemini_key,
             openai_key,
@@ -163,6 +198,9 @@ fn main() {
         } else {
             state.update_brain().await;
             state.add_log("Loaded inference credentials from environment.");
+        }
+        for startup_alert in startup_alerts {
+            state.add_startup_alert(startup_alert);
         }
         state.add_log(&format!("Wake/Log storage: {}", data_dir.display()));
         state.sync_tabs().await;

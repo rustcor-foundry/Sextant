@@ -8,9 +8,9 @@ Active priority stack. See [completed.md](completed.md) for session history.
 
 ## Priority Stack
 
-### 0. Verify `cargo run` and Window Launch (immediate, ~15 min)
+### 0. Keep `cargo run` Launch Healthy (immediate, ~15 min per pass)
 
-The workspace compiles but `cargo run -p sextant-hull` has not been confirmed. Run it, fix any runtime panics (GPU init, missing resources, etc.).
+`cargo check --workspace` and the Pilot regression suite currently pass. `cargo run -p sextant-hull` has also been exercised again and did not panic inside the launch-check timeout window, so this lane is now about preserving that state whenever hull/runtime changes land.
 
 ```bash
 cd "D:/Paul/Software Projects/Sextant/rust"
@@ -19,55 +19,35 @@ cargo run -p sextant-hull
 
 Watch for: GPU init failures, Xilem layout panics, thread/async runtime issues.
 
-### 1. Wire Async UI Actions (~2-3 hours)
+### 1. Full In-Window Workflow Validation (~1-2 hours)
 
-All buttons currently log "async wiring pending." The state methods exist and are correct — they just need to be called. The pattern is: button callback queues a command string, a separate async loop reads commands and calls the appropriate `state.*` method.
+The async command-channel pattern is already in place, and the hull already wires command submission, air-gap/privacy controls, Wake search/consolidation, provider settings, consent actions, and tab actions. The validation panel is now session-aware, tracks coverage across the main workflows, shows remaining checks, and supports `RESET VALIDATION` for a fresh run. The next highest-value work is a real click-through pass that exercises the app end-to-end in the window and fixes anything that still only works in tests or partial runtime paths.
 
-Xilem doesn't support async directly in callbacks. The standard approach is:
-- Store a `tokio::sync::mpsc::Sender<Command>` in state
-- Button callbacks send a `Command` variant
-- A background task receives commands, runs the async method, sends results back via another channel
+Focus checks:
+1. start with `RESET VALIDATION` so the checklist reflects the current run cleanly
+2. submit intent from the hull and verify the result updates dashboard, viewport, Wake, and Captain's Log
+3. exercise consent authorize/deny from the hull and confirm the UI truthfully updates
+4. switch tabs, close tabs, and verify active-page/engine-status synchronization
+5. test provider apply/test/save/load from the settings panel
+6. confirm air-gap and privacy changes surface clearly in the UI and runtime state
 
-Actions to wire, in priority order:
-1. **Toggle Air-Gap** — `state.toggle_airgap()`
-2. **Cycle Privacy** — `state.cycle_privacy()`
-3. **Wake Search** — `state.search_wake()`
-4. **Wake Consolidate** — `state.wake.lock().consolidate()`
-5. **Navigate via Pilot** — `state.pilot.navigate_with_fallback(url, persona_id)`
-6. **Mesh Chat Send** — `state.send_mesh_chat()`
+### 2. Truthful UX and Error Surfacing (~2-4 hours)
 
-### 2. Intent → Pilot → Engine → Wake Loop (~4-6 hours)
+The native hull is already much more honest than earlier passes, so this lane is now mostly follow-up based on what real validation uncovers:
+1. tighten any stale or misleading status text
+2. surface startup/runtime failures in-window instead of only via stderr/logs
+3. make unfinished panels explicit without implying they are wired
+4. remove any remaining "looks wired but is not" edge cases
 
-The core browser loop. When user submits an intent:
-1. Pilot reasons about it (`reason_about_intent`)
-2. Pilot navigates (`navigate_with_fallback`) — currently simulated in engine
-3. Engine returns `DistilledPage`
-4. Wake records the page
-5. Hull updates `active_page` and `engine_status`
+### 3. Real Inference Configuration Path (~2-4 hours)
 
-This requires the command channel pattern from #1 to be in place first.
+Provider switching and settings controls are implemented, and the hull loads environment keys on startup. The remaining work is to make the configured provider path fully real and clearly persisted:
+- verify applied provider changes always switch the active Pilot brain
+- harden vault save/load behavior for provider settings
+- confirm local inference and air-gap interactions behave as intended
+- remove any leftover placeholder-model assumptions where they still exist
 
-### 3. Persist Wake and Log to Disk (~30 min)
-
-Currently both use `new_in_memory()`. Switch to `DigitalWake::open(path)` and `CaptainsLog::open(path)` with a user data directory (e.g. `%APPDATA%\Sextant\` on Windows).
-
-```rust
-let data_dir = dirs::data_dir().unwrap().join("Sextant");
-std::fs::create_dir_all(&data_dir).ok();
-let wake = DigitalWake::open(data_dir.join("wake.db"))?;
-```
-
-Add `dirs = "5"` to hull's `Cargo.toml`.
-
-### 4. Real Inference Backend (~2-4 hours)
-
-The `GeminiBrain` is created with a placeholder key. To make it actually work:
-- Read the API key from `state.gemini_key` (which can be persisted to vault)
-- The `InferenceBrain` trait already has `reason_about_intent()` — just call it
-
-For local inference, `LocalBrain` points to `http://localhost:8080` (llama.cpp). Wire up the AI-gap toggle to auto-switch to local brain.
-
-### 5. Servo Rendering Backend (~1-2 days)
+### 4. Servo Rendering Backend (~1-2 days)
 
 Enable the `servo-backend` feature to get real page rendering. Requires:
 1. Install LLVM/clang for `bindgen` (used by mozangle, a Servo dep)
@@ -79,13 +59,19 @@ Enable the `servo-backend` feature to get real page rendering. Requires:
 
 Until then, the simulated distiller in `sextant-engine` returns mocked content.
 
-### 6. CI Pipeline
+### 5. Warning and Dependency Cleanup (~1-2 hours)
 
-Add a GitHub Actions / Gitea workflow:
-```yaml
-- cargo check --workspace
-- cargo test --workspace
-```
+The workspace is currently green, but there is still follow-up cleanup worth doing:
+- reduce remaining low-signal warnings in less-active crates
+- inspect the `xml5ever v0.16.2` future-incompatibility notice and decide whether to upgrade or track it explicitly
+- keep the workspace warning budget low enough that new regressions stand out
+
+### 6. CI Depth
+
+Basic Rust workspace CI is already in place on Gitea. The next CI pass should add depth rather than bootstrap:
+- consider a dedicated hull smoke check strategy
+- add focused crate test jobs if failures become noisy
+- keep CI aligned with the native product path rather than the legacy simulator
 
 ---
 
@@ -93,16 +79,14 @@ Add a GitHub Actions / Gitea workflow:
 
 | Blocker | Affects | Notes |
 |---------|---------|-------|
-| Xilem has no async callback support | Items 1-4 | Need command-channel pattern |
-| No Gemini key wired | Real AI | Placeholder "sk-placeholder" in use |
+| Interactive native launch validation is still manual | Items 0-2 | We can compile/test automatically, and the hull now has a session-aware checklist, but full click-through still needs operator exercise |
+| Real cloud/local provider validation depends on credentials/services | Item 3 | Behavior is partly environment-dependent |
 | libclang not installed | Servo feature | `choco install llvm` resolves it |
 
 ---
 
 ## Nice-to-Have
 
-- **Settings panel**: UI is toggled (`is_settings_open`) but the settings view is not implemented
-- **Mesh panel**: Same — `is_mesh_open` flag exists, no render
-- **Tab close/new**: Tab list renders but add/close not wired
+- **Mesh panel**: `is_mesh_open` exists, but mesh remains a later native pass
 - **PQ identity display**: `active_pq_identity` in state, not shown in hull
 - **Sync UI**: `SextantSync` is wired in state but no import/export UI

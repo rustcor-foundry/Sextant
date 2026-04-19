@@ -30,6 +30,7 @@ The biggest remaining gaps are no longer foundational compilation issues. They a
 | Capability | State | Notes |
 |------------|-------|-------|
 | Rust workspace compile | ✅ | `cargo check` passes |
+| Pilot regression tests | ✅ | `cargo test -p sextant-pilot --lib` passes |
 | Native hull launch | ✅ | hull stays up in real launch checks |
 | Hull modular structure | ✅ | `app_core`, `state`, `views`, `poller`, `util`, `deferred` split in place |
 | Async hull command runtime | ✅ | commands/events/snapshots route through toolkit-agnostic app core |
@@ -37,6 +38,7 @@ The biggest remaining gaps are no longer foundational compilation issues. They a
 | Persistent Captain's Log | ✅ | SQLite file-backed |
 | Provider control panel | ✅ | selected/active/tested/readiness state surfaced |
 | Provider apply/test/save/load | ✅ | wired through async command path |
+| Native validation checklist | ✅ | session-aware checklist, remaining-checks guidance, reset control |
 | Intent -> Pilot -> Engine -> Wake | ✅ baseline | covered by Pilot regression tests |
 | Consent gating | ✅ baseline | await/deny/authorize flow covered by tests |
 | Real page distillation | ✅ baseline | fetch + parse + semantic extraction path exists |
@@ -62,15 +64,22 @@ The hull now tells the truth more clearly than earlier passes:
 - command preflight failures are surfaced instead of silently ignored
 - consent buttons explain when no consent request is pending
 - dashboard shows last command summary and async job count
+- dashboard now shows startup alerts and a live runtime status line
 - Captain's Log shows persisted audit entries
 - System Log is separate from the audit trail
 - AI settings show selected vs active provider and readiness/test state
+- provider settings panel is implemented in the native hull
+- mesh toggle now opens an explicit native placeholder instead of hiding a deferred panel
+- empty Wake/tab states now explain what to do next instead of rendering as blank areas
+- validation checklist now shows remaining steps, recent successful checks, and per-workflow coverage
+- consent, provider, tab, Wake, and control workflows now track session-aware coverage instead of relying only on visible state
+- `RESET VALIDATION` clears checklist coverage for a fresh click-through pass without resetting real runtime state
 
 ## Known Gaps
 
 | Gap | Priority | Notes |
 |-----|----------|-------|
-| Full in-window interactive workflow exercise | High | backend path is stronger than live click-through validation |
+| Full in-window interactive workflow exercise | High | checklist support is now strong, but a real end-to-end click-through still needs operator time |
 | Remaining workspace warnings | Medium | mostly `sextant-bridge` and `sextant-mesh`, plus a few low-noise leftovers |
 | CI workflow depth | Medium | basic Rust workspace CI exists, but it is still minimal |
 | Servo backend work | Medium | still optional and not the current blocker |
@@ -88,7 +97,7 @@ That remote should be treated as the main source of truth going forward.
 
 The next best work should keep following [next-work.md](next-work.md) and bias toward:
 
-1. real user-visible workflow validation
-2. high-signal warning cleanup
-3. CI
-4. later backend/rendering expansion
+1. checklist-guided in-window validation runs
+2. fixing any issues discovered during real click-through use
+3. provider-path and inference hardening where environment-backed behavior still drifts
+4. warning cleanup and later backend/rendering expansion
