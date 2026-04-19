@@ -4,6 +4,18 @@ Audit trail of completed work sessions. Newest first.
 
 ---
 
+## 2026-04-19 — Docs Structure Refresh
+
+Full details in [archive/2026-04-19-docs-structure-refresh.md](archive/2026-04-19-docs-structure-refresh.md).
+
+- ✅ README upgraded into a real docs and onboarding hub
+- ✅ `current-state.md` refreshed to match the actual native hull state
+- ✅ `source-map.md` added to explain where real product work belongs
+- ✅ `operator-workflow.md` added to document the normal development loop
+- ✅ docs spine now better matches the stronger template used in `wsky-ai-ops-docs`
+
+---
+
 ## 2026-04-18 — Native Hull Workflow Tightened
 
 Full details in [archive/2026-04-18-native-hull-progress.md](archive/2026-04-18-native-hull-progress.md).

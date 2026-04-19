@@ -1,92 +1,111 @@
 # Sextant — Sovereign Agentic Browser
 
-A local-first, privacy-preserving browser where an AI Pilot reasons about your intent, navigates autonomously, and builds a persistent memory of your web activity — all without leaving your machine unless you decide otherwise.
+Sextant is a local-first, privacy-preserving browser where an AI Pilot reasons about user intent, navigates autonomously, distills page content, and builds a persistent Digital Wake without requiring a cloud service unless the user explicitly enables one.
+
+This repo is the active product workspace for Sextant. It contains both the Rust native product path and the older TypeScript simulator/prototype.
 
 ## Read This First
 
-1. [Development Guardrails](docs/development-guardrails.md) — project rules for layout, workflow, and scope
-2. [Current State](docs/current-state.md) — live build status and known gaps
-3. [Next Work](docs/next-work.md) — active priority stack
-4. [Architecture](docs/architecture.md) — crate map and design decisions
-5. [Completed](docs/completed.md) — session audit trail
+If you only read five docs, read these in order:
 
----
+1. [Current State](docs/current-state.md) — current product reality and what is still rough
+2. [Next Work](docs/next-work.md) — active execution priorities
+3. [Architecture](docs/architecture.md) — stable crate and system model
+4. [Development Guardrails](docs/development-guardrails.md) — layout, workflow, and runtime rules
+5. [Completed](docs/completed.md) — session history and audit trail
 
-## Project Summary
+## Start Here
 
-| Layer | Technology | Status |
-|-------|-----------|--------|
-| Native UI shell | Rust + Xilem 0.1.0 | ✅ Compiles |
-| Rendering engine | Servo (optional feature) | Simulated |
-| Agentic orchestration | `sextant-pilot` | Scaffolded |
-| Episodic memory | SQLite FTS5 + vectors | Scaffolded |
-| Cryptographic vault | Ed25519 + AES-256-GCM + ML-DSA | Scaffolded |
-| Local AI inference | llama.cpp / OpenAI / Gemini | Scaffolded |
-| P2P mesh | libp2p | Scaffolded |
-| TypeScript simulator | React 19 + Vite + Tailwind | Working |
+1. [Current State](docs/current-state.md) — current product snapshot
+2. [Next Work](docs/next-work.md) — highest-value next actions
+3. [Operator Workflow](docs/operator-workflow.md) — normal day-to-day development flow
+4. [Architecture](docs/architecture.md) — system shape and crate roles
+5. [Source Map](docs/source-map.md) — where code and supporting surfaces live
+6. [Completed](docs/completed.md) — dated work history and archive links
 
----
+## Current Product Summary
 
-## Crate Structure
+| Layer | Technology | Current State |
+|-------|------------|---------------|
+| Native UI shell | Rust + Xilem 0.1.0 | Working hull, real async command bridge |
+| Pilot orchestration | `sextant-pilot` | Real intent flow, consent gating, regression coverage |
+| Engine | `sextant-engine` | Real fetch/distill path, simulated renderer backends |
+| Memory | `sextant-wake` | Persistent SQLite Wake with FTS + embeddings |
+| Security root | `sextant-vault` | Persona, identity, secrets, consent signing scaffold |
+| Audit trail | `sextant-log` | Persistent Captain's Log in SQLite |
+| Cloud/local inference | Gemini / OpenAI / Anthropic / local | Provider switching and config UI in hull |
+| TypeScript simulator | React + Vite + Tailwind | Legacy prototype/reference surface |
 
-```
-rust/
-├── sextant-hull        # Xilem UI shell
-├── sextant-pilot       # Agentic orchestration + intent reasoning
-├── sextant-engine      # Page distillation (Servo optional)
-├── sextant-vault       # Cryptographic vault (HD keys, AES, ML-DSA)
-├── sextant-wake        # Digital Wake — episodic memory store
-├── sextant-inference   # Multi-backend LLM client
-├── sextant-log         # Captain's Log — audit trail
-├── sextant-pq          # Post-quantum identity (ML-DSA-65)
-├── sextant-privacy     # PII redaction + privacy levels
-├── sextant-mesh        # P2P mesh networking
-├── sextant-bridge      # Multimodal input bridge
-├── sextant-sync        # Cross-device persona sync
-├── sextant-bio         # Biometric auth abstraction
-├── sextant-airgap      # Air-gap mode (Online/Isolated/Hardened)
-└── sextant-firewall    # Network filtering + tracker blocking
-```
+## Repo Structure
 
----
+### Native Product Path
 
-## Build
+- [rust/sextant-hull](rust/sextant-hull) — native Xilem hull
+- [rust/sextant-pilot](rust/sextant-pilot) — intent reasoning and orchestration
+- [rust/sextant-engine](rust/sextant-engine) — fetch, distill, and rendering backend surface
+- [rust/sextant-vault](rust/sextant-vault) — vault, personas, identities, secrets
+- [rust/sextant-wake](rust/sextant-wake) — Digital Wake memory store
+- [rust/sextant-log](rust/sextant-log) — Captain's Log audit trail
 
-**Requirements**: Rust stable, VS Build Tools 2026 (Windows)
+### Supporting Surfaces
 
-The `.cargo/config.toml` in `rust/` persists the MSVC linker and SDK paths — no manual environment setup needed after cloning.
+- [src](src) — React simulator/prototype
+- [components](components) — simulator UI components
+- [docs](docs) — product, architecture, workflow, and session docs
+
+## Build And Run
+
+### Rust Native Hull
 
 ```bash
 cd rust
-
-# Check all crates compile
 cargo check
-
-# Run the native hull
 cargo run -p sextant-hull
+```
 
-# Run with Servo rendering (requires libclang)
+Optional Servo feature:
+
+```bash
+cd rust
 cargo run -p sextant-hull --features sextant-engine/servo-backend
 ```
 
-## TypeScript Simulator
-
-The `src/` directory contains a React + Vite UI that was the original prototype. It provides an interactive preview and connects to Gemini via API key.
+### TypeScript Simulator
 
 ```bash
 npm install
-# Set GEMINI_API_KEY in .env.local
 npm run dev
 ```
 
----
+If using the simulator's Gemini path, set `GEMINI_API_KEY` first.
 
-## Design Principles
+## Docs By Use Case
 
-**Sovereign by default**: No telemetry, no cloud sync unless the user enables it. The vault is the trust root — nothing sensitive leaves without a signed consent.
+### Product Direction
 
-**Persona isolation**: Every browsing session, memory entry, and identity is scoped to a named persona. Switching persona changes the AI's context, the available keys, and the memory surface.
+- [Current State](docs/current-state.md)
+- [Next Work](docs/next-work.md)
+- [Product Roadmap](docs/product-roadmap.md)
 
-**Air-gap ready**: The `Hardened` air-gap mode cuts all network access and forces inference to a local llama.cpp endpoint.
+### Development Workflow
 
-**Captain's Key consent**: The Pilot cannot execute sensitive actions without a vault signature. This is enforced at the protocol level, not just the UI.
+- [Operator Workflow](docs/operator-workflow.md)
+- [Development Guardrails](docs/development-guardrails.md)
+- [Completed](docs/completed.md)
+
+### System Reference
+
+- [Architecture](docs/architecture.md)
+- [Source Map](docs/source-map.md)
+
+## Historical Notes
+
+Session-specific implementation notes live under [docs/archive](docs/archive). They are useful for recovery and design rationale, but the active entry points should be the undated docs above unless a current doc points you into a dated archive file.
+
+## Canonical Remote
+
+The main remote for this project is:
+
+- `rustcor/Sextant` on Gitea
+
+Treat this repo as the source of truth going forward.

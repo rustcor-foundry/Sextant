@@ -1,82 +1,94 @@
 # Current State
 
-Date of this snapshot: `2026-04-18`
+Date of this snapshot: `2026-04-19`
 
 ## How To Read This
 
 Use this together with:
 
-- [Next Work](next-work.md) for priorities
-- [Architecture](architecture.md) for the stable crate model
-- [Completed](completed.md) for session history
-
----
+- [next-work.md](next-work.md) for the active execution order
+- [architecture.md](architecture.md) for the stable system model
+- [development-guardrails.md](development-guardrails.md) for project rules
+- [completed.md](completed.md) for dated history
 
 ## Executive Summary
 
-The Sextant Rust workspace (15 crates) compiles cleanly as of 2026-04-18. `cargo check` passes with zero errors. All foundational crate scaffolding is in place. The hull launches a Xilem window with a working 3-panel layout (Dashboard / Viewport / Digital Wake). No actual network, inference, or persistence calls are wired to the UI yet — async actions log placeholder messages pending live wiring.
+Sextant now has a real native Rust product path with a launching Xilem hull, a toolkit-agnostic async command runtime, persistent Wake and Captain's Log storage, and working intent/consent regression coverage in the Pilot.
 
----
+The product is no longer just a compile-clean scaffold. The native hull can:
 
-## Compilation Status
+- launch
+- show tabs, viewport, wake, settings, and audit information
+- route commands through async app commands/events
+- surface provider readiness and configuration state
+- show real Captain's Log entries and runtime status
 
-| Crate | Status | Notes |
-|-------|--------|-------|
-| `sextant-vault` | ✅ Compiles | bip39 v2 API, HmacSha512, Zeroize all fixed |
-| `sextant-engine` | ✅ Compiles | wgpu API updated, Servo is optional feature |
-| `sextant-wake` | ✅ Compiles | rusqlite 0.37, FTS5 bundled, f32 types fixed |
-| `sextant-log` | ✅ Compiles | rusqlite 0.37 |
-| `sextant-inference` | ✅ Compiles | serde_json added, Vec<f32> collect fixed |
-| `sextant-pilot` | ✅ Compiles | chrono added, borrow/match fixes |
-| `sextant-mesh` | ✅ Compiles | wireguard-uapi (Linux-only) removed |
-| `sextant-bridge` | ✅ Compiles | type inference fixes |
-| `sextant-privacy` | ✅ Compiles | |
-| `sextant-pq` | ✅ Compiles | |
-| `sextant-sync` | ✅ Compiles | |
-| `sextant-bio` | ✅ Compiles | |
-| `sextant-airgap` | ✅ Compiles | |
-| `sextant-firewall` | ✅ Compiles | |
-| `sextant-hull` | ✅ Compiles | Full Xilem 0.1.0 API rewrite, borrow fixes |
-
----
-
-## Build Environment
-
-| Item | State |
-|------|-------|
-| Rust toolchain | stable, `x86_64-pc-windows-msvc` |
-| VS Build Tools | 2026, `C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools` |
-| `.cargo/config.toml` | ✅ Present — linker + INCLUDE/LIB paths hardcoded |
-| Servo feature | Disabled by default (`servo-backend` feature flag) |
-| `libclang` / bindgen | Not required (Servo is optional) |
-
----
+The biggest remaining gaps are no longer foundational compilation issues. They are mostly around deeper interactive validation, broader warning cleanup, CI, and later rendering/backend work.
 
 ## What Is Working
 
-| Capability | Status |
-|------------|--------|
-| `cargo check` workspace | ✅ Clean |
-| Xilem window launches | ✅ Expected (not verified via `cargo run` yet) |
-| Vault init + persona create | ✅ Wired in `main()` init block |
-| Pilot created with Gemini brain | ✅ Wired in `main()` |
-| Digital Wake init (in-memory) | ✅ Wired in `main()` |
-| Captain's Log init (in-memory) | ✅ Wired in `main()` |
-| Mesh node creation | ✅ Wired in `main()` |
-| Tab sync from engine | ✅ `sync_tabs()` called on startup |
+| Capability | State | Notes |
+|------------|-------|-------|
+| Rust workspace compile | ✅ | `cargo check` passes |
+| Native hull launch | ✅ | hull stays up in real launch checks |
+| Hull modular structure | ✅ | `app_core`, `state`, `views`, `poller`, `util`, `deferred` split in place |
+| Async hull command runtime | ✅ | commands/events/snapshots route through toolkit-agnostic app core |
+| Persistent Wake storage | ✅ | SQLite file-backed |
+| Persistent Captain's Log | ✅ | SQLite file-backed |
+| Provider control panel | ✅ | selected/active/tested/readiness state surfaced |
+| Provider apply/test/save/load | ✅ | wired through async command path |
+| Intent -> Pilot -> Engine -> Wake | ✅ baseline | covered by Pilot regression tests |
+| Consent gating | ✅ baseline | await/deny/authorize flow covered by tests |
+| Real page distillation | ✅ baseline | fetch + parse + semantic extraction path exists |
+| Tab create/switch/close | ✅ | wired through hull async path |
 
----
+## Regression Coverage In Place
+
+Pilot tests currently cover:
+
+- opening a target in a new tab
+- navigate -> distill -> write to Wake
+- request consent -> deny
+- request consent -> authorize -> resume plan
+
+Engine tests currently cover:
+
+- multi-tab perception updates tab state
+
+## Current UX State
+
+The hull now tells the truth more clearly than earlier passes:
+
+- command preflight failures are surfaced instead of silently ignored
+- consent buttons explain when no consent request is pending
+- dashboard shows last command summary and async job count
+- Captain's Log shows persisted audit entries
+- System Log is separate from the audit trail
+- AI settings show selected vs active provider and readiness/test state
 
 ## Known Gaps
 
 | Gap | Priority | Notes |
 |-----|----------|-------|
-| `cargo run` not yet verified | High | Compile passes; window launch unconfirmed |
-| All async UI actions are stubs | High | Air-gap, privacy, wake search, mesh all log "pending" |
-| Pilot AI calls not wired to real inference | High | Brain created but `reason_about_intent()` not called from UI |
-| Digital Wake not persisted to disk | Medium | Using `new_in_memory()` — resets on exit |
-| Captain's Log not persisted to disk | Medium | Same as above |
-| Servo rendering not integrated | Medium | Simulated engine only |
-| No CI pipeline | Medium | No build automation yet |
-| TypeScript UI not connected to Rust hull | Low | Two separate surfaces; Rust hull is the target |
-| PQ identity not shown in UI | Low | Field exists in state, not rendered |
+| Full in-window interactive workflow exercise | High | backend path is stronger than live click-through validation |
+| Remaining workspace warnings | Medium | mostly `sextant-bridge` and `sextant-mesh`, plus a few low-noise leftovers |
+| CI workflow | Medium | repo is now on Gitea and ready for a build/test workflow |
+| Servo backend work | Medium | still optional and not the current blocker |
+| Local/mesh/sync/PQ feature surfaces | Low | intentionally deferred behind the core browser loop |
+
+## Canonical Repo State
+
+This project now has a valid git repo and canonical remote on Gitea:
+
+- `rustcor/Sextant`
+
+That remote should be treated as the main source of truth going forward.
+
+## Practical Recommendation
+
+The next best work should keep following [next-work.md](next-work.md) and bias toward:
+
+1. real user-visible workflow validation
+2. high-signal warning cleanup
+3. CI
+4. later backend/rendering expansion
