@@ -3,6 +3,7 @@ use crate::app_core::{
     build_brain, spawn_command, AiProvider, AppCommand, AppEvent, AppServices, AppSession,
     ProviderConfig, RefreshSnapshot,
 };
+use chrono::{DateTime, Utc};
 use sextant_airgap::{AirGapStatus, SextantAirGap};
 use sextant_engine::{DistilledPage, EngineStatus, SextantEngine, Tab};
 use sextant_log::{CaptainsLog, LogEntry};
@@ -48,6 +49,8 @@ pub struct SextantState {
     pub airgap_offline_exercised: bool,
     pub airgap_online_exercised: bool,
     pub privacy_cycle_exercised: bool,
+    pub audit_entry_exercised: bool,
+    pub audit_baseline_timestamp: Option<DateTime<Utc>>,
     pub last_command_summary: String,
     pub last_command_is_error: bool,
     pub is_vault_unlocked: bool,
@@ -112,14 +115,29 @@ impl SextantState {
         }
     }
 
-    pub fn record_validation_step(&mut self, step: impl Into<String>) {
+    pub fn record_validation_step(&mut self, workflow: &str, step: impl Into<String>) {
         let step = step.into();
-        let entry = format!("[{}] {}", chrono::Local::now().format("%H:%M:%S"), step);
+        let entry = format!(
+            "[{}] [{}] {}",
+            chrono::Local::now().format("%H:%M:%S"),
+            workflow,
+            step
+        );
         self.validation_successes.push(entry);
         if self.validation_successes.len() > 8 {
             let drop_count = self.validation_successes.len() - 8;
             self.validation_successes.drain(0..drop_count);
         }
+    }
+
+    pub fn latest_validation_step_for(&self, workflow: &str) -> String {
+        let needle = format!("[{}]", workflow);
+        self.validation_successes
+            .iter()
+            .rev()
+            .find(|entry| entry.contains(&needle))
+            .cloned()
+            .unwrap_or_else(|| format!("[--:--:--] [{}] no completed step yet", workflow))
     }
 
     pub fn reset_validation_session(&mut self) {
@@ -139,6 +157,8 @@ impl SextantState {
         self.airgap_offline_exercised = false;
         self.airgap_online_exercised = false;
         self.privacy_cycle_exercised = false;
+        self.audit_entry_exercised = false;
+        self.audit_baseline_timestamp = self.audit_trail.first().map(|entry| entry.timestamp);
     }
 
     pub fn consent_validation_steps_completed(&self) -> usize {
@@ -295,21 +315,91 @@ impl SextantState {
         )
     }
 
+    pub fn audit_validation_steps_completed(&self) -> usize {
+        usize::from(self.audit_entry_exercised)
+    }
+
+    pub fn audit_validation_status_message(&self) -> String {
+        if self.audit_entry_exercised {
+            "Audit coverage 1/1: fresh Captain's Log entry recorded during this validation session."
+                .to_string()
+        } else if self.audit_baseline_timestamp.is_some() {
+            "Audit coverage 0/1: no newer Captain's Log entry has been recorded since the last validation reset."
+                .to_string()
+        } else {
+            "Audit coverage 0/1: no Captain's Log baseline exists yet for this validation session."
+                .to_string()
+        }
+    }
+
+    pub fn total_validation_workflow_steps(&self) -> usize {
+        16
+    }
+
+    pub fn completed_validation_workflow_steps(&self) -> usize {
+        self.provider_validation_steps_completed()
+            + self.consent_validation_steps_completed()
+            + self.tab_validation_steps_completed()
+            + self.wake_validation_steps_completed()
+            + self.control_validation_steps_completed()
+            + self.audit_validation_steps_completed()
+    }
+
+    pub fn validation_progress_percent(&self) -> usize {
+        (self.completed_validation_workflow_steps() * 100) / self.total_validation_workflow_steps()
+    }
+
+    pub fn validation_progress_line(&self) -> String {
+        format!(
+            "VALIDATION COVERAGE {}% ({}/{} workflow steps exercised).",
+            self.validation_progress_percent(),
+            self.completed_validation_workflow_steps(),
+            self.total_validation_workflow_steps()
+        )
+    }
+
+    pub fn validation_workflow_rollup_line(&self) -> String {
+        format!(
+            "WORKFLOWS provider {}/4  consent {}/3  tab {}/3  wake {}/2  controls {}/3  audit {}/1",
+            self.provider_validation_steps_completed(),
+            self.consent_validation_steps_completed(),
+            self.tab_validation_steps_completed(),
+            self.wake_validation_steps_completed(),
+            self.control_validation_steps_completed(),
+            self.audit_validation_steps_completed()
+        )
+    }
+
+    pub fn update_audit_validation_progress(&mut self) {
+        let latest_timestamp = self.audit_trail.first().map(|entry| entry.timestamp);
+        self.audit_entry_exercised = match (self.audit_baseline_timestamp, latest_timestamp) {
+            (_, None) => false,
+            (None, Some(_)) => true,
+            (Some(baseline), Some(latest)) => latest > baseline,
+        };
+    }
+
     pub async fn refresh_memory(&mut self) {
-        let wake = self.wake.lock().await;
         let persona_id = self
             .active_persona
             .as_ref()
             .map(|p| p.id.as_str())
-            .unwrap_or("default");
-        if let Ok(entries) = wake.search(persona_id, "") {
-            self.recent_memory = entries;
+            .unwrap_or("default")
+            .to_string();
+        {
+            let wake = self.wake.lock().await;
+            if let Ok(entries) = wake.search(&persona_id, "") {
+                self.recent_memory = entries;
+            }
         }
 
-        let log = self.log.lock().await;
-        if let Ok(entries) = log.get_entries(persona_id, 10) {
-            self.audit_trail = entries;
+        {
+            let log = self.log.lock().await;
+            if let Ok(entries) = log.get_entries(&persona_id, 10) {
+                self.audit_trail = entries;
+            }
         }
+        self.update_audit_validation_progress();
     }
 
     pub async fn sync_tabs(&mut self) {
@@ -337,6 +427,7 @@ impl SextantState {
         self.audit_trail = snapshot.audit_trail;
         self.pilot_status = snapshot.pilot.status.clone();
         self.pilot_brain_name = snapshot.pilot.brain_name;
+        self.update_audit_validation_progress();
     }
 
     pub fn queue_async_command(&mut self, command: AppCommand) {
@@ -431,21 +522,24 @@ impl SextantState {
     }
 
     pub fn remaining_validation_checks(&self) -> Vec<String> {
-        let mut checks = Vec::new();
+        let mut blockers = Vec::new();
+        let mut active_flow = Vec::new();
+        let mut workflow_gaps = Vec::new();
+        let mut evidence_gaps = Vec::new();
 
         if self.has_unapplied_provider_changes() {
-            checks.push("Apply the selected provider settings.".to_string());
+            blockers.push("Apply the selected provider settings.".to_string());
         } else if !self.active_provider_ready() {
-            checks.push(self.active_provider_readiness_message());
+            blockers.push(self.active_provider_readiness_message());
         }
 
         if self.last_tested_provider != Some(self.applied_provider) {
-            checks.push(format!(
+            active_flow.push(format!(
                 "Run TEST for the active {} route.",
                 self.applied_provider.label()
             ));
         } else if !self.last_test_success {
-            checks.push(format!(
+            blockers.push(format!(
                 "Fix the failing {} provider test before relying on this route.",
                 self.applied_provider.label()
             ));
@@ -453,74 +547,90 @@ impl SextantState {
 
         if self.airgap.get_status() != AirGapStatus::Online && !self.provider_ready(AiProvider::Local)
         {
-            checks.push("Configure the local endpoint before using offline mode.".to_string());
+            blockers.push("Configure the local endpoint before using offline mode.".to_string());
         }
 
         if !self.provider_load_exercised {
-            checks.push("LOAD VAULT once to validate provider settings restore.".to_string());
+            workflow_gaps.push("LOAD VAULT once to validate provider settings restore.".to_string());
         }
         if !self.provider_apply_exercised {
-            checks.push("APPLY a provider configuration to validate route activation.".to_string());
+            workflow_gaps.push("APPLY a provider configuration to validate route activation.".to_string());
         }
         if !self.provider_test_exercised {
-            checks.push("TEST the active provider to validate route health.".to_string());
+            workflow_gaps.push("TEST the active provider to validate route health.".to_string());
         }
         if !self.provider_save_exercised {
-            checks.push("SAVE VAULT once to validate provider settings persistence.".to_string());
+            workflow_gaps.push("SAVE VAULT once to validate provider settings persistence.".to_string());
         }
 
         if matches!(self.pilot_status, PilotStatus::AwaitingConsent(_)) {
-            checks.push("Resolve the pending Captain's Key request with AUTHORIZE or DENY.".to_string());
+            active_flow.push("Resolve the pending Captain's Key request with AUTHORIZE or DENY.".to_string());
         } else if !self.consent_request_exercised {
-            checks.push("Run a protected intent to open Captain's Key flow.".to_string());
+            workflow_gaps.push("Run a protected intent to open Captain's Key flow.".to_string());
         } else {
             if !self.consent_authorized_exercised {
-                checks.push("AUTHORIZE one Captain's Key request to validate plan resume.".to_string());
+                workflow_gaps.push("AUTHORIZE one Captain's Key request to validate plan resume.".to_string());
             }
             if !self.consent_denied_exercised {
-                checks.push("DENY one Captain's Key request to validate plan abort.".to_string());
+                workflow_gaps.push("DENY one Captain's Key request to validate plan abort.".to_string());
             }
         }
 
         if !self.tab_open_exercised {
-            checks.push("Open a tab to validate tab creation.".to_string());
+            workflow_gaps.push("Open a tab to validate tab creation.".to_string());
         }
         if !self.tab_switch_exercised {
-            checks.push("Switch tabs once to validate active-tab changes.".to_string());
+            workflow_gaps.push("Switch tabs once to validate active-tab changes.".to_string());
         }
         if !self.tab_close_exercised {
-            checks.push("Close an active tab once to validate tab teardown.".to_string());
+            workflow_gaps.push("Close an active tab once to validate tab teardown.".to_string());
         }
 
         if !self.wake_search_exercised {
-            checks.push("Run SEARCH to validate Wake query flow.".to_string());
+            workflow_gaps.push("Run SEARCH to validate Wake query flow.".to_string());
         }
         if !self.wake_consolidate_exercised {
-            checks.push("Run CONSOLIDATE to validate Wake pruning flow.".to_string());
+            workflow_gaps.push("Run CONSOLIDATE to validate Wake pruning flow.".to_string());
         }
         if self.wake_search_results.is_empty() && self.recent_memory.is_empty() {
-            checks.push("Run SEARCH or complete an intent to confirm Wake visibility.".to_string());
+            evidence_gaps.push("Run SEARCH or complete an intent to confirm Wake visibility.".to_string());
         }
 
         if !self.airgap_offline_exercised {
-            checks.push("Toggle air-gap into an offline mode to validate local-route enforcement.".to_string());
+            workflow_gaps.push(
+                "Toggle air-gap into an offline mode to validate local-route enforcement.".to_string(),
+            );
         }
         if !self.airgap_online_exercised {
-            checks.push("Return air-gap to Online to validate route restoration.".to_string());
+            workflow_gaps.push("Return air-gap to Online to validate route restoration.".to_string());
         }
         if !self.privacy_cycle_exercised {
-            checks.push("Cycle privacy once to validate runtime privacy controls.".to_string());
+            workflow_gaps.push("Cycle privacy once to validate runtime privacy controls.".to_string());
         }
 
-        if self.audit_trail.is_empty() {
-            checks.push("Run a command to generate Captain's Log entries.".to_string());
+        if !self.audit_entry_exercised {
+            evidence_gaps.push("Run a command that produces a new Captain's Log entry after reset.".to_string());
         }
 
         if self.validation_successes.is_empty() {
-            checks.push("Complete one successful workflow step to seed the validation trail.".to_string());
+            evidence_gaps.push("Complete one successful workflow step to seed the validation trail.".to_string());
         }
 
+        let mut checks = Vec::new();
+        checks.extend(blockers.into_iter().map(|check| format!("BLOCKER {}", check)));
+        checks.extend(active_flow.into_iter().map(|check| format!("ACTIVE {}", check)));
+        checks.extend(workflow_gaps.into_iter().map(|check| format!("WORKFLOW {}", check)));
+        checks.extend(evidence_gaps.into_iter().map(|check| format!("EVIDENCE {}", check)));
         checks
+    }
+
+    pub fn validation_focus_line(&self) -> String {
+        let remaining = self.remaining_validation_checks();
+        if let Some(top) = remaining.first() {
+            format!("CURRENT FOCUS {}", top)
+        } else {
+            "CURRENT FOCUS no validation blockers or gaps remain.".to_string()
+        }
     }
 
     pub fn validation_summary_line(&self) -> String {
@@ -676,11 +786,17 @@ impl SextantState {
                                     false,
                                 );
                                 self.add_log(&format!("Pilot paused for consent: {}", request));
-                                self.record_validation_step("Protected intent reached Captain's Key consent gate.");
+                                self.record_validation_step(
+                                    "CONSENT",
+                                    "Protected intent reached Captain's Key consent gate.",
+                                );
                             } else {
                                 self.set_command_summary("Intent completed.", false);
                                 self.add_log(&format!("Pilot complete: {}", message));
-                                self.record_validation_step("Intent completed through the active route.");
+                                self.record_validation_step(
+                                    "INTENT",
+                                    "Intent completed through the active route.",
+                                );
                             }
                         }
                         Err(e) => {
@@ -751,7 +867,10 @@ impl SextantState {
                                 false,
                             );
                             self.add_log("Network isolated. Switched to local inference.");
-                            self.record_validation_step("Air-gap forced local inference successfully.");
+                            self.record_validation_step(
+                                "CONTROLS",
+                                "Air-gap forced local inference successfully.",
+                            );
                         } else {
                             self.set_ai_status(
                                 "Network isolated, but local inference still needs a valid endpoint before commands can run.",
@@ -780,7 +899,7 @@ impl SextantState {
                             "Air-gap returned online. Restored {} provider routing.",
                             self.applied_provider.label()
                         ));
-                        self.record_validation_step(format!(
+                        self.record_validation_step("CONTROLS", format!(
                             "Air-gap returned online and restored {} routing.",
                             self.applied_provider.label()
                         ));
@@ -805,7 +924,7 @@ impl SextantState {
                             "Air-gap returned online. {} remained active.",
                             self.applied_provider.label()
                         ));
-                        self.record_validation_step(format!(
+                        self.record_validation_step("CONTROLS", format!(
                             "Air-gap returned online with {} still active.",
                             self.applied_provider.label()
                         ));
@@ -820,7 +939,7 @@ impl SextantState {
                         format!("Privacy set to {:?}.", next),
                         false,
                     );
-                    self.record_validation_step(format!("Privacy cycled to {:?}.", next));
+                    self.record_validation_step("CONTROLS", format!("Privacy cycled to {:?}.", next));
                 }
                 AppEvent::WakeSearch(result) => match result {
                     Ok(results) => {
@@ -830,7 +949,7 @@ impl SextantState {
                             false,
                         );
                         self.wake_search_results = results;
-                        self.record_validation_step(format!(
+                        self.record_validation_step("WAKE", format!(
                             "Wake search returned {} result(s).",
                             self.wake_search_results.len()
                         ));
@@ -851,7 +970,7 @@ impl SextantState {
                                 false,
                             );
                             self.add_log(&format!("Wake consolidated. Pruned {} entries.", count));
-                            self.record_validation_step(format!(
+                            self.record_validation_step("WAKE", format!(
                                 "Wake consolidation pruned {} entries.",
                                 count
                             ));
@@ -890,7 +1009,7 @@ impl SextantState {
                             false,
                         );
                         self.add_log(&format!("Applied {} as the active provider.", provider.label()));
-                        self.record_validation_step(format!(
+                        self.record_validation_step("PROVIDER", format!(
                             "Applied {} as the active provider.",
                             provider.label()
                         ));
@@ -927,7 +1046,7 @@ impl SextantState {
                             false,
                         );
                         self.add_log(&format!("{} provider test passed.", provider.label()));
-                        self.record_validation_step(format!(
+                        self.record_validation_step("PROVIDER", format!(
                             "{} provider test passed.",
                             provider.label()
                         ));
@@ -959,7 +1078,7 @@ impl SextantState {
                             "{} settings and credentials were stored in Vault.",
                             provider.label()
                         ));
-                        self.record_validation_step(format!(
+                        self.record_validation_step("PROVIDER", format!(
                             "Saved {} settings to Vault.",
                             provider.label()
                         ));
@@ -1021,7 +1140,7 @@ impl SextantState {
                             "Loaded {} settings from Vault into the panel.",
                             loaded_provider_label
                         ));
-                        self.record_validation_step(format!(
+                        self.record_validation_step("PROVIDER", format!(
                             "Loaded {} settings from Vault into the panel.",
                             loaded_provider_label
                         ));
@@ -1039,7 +1158,10 @@ impl SextantState {
                             self.consent_authorized_exercised = true;
                             self.set_command_summary("Consent authorized. Pilot resumed the plan.", false);
                             self.add_log(&format!("Consent authorized: {}", message));
-                            self.record_validation_step("Captain's Key authorized and plan resumed.");
+                            self.record_validation_step(
+                                "CONSENT",
+                                "Captain's Key authorized and plan resumed.",
+                            );
                         }
                         Err(e) => {
                             self.set_command_summary(format!("Authorization failed: {}", e), true);
@@ -1054,7 +1176,10 @@ impl SextantState {
                             self.consent_denied_exercised = true;
                             self.set_command_summary("Consent denied. Plan aborted.", false);
                             self.add_log(&format!("Consent denied: {}", message));
-                            self.record_validation_step("Captain's Key request denied and plan aborted.");
+                            self.record_validation_step(
+                                "CONSENT",
+                                "Captain's Key request denied and plan aborted.",
+                            );
                         }
                         Err(e) => {
                             self.set_command_summary(format!("Consent deny failed: {}", e), true);
@@ -1073,7 +1198,7 @@ impl SextantState {
                     self.tab_open_exercised = true;
                     self.set_command_summary("Opened a new tab.", false);
                     self.add_log(&format!("Opened tab {}.", opened_tab_label));
-                    self.record_validation_step(format!("Opened tab {}.", opened_tab_label));
+                    self.record_validation_step("TAB", format!("Opened tab {}.", opened_tab_label));
                 }
                 AppEvent::TabSwitched(tab_id, result, snapshot) => {
                     let tab_label = snapshot
@@ -1088,7 +1213,7 @@ impl SextantState {
                             self.tab_switch_exercised = true;
                             self.set_command_summary("Switched active tab.", false);
                             self.add_log(&format!("Switched to tab {}.", tab_label));
-                            self.record_validation_step(format!("Switched to tab {}.", tab_label));
+                            self.record_validation_step("TAB", format!("Switched to tab {}.", tab_label));
                         }
                         Err(e) => {
                             self.set_command_summary(format!("Failed to switch tab: {}", e), true);
@@ -1104,7 +1229,7 @@ impl SextantState {
                             self.tab_close_exercised = true;
                             self.set_command_summary("Closed active tab.", false);
                             self.add_log(&format!("Closed tab {}.", tab_label));
-                            self.record_validation_step(format!("Closed tab {}.", tab_label));
+                            self.record_validation_step("TAB", format!("Closed tab {}.", tab_label));
                         }
                         Err(e) => {
                             self.set_command_summary(format!("Failed to close tab: {}", e), true);

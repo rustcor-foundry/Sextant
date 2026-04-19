@@ -137,6 +137,8 @@ fn main() {
             airgap_offline_exercised: false,
             airgap_online_exercised: false,
             privacy_cycle_exercised: false,
+            audit_entry_exercised: false,
+            audit_baseline_timestamp: None,
             last_command_summary: "Awaiting first command.".to_string(),
             last_command_is_error: false,
             is_vault_unlocked: true,
@@ -205,6 +207,8 @@ fn main() {
         state.add_log(&format!("Wake/Log storage: {}", data_dir.display()));
         state.sync_tabs().await;
         state.refresh_memory().await;
+        state.audit_baseline_timestamp = state.audit_trail.first().map(|entry| entry.timestamp);
+        state.update_audit_validation_progress();
         state.refresh_pilot_snapshot().await;
         state
     });

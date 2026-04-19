@@ -15,6 +15,13 @@ fn muted_text(text: impl Into<String>) -> impl MasonryView<SextantState> {
     label(text.into()).color(Color::rgba(0.55, 0.6, 0.65, 1.0))
 }
 
+fn validation_badge(
+    text: impl Into<String>,
+    color: Color,
+) -> impl MasonryView<SextantState> {
+    label(text.into()).color(color)
+}
+
 fn header_view(
     pilot_status: String,
     active_persona: String,
@@ -243,6 +250,11 @@ fn mesh_panel_view() -> impl MasonryView<SextantState> {
 fn validation_panel_view(
     summary_line: String,
     summary_color: Color,
+    focus_line: String,
+    focus_color: Color,
+    progress_line: String,
+    progress_color: Color,
+    workflow_rollup_line: String,
     remaining_checks: Vec<String>,
     item_views: Vec<BoxedMasonryView<SextantState, ()>>,
 ) -> impl MasonryView<SextantState> {
@@ -253,7 +265,7 @@ fn validation_panel_view(
     } else {
         remaining_checks
             .into_iter()
-            .map(|check| Box::new(muted_text(format!("NEXT {}", check))) as BoxedMasonryView<SextantState, ()>)
+            .map(|check| Box::new(muted_text(check)) as BoxedMasonryView<SextantState, ()>)
             .collect()
     };
 
@@ -261,6 +273,9 @@ fn validation_panel_view(
         section_title("VALIDATION CHECKLIST"),
         muted_text("Use this panel as the current click-through guide for native-hull testing."),
         label(summary_line).color(summary_color),
+        label(focus_line).color(focus_color),
+        label(progress_line).color(progress_color),
+        muted_text(workflow_rollup_line),
         button("RESET VALIDATION", |state: &mut SextantState| {
             state.reset_validation_session();
             state.set_command_summary("Validation session reset. Checklist coverage cleared.", false);
@@ -466,12 +481,26 @@ pub fn app_logic_native(state: &mut SextantState) -> impl MasonryView<SextantSta
     let provider_route_check: BoxedMasonryView<SextantState, ()> = if state.has_unapplied_provider_changes() {
         Box::new(flex((
             label("CHECK provider route pending").color(checklist_warn),
+            validation_badge(
+                format!(
+                    "BADGE {}/4 COMPLETE",
+                    state.provider_validation_steps_completed()
+                ),
+                checklist_warn,
+            ),
             muted_text("Apply the selected provider settings before expecting command routing to change."),
             muted_text(state.provider_validation_status_message()),
         )))
     } else if state.active_provider_ready() {
         Box::new(flex((
             label("CHECK provider route ready").color(checklist_pass),
+            validation_badge(
+                format!(
+                    "BADGE {}/4 COMPLETE",
+                    state.provider_validation_steps_completed()
+                ),
+                checklist_pass,
+            ),
             muted_text(format!(
                 "Active route is {} and the current configuration is usable.",
                 state.applied_provider.label()
@@ -481,6 +510,13 @@ pub fn app_logic_native(state: &mut SextantState) -> impl MasonryView<SextantSta
     } else {
         Box::new(flex((
             label("CHECK provider route blocked").color(checklist_fail),
+            validation_badge(
+                format!(
+                    "BADGE {}/4 COMPLETE",
+                    state.provider_validation_steps_completed()
+                ),
+                checklist_fail,
+            ),
             muted_text(state.active_provider_readiness_message()),
             muted_text(state.provider_validation_status_message()),
         )))
@@ -496,6 +532,7 @@ pub fn app_logic_native(state: &mut SextantState) -> impl MasonryView<SextantSta
         {
             Box::new(flex((
                 label("CHECK provider workflow complete").color(checklist_pass),
+                validation_badge("BADGE 4/4 COMPLETE", checklist_pass),
                 muted_text(format!(
                     "{} load/apply/test/save coverage is complete for this session.",
                     state.applied_provider.label()
@@ -505,6 +542,13 @@ pub fn app_logic_native(state: &mut SextantState) -> impl MasonryView<SextantSta
         } else if state.last_tested_provider == Some(state.applied_provider) && state.last_test_success {
             Box::new(flex((
                 label("CHECK provider test passed").color(checklist_pass),
+                validation_badge(
+                    format!(
+                        "BADGE {}/4 COMPLETE",
+                        state.provider_validation_steps_completed()
+                    ),
+                    checklist_pass,
+                ),
                 muted_text(format!(
                     "{} was tested successfully with the current active settings.",
                     state.applied_provider.label()
@@ -514,6 +558,13 @@ pub fn app_logic_native(state: &mut SextantState) -> impl MasonryView<SextantSta
         } else if state.last_tested_provider == Some(state.applied_provider) {
             Box::new(flex((
                 label("CHECK provider test failed").color(checklist_fail),
+                validation_badge(
+                    format!(
+                        "BADGE {}/4 COMPLETE",
+                        state.provider_validation_steps_completed()
+                    ),
+                    checklist_fail,
+                ),
                 muted_text(format!(
                     "{} needs attention before relying on this route.",
                     state.applied_provider.label()
@@ -523,6 +574,13 @@ pub fn app_logic_native(state: &mut SextantState) -> impl MasonryView<SextantSta
         } else {
             Box::new(flex((
                 label("CHECK provider test pending").color(checklist_warn),
+                validation_badge(
+                    format!(
+                        "BADGE {}/4 COMPLETE",
+                        state.provider_validation_steps_completed()
+                    ),
+                    checklist_warn,
+                ),
                 muted_text(format!(
                     "Run TEST for the active {} route before deeper validation.",
                     state.applied_provider.label()
@@ -538,24 +596,46 @@ pub fn app_logic_native(state: &mut SextantState) -> impl MasonryView<SextantSta
         {
             Box::new(flex((
                 label("CHECK control workflow complete").color(checklist_pass),
+                validation_badge("BADGE 3/3 COMPLETE", checklist_pass),
                 muted_text("Air-gap offline/online transitions and privacy cycling have all been exercised in this session."),
                 muted_text(state.control_validation_status_message()),
             )))
         } else if state.airgap.get_status() == sextant_airgap::AirGapStatus::Online {
             Box::new(flex((
                 label("CHECK air-gap online").color(checklist_pass),
+                validation_badge(
+                    format!(
+                        "BADGE {}/3 COMPLETE",
+                        state.control_validation_steps_completed()
+                    ),
+                    checklist_pass,
+                ),
                 muted_text("Online mode is active; the configured provider route can be exercised directly."),
                 muted_text(state.control_validation_status_message()),
             )))
         } else if state.provider_ready(AiProvider::Local) {
             Box::new(flex((
                 label("CHECK offline local ready").color(checklist_pass),
+                validation_badge(
+                    format!(
+                        "BADGE {}/3 COMPLETE",
+                        state.control_validation_steps_completed()
+                    ),
+                    checklist_pass,
+                ),
                 muted_text("Air-gap is enforcing local inference and the local route is ready."),
                 muted_text(state.control_validation_status_message()),
             )))
         } else {
             Box::new(flex((
                 label("CHECK offline local blocked").color(checklist_fail),
+                validation_badge(
+                    format!(
+                        "BADGE {}/3 COMPLETE",
+                        state.control_validation_steps_completed()
+                    ),
+                    checklist_fail,
+                ),
                 muted_text("Air-gap is active, but the local endpoint still needs configuration."),
                 muted_text(state.control_validation_status_message()),
             )))
@@ -565,6 +645,13 @@ pub fn app_logic_native(state: &mut SextantState) -> impl MasonryView<SextantSta
         if matches!(state.pilot_status, PilotStatus::AwaitingConsent(_)) {
             Box::new(flex((
                 label("CHECK consent pending").color(checklist_warn),
+                validation_badge(
+                    format!(
+                        "BADGE {}/3 COMPLETE",
+                        state.consent_validation_steps_completed()
+                    ),
+                    checklist_warn,
+                ),
                 muted_text("A Captain's Key request is waiting. AUTHORIZE or DENY to continue."),
                 muted_text(state.consent_validation_status_message()),
             )))
@@ -574,12 +661,20 @@ pub fn app_logic_native(state: &mut SextantState) -> impl MasonryView<SextantSta
         {
             Box::new(flex((
                 label("CHECK consent coverage complete").color(checklist_pass),
+                validation_badge("BADGE 3/3 COMPLETE", checklist_pass),
                 muted_text("Captain's Key request, authorize, and deny paths have all been exercised in this session."),
                 muted_text(state.consent_validation_status_message()),
             )))
         } else {
             Box::new(flex((
                 label("CHECK consent coverage pending").color(checklist_warn),
+                validation_badge(
+                    format!(
+                        "BADGE {}/3 COMPLETE",
+                        state.consent_validation_steps_completed()
+                    ),
+                    checklist_warn,
+                ),
                 muted_text("Run a protected intent, then exercise AUTHORIZE and DENY to complete Captain's Key coverage."),
                 muted_text(state.consent_validation_status_message()),
             )))
@@ -589,18 +684,27 @@ pub fn app_logic_native(state: &mut SextantState) -> impl MasonryView<SextantSta
         if state.tab_open_exercised && state.tab_switch_exercised && state.tab_close_exercised {
             Box::new(flex((
                 label("CHECK tab workflow complete").color(checklist_pass),
+                validation_badge("BADGE 3/3 COMPLETE", checklist_pass),
                 muted_text("Open, switch, and close tab paths have all been exercised in this session."),
                 muted_text(state.tab_validation_status_message()),
             )))
         } else if state.active_tab_id.is_some() {
             Box::new(flex((
                 label("CHECK active tab ready").color(checklist_pass),
+                validation_badge(
+                    format!("BADGE {}/3 COMPLETE", state.tab_validation_steps_completed()),
+                    checklist_pass,
+                ),
                 muted_text("A tab is active, so switch/close/navigation validation can proceed."),
                 muted_text(state.tab_validation_status_message()),
             )))
         } else {
             Box::new(flex((
                 label("CHECK active tab missing").color(checklist_warn),
+                validation_badge(
+                    format!("BADGE {}/3 COMPLETE", state.tab_validation_steps_completed()),
+                    checklist_warn,
+                ),
                 muted_text("Open a tab or submit an intent before testing tab and viewport behavior."),
                 muted_text(state.tab_validation_status_message()),
             )))
@@ -610,32 +714,52 @@ pub fn app_logic_native(state: &mut SextantState) -> impl MasonryView<SextantSta
         if state.wake_search_exercised && state.wake_consolidate_exercised {
             Box::new(flex((
                 label("CHECK wake workflow complete").color(checklist_pass),
+                validation_badge("BADGE 2/2 COMPLETE", checklist_pass),
                 muted_text("Wake search and consolidation have both been exercised in this session."),
                 muted_text(state.wake_validation_status_message()),
             )))
         } else if !state.wake_search_results.is_empty() || !state.recent_memory.is_empty() {
             Box::new(flex((
                 label("CHECK wake visibility ready").color(checklist_pass),
+                validation_badge(
+                    format!("BADGE {}/2 COMPLETE", state.wake_validation_steps_completed()),
+                    checklist_pass,
+                ),
                 muted_text("Wake results or recent memory entries are visible for inspection."),
                 muted_text(state.wake_validation_status_message()),
             )))
         } else {
             Box::new(flex((
                 label("CHECK wake visibility pending").color(checklist_warn),
+                validation_badge(
+                    format!("BADGE {}/2 COMPLETE", state.wake_validation_steps_completed()),
+                    checklist_warn,
+                ),
                 muted_text("Run SEARCH or complete an intent to confirm Wake persistence and display."),
                 muted_text(state.wake_validation_status_message()),
             )))
         };
 
-    let audit_check: BoxedMasonryView<SextantState, ()> = if !state.audit_trail.is_empty() {
+    let audit_check: BoxedMasonryView<SextantState, ()> = if state.audit_entry_exercised {
         Box::new(flex((
-            label("CHECK audit trail ready").color(checklist_pass),
-            muted_text("Captain's Log contains entries that can be compared against the current workflow."),
+            label("CHECK audit coverage complete").color(checklist_pass),
+            validation_badge("BADGE 1/1 COMPLETE", checklist_pass),
+            muted_text("This validation session has produced a fresh Captain's Log entry after the current baseline."),
+            muted_text(state.audit_validation_status_message()),
+        )))
+    } else if !state.audit_trail.is_empty() {
+        Box::new(flex((
+            label("CHECK audit trail visible").color(checklist_warn),
+            validation_badge("BADGE 0/1 COMPLETE", checklist_warn),
+            muted_text("Captain's Log entries are visible, but this session still needs a fresh post-reset audit entry."),
+            muted_text(state.audit_validation_status_message()),
         )))
     } else {
         Box::new(flex((
             label("CHECK audit trail pending").color(checklist_warn),
+            validation_badge("BADGE 0/1 COMPLETE", checklist_warn),
             muted_text("Run a command or protected flow to generate audit entries for validation."),
+            muted_text(state.audit_validation_status_message()),
         )))
     };
 
@@ -660,6 +784,11 @@ pub fn app_logic_native(state: &mut SextantState) -> impl MasonryView<SextantSta
         .nth(2)
         .cloned()
         .unwrap_or_else(|| "The latest successes will stay visible here.".to_string());
+    let latest_provider_activity = state.latest_validation_step_for("PROVIDER");
+    let latest_consent_activity = state.latest_validation_step_for("CONSENT");
+    let latest_tab_activity = state.latest_validation_step_for("TAB");
+    let latest_wake_activity = state.latest_validation_step_for("WAKE");
+    let latest_control_activity = state.latest_validation_step_for("CONTROLS");
 
     let validation_trail_check: BoxedMasonryView<SextantState, ()> = Box::new(flex((
         label("CHECK recent validation trail").color(if state.validation_successes.is_empty() {
@@ -672,6 +801,19 @@ pub fn app_logic_native(state: &mut SextantState) -> impl MasonryView<SextantSta
         muted_text(validation_trail_three),
     )));
 
+    let validation_activity_check: BoxedMasonryView<SextantState, ()> = Box::new(flex((
+        label("CHECK workflow activity summary").color(if state.validation_successes.is_empty() {
+            checklist_warn
+        } else {
+            checklist_pass
+        }),
+        muted_text(latest_provider_activity),
+        muted_text(latest_consent_activity),
+        muted_text(latest_tab_activity),
+        muted_text(latest_wake_activity),
+        muted_text(latest_control_activity),
+    )));
+
     let remaining_validation_checks = state.remaining_validation_checks();
     let validation_summary_line = state.validation_summary_line();
     let validation_summary_color = if remaining_validation_checks.is_empty() {
@@ -679,10 +821,40 @@ pub fn app_logic_native(state: &mut SextantState) -> impl MasonryView<SextantSta
     } else {
         checklist_warn
     };
+    let validation_focus_line = state.validation_focus_line();
+    let validation_focus_color = if remaining_validation_checks.is_empty() {
+        checklist_pass
+    } else if remaining_validation_checks
+        .first()
+        .is_some_and(|check| check.starts_with("BLOCKER"))
+    {
+        checklist_fail
+    } else if remaining_validation_checks
+        .first()
+        .is_some_and(|check| check.starts_with("ACTIVE"))
+    {
+        checklist_warn
+    } else {
+        Color::rgba(0.7, 0.85, 1.0, 1.0)
+    };
+    let validation_progress_line = state.validation_progress_line();
+    let validation_progress_color = if state.completed_validation_workflow_steps() == 0 {
+        checklist_warn
+    } else if remaining_validation_checks.is_empty() {
+        checklist_pass
+    } else {
+        Color::rgba(0.7, 0.85, 1.0, 1.0)
+    };
+    let validation_workflow_rollup_line = state.validation_workflow_rollup_line();
 
     let validation_panel = validation_panel_view(
         validation_summary_line,
         validation_summary_color,
+        validation_focus_line,
+        validation_focus_color,
+        validation_progress_line,
+        validation_progress_color,
+        validation_workflow_rollup_line,
         remaining_validation_checks,
         vec![
             provider_route_check,
@@ -693,6 +865,7 @@ pub fn app_logic_native(state: &mut SextantState) -> impl MasonryView<SextantSta
             wake_check,
             audit_check,
             validation_trail_check,
+            validation_activity_check,
         ],
     );
 

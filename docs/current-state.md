@@ -38,7 +38,7 @@ The biggest remaining gaps are no longer foundational compilation issues. They a
 | Persistent Captain's Log | ✅ | SQLite file-backed |
 | Provider control panel | ✅ | selected/active/tested/readiness state surfaced |
 | Provider apply/test/save/load | ✅ | wired through async command path |
-| Native validation checklist | ✅ | session-aware checklist, remaining-checks guidance, reset control |
+| Native validation checklist | ✅ | session-aware checklist, priority ordering, progress rollups, reset control, workflow transcript summary |
 | Intent -> Pilot -> Engine -> Wake | ✅ baseline | covered by Pilot regression tests |
 | Consent gating | ✅ baseline | await/deny/authorize flow covered by tests |
 | Real page distillation | ✅ baseline | fetch + parse + semantic extraction path exists |
@@ -74,12 +74,15 @@ The hull now tells the truth more clearly than earlier passes:
 - validation checklist now shows remaining steps, recent successful checks, and per-workflow coverage
 - consent, provider, tab, Wake, and control workflows now track session-aware coverage instead of relying only on visible state
 - `RESET VALIDATION` clears checklist coverage for a fresh click-through pass without resetting real runtime state
+- validation panel now shows overall coverage totals, workflow rollups, a current-focus line, and priority-ordered next steps
+- checklist rows now include compact completion badges so detailed rows match top-level progress
+- recent validation trail now tags each success by workflow, and the panel shows latest grouped activity for provider, consent, tab, Wake, and controls
 
 ## Known Gaps
 
 | Gap | Priority | Notes |
 |-----|----------|-------|
-| Full in-window interactive workflow exercise | High | checklist support is now strong, but a real end-to-end click-through still needs operator time |
+| Full in-window interactive workflow exercise | High | the checklist is now a strong operator guide, but a real end-to-end click-through still needs operator time |
 | Remaining workspace warnings | Medium | mostly `sextant-bridge` and `sextant-mesh`, plus a few low-noise leftovers |
 | CI workflow depth | Medium | basic Rust workspace CI exists, but it is still minimal |
 | Servo backend work | Medium | still optional and not the current blocker |

@@ -4,6 +4,16 @@ Audit trail of completed work sessions. Newest first.
 
 ---
 
+## 2026-04-19 — Validation Panel Guidance And Transcript Pass
+
+- ✅ Added top-level validation coverage rollups and per-workflow totals in the native hull
+- ✅ Prioritized remaining checks into blockers, active flow, workflow gaps, and evidence gaps
+- ✅ Added row-level completion badges across provider, consent, tab, Wake, control, and audit checks
+- ✅ Structured the recent validation trail with workflow tags and added grouped workflow activity summaries
+- ✅ Kept `cargo check -p sextant-hull` green through the batch
+
+---
+
 ## 2026-04-19 — Native Hull Validation Workflow Pass
 
 - ✅ Added a native in-window validation checklist panel for operator-guided testing
