@@ -21,7 +21,7 @@ Watch for: GPU init failures, Xilem layout panics, thread/async runtime issues.
 
 ### 1. Full In-Window Workflow Validation (~1-2 hours)
 
-The async command-channel pattern is already in place, and the hull already wires command submission, air-gap/privacy controls, Wake search/consolidation, provider settings, consent actions, and tab actions. The validation panel is now session-aware, tracks coverage across the main workflows, shows progress totals, workflow rollups, priority-ordered next steps, row-level completion badges, grouped workflow activity, and supports `RESET VALIDATION` for a fresh run. The next highest-value work is a real click-through pass that exercises the app end-to-end in the window and fixes anything that still only works in tests or partial runtime paths.
+The async command-channel pattern is already in place, and the hull already wires command submission, air-gap/privacy controls, Wake search/consolidation, provider settings, consent actions, and tab actions. The validation panel is now session-aware, tracks coverage across the main workflows, shows progress totals, workflow rollups, priority-ordered next steps, row-level completion badges, grouped workflow activity, requires a fresh audit entry after reset, and supports `RESET VALIDATION` for a fresh run. The next highest-value work is a real click-through pass that exercises the app end-to-end in the window and fixes anything that still only works in tests or partial runtime paths.
 
 Focus checks:
 1. start with `RESET VALIDATION` so the checklist reflects the current run cleanly

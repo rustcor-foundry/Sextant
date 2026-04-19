@@ -4,6 +4,16 @@ Audit trail of completed work sessions. Newest first.
 
 ---
 
+## 2026-04-19 — Validation Transcript And Activity Summary Pass
+
+- ✅ Added fresh-session audit validation so Captain's Log coverage only completes after a new post-reset audit entry
+- ✅ Added top-level validation focus and prioritized remaining-check ordering
+- ✅ Added row-level completion badges across the checklist
+- ✅ Tagged recent validation transcript entries by workflow and added grouped latest-activity summaries
+- ✅ Kept `cargo check -p sextant-hull` green through the batch
+
+---
+
 ## 2026-04-19 — Validation Panel Guidance And Transcript Pass
 
 - ✅ Added top-level validation coverage rollups and per-workflow totals in the native hull

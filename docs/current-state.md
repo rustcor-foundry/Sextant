@@ -38,7 +38,7 @@ The biggest remaining gaps are no longer foundational compilation issues. They a
 | Persistent Captain's Log | ✅ | SQLite file-backed |
 | Provider control panel | ✅ | selected/active/tested/readiness state surfaced |
 | Provider apply/test/save/load | ✅ | wired through async command path |
-| Native validation checklist | ✅ | session-aware checklist, priority ordering, progress rollups, reset control, workflow transcript summary |
+| Native validation checklist | ✅ | session-aware checklist, priority ordering, progress rollups, reset control, workflow transcript summary, grouped workflow activity |
 | Intent -> Pilot -> Engine -> Wake | ✅ baseline | covered by Pilot regression tests |
 | Consent gating | ✅ baseline | await/deny/authorize flow covered by tests |
 | Real page distillation | ✅ baseline | fetch + parse + semantic extraction path exists |
@@ -77,6 +77,7 @@ The hull now tells the truth more clearly than earlier passes:
 - validation panel now shows overall coverage totals, workflow rollups, a current-focus line, and priority-ordered next steps
 - checklist rows now include compact completion badges so detailed rows match top-level progress
 - recent validation trail now tags each success by workflow, and the panel shows latest grouped activity for provider, consent, tab, Wake, and controls
+- audit validation now requires a fresh Captain's Log entry after reset instead of counting older persisted history as current-session coverage
 
 ## Known Gaps
 
