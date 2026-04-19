@@ -1,0 +1,19 @@
+[workspace]
+members = [
+    "sextant-vault",
+    "sextant-hull",
+    "sextant-engine",
+    "sextant-wake",
+    "sextant-pilot",
+    "sextant-inference",
+    "sextant-sync",
+    "sextant-log",
+    "sextant-firewall",
+    "sextant-bridge",
+    "sextant-bio",
+    "sextant-pq",
+    "sextant-mesh",
+    "sextant-privacy",
+    "sextant-airgap",
+]
+resolver = "2"

@@ -1,0 +1,10 @@
+[package]
+name = "sextant-privacy"
+version = "0.1.0"
+edition = "2021"
+description = "Neural Privacy Masks for PII redaction in Sextant perception"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+regex = "1.10"

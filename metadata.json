@@ -1,0 +1,6 @@
+{
+  "name": "Sextant Browser",
+  "description": "The ultimate open-web agentic browser. Featuring a 'Sophisticated Dark' instrument aesthetic, transitioning from TypeScript prototype to native Rust implementation (Xilem/Servo/Dalek).",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
