@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use sextant_bridge::{MultiModalPerception, NeuralBridge};
 use sextant_firewall::{FirewallAction, SextantFirewall};
 use sextant_privacy;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -1430,6 +1430,7 @@ mod servo_runtime {
             Some("link") => NodeType::Link,
             Some("image") => NodeType::Image,
             Some("input") => NodeType::Input,
+            Some("text") => NodeType::Text,
             Some(_) | None => return Ok(None),
         };
         let id = object
@@ -1520,7 +1521,7 @@ mod servo_runtime {
         Ok(DistilledPage {
             title,
             url: final_url,
-            content: content.chars().take(8000).collect(),
+            content: content.chars().take(12000).collect(),
             semantic_map,
             metadata,
         })
@@ -1541,8 +1542,9 @@ mod servo_runtime {
   const linkNodes = Array.from(document.querySelectorAll('a[href]')).slice(0, 24);
   const imageNodes = Array.from(document.querySelectorAll('img[src]')).slice(0, 12);
   const inputNodes = Array.from(document.querySelectorAll('input, textarea, select')).slice(0, 48);
-  const bodyNodes = Array.from(document.querySelectorAll('main, article, section, p, li')).slice(0, 400);
+  const textNodes = Array.from(document.querySelectorAll('p, li, pre, blockquote, figcaption, summary')).slice(0, 160);
   const semanticMap = [];
+  const seenText = new Set();
 
   headingNodes.forEach((node, index) => {
     semanticMap.push({
@@ -1590,7 +1592,21 @@ mod servo_runtime {
     });
   });
 
-  const combined = bodyNodes
+  textNodes.forEach((node, index) => {
+    const text = toText(node.textContent || '');
+    if (text.length < 3 || seenText.has(text)) {
+      return;
+    }
+    seenText.add(text);
+    semanticMap.push({
+      id: `text_${index}`,
+      type: 'text',
+      text,
+      selector: node.tagName.toLowerCase()
+    });
+  });
+
+  const combined = textNodes
     .map(node => toText(node.textContent || ''))
     .filter(Boolean)
     .join('\n');
@@ -2204,12 +2220,31 @@ fn semantic_map_from_markdown(markdown: &str) -> Vec<SemanticNode> {
         .collect()
 }
 
+#[cfg(feature = "servo-backend")]
+fn semantic_signal_count(page: &DistilledPage) -> usize {
+    page.semantic_map
+        .iter()
+        .filter(|node| {
+            matches!(
+                node.node_type,
+                NodeType::Heading | NodeType::Link | NodeType::Input | NodeType::Text
+            ) && !node.text.trim().is_empty()
+        })
+        .count()
+}
+
+#[cfg(feature = "servo-backend")]
+fn should_try_reader_quality_fallback(page: &DistilledPage) -> bool {
+    matches!(page.url.scheme(), "http" | "https") && semantic_signal_count(page) < 3
+}
+
 fn semantic_map_from_html(html: &str) -> Result<Vec<SemanticNode>, String> {
     let document = Html::parse_document(&html);
     let heading_text = extract_text(&document, "h1, h2, h3", 24)?;
     let link_selector = parse_selector("a[href]")?;
     let image_selector = parse_selector("img[src]")?;
     let input_selector = parse_selector("input, textarea, select")?;
+    let text_selector = parse_selector("p, li, pre, blockquote, figcaption, summary")?;
     let mut semantic_map = Vec::new();
 
     for (index, text) in heading_text.iter().enumerate() {
@@ -2297,6 +2332,21 @@ fn semantic_map_from_html(html: &str) -> Result<Vec<SemanticNode>, String> {
         });
     }
 
+    let mut seen_text = HashSet::new();
+    for (index, node) in document.select(&text_selector).take(160).enumerate() {
+        let text = collapse_whitespace(&node.text().collect::<Vec<_>>().join(" "));
+        if text.len() < 3 || !seen_text.insert(text.clone()) {
+            continue;
+        }
+        semantic_map.push(SemanticNode {
+            id: format!("text_{}", index),
+            node_type: NodeType::Text,
+            text,
+            selector: node.value().name().to_string(),
+            attributes: HashMap::new(),
+        });
+    }
+
     Ok(semantic_map)
 }
 
@@ -2349,7 +2399,7 @@ fn distill_html_document_with_scraper(
     Ok(DistilledPage {
         title,
         url: final_url,
-        content: content.chars().take(8000).collect(),
+        content: content.chars().take(12000).collect(),
         semantic_map,
         metadata,
     })
@@ -3135,7 +3185,30 @@ impl SextantEngine {
                     return fetch_distilled_page(&Url::parse("about:blank").unwrap());
                 };
                 let page = match self.servo_service.distill_tab(tab_id) {
-                    Ok(snapshot) if snapshot.page.url.scheme() != "about" => snapshot.page,
+                    Ok(snapshot) if snapshot.page.url.scheme() != "about" => {
+                        let live_page = snapshot.page;
+                        if should_try_reader_quality_fallback(&live_page) {
+                            match fetch_distilled_page(&live_page.url) {
+                                Ok(mut fallback)
+                                    if semantic_signal_count(&fallback)
+                                        > semantic_signal_count(&live_page) =>
+                                {
+                                    fallback.metadata.insert(
+                                        "distillation_backend".to_string(),
+                                        "reader-fallback-after-weak-live-dom".to_string(),
+                                    );
+                                    fallback.metadata.insert(
+                                        "live_dom_signal_count".to_string(),
+                                        semantic_signal_count(&live_page).to_string(),
+                                    );
+                                    fallback
+                                }
+                                _ => live_page,
+                            }
+                        } else {
+                            live_page
+                        }
+                    }
                     Ok(snapshot) => fetch_distilled_page(&snapshot.page.url)?,
                     Err(error) => {
                         let mut page = fetch_distilled_page(&current_url).map_err(|fallback| {
@@ -3492,6 +3565,36 @@ mod tests {
         assert_eq!(page.url, url);
         assert_eq!(page.title, "Data Title");
         assert!(page.content.contains("Hello Servo"));
+    }
+
+    #[cfg(feature = "servo-backend")]
+    #[test]
+    fn live_dom_distillation_exposes_text_nodes() {
+        let mut engine = SextantEngine::new();
+        let url = Url::parse(
+            "data:text/html,<!DOCTYPE html><title>Text Nodes</title><main><p>First useful paragraph.</p><ul><li>Second useful item.</li></ul></main>",
+        )
+        .expect("data URL should parse");
+
+        engine
+            .navigate_with_fallback(url, "default")
+            .expect("Servo navigation should succeed");
+        let page = engine
+            .distill_current_page()
+            .expect("distillation should succeed");
+
+        let text_nodes = page
+            .semantic_map
+            .iter()
+            .filter(|node| matches!(node.node_type, NodeType::Text))
+            .map(|node| node.text.as_str())
+            .collect::<Vec<_>>();
+        assert!(
+            text_nodes.contains(&"First useful paragraph.")
+                && text_nodes.contains(&"Second useful item."),
+            "semantic map should expose useful text nodes, got {:?}",
+            text_nodes
+        );
     }
 
     #[cfg(feature = "servo-backend")]

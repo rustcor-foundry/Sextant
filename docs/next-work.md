@@ -64,6 +64,8 @@ Recent progress: `https://httpbin.org/forms/post` exposed that filled form value
 
 Recent progress: `https://example.com --click "a"` exposed that click-driven navigation could leave the engine tab pointed at the old page. Native interactions now return the current Servo URL and update tab state before later distillation.
 
+Recent progress: harder documentation/repository pages exposed semantic quality gaps. Live DOM and reader distillation now emit text nodes for paragraphs/lists/code-like content, operator probes report the distillation source, and weak live DOM snapshots can fall back to a stronger reader result.
+
 ### 2. Full In-Window Workflow Validation (~1-2 hours)
 
 The old Xilem validation checklist is reference material. Rebuild the same workflow coverage in the native-lite shell around its actual controls and browser viewport, then run a real click-through pass that exercises the app end to end in the window and fixes anything that still only works in tests or partial runtime paths.

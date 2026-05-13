@@ -1173,9 +1173,10 @@ fn run_operator_script(spec: OperatorRunSpec) -> Result<Vec<String>, String> {
         let page = distill_operator_page(&mut app)?;
         let counts = semantic_counts(&page);
         report.push(format!(
-            "distilled '{}' from {} ({} chars, h={} links={} inputs={} images={} text={})",
+            "distilled '{}' from {} via {} ({} chars, h={} links={} inputs={} images={} text={})",
             page.title,
             page.url,
+            distillation_label(&page),
             page.content.chars().count(),
             counts.headings,
             counts.links,
@@ -1253,9 +1254,10 @@ fn run_operator_probe(target: &str) -> Result<Vec<String>, String> {
         .ok_or_else(|| "probe did not attach distilled page data".to_string())?;
     let counts = semantic_counts(page);
     report.push(format!(
-        "distilled '{}' from {} ({} chars, h={} links={} inputs={} images={} text={})",
+        "distilled '{}' from {} via {} ({} chars, h={} links={} inputs={} images={} text={})",
         page.title,
         page.url,
+        distillation_label(page),
         page.content.chars().count(),
         counts.headings,
         counts.links,
@@ -2596,6 +2598,15 @@ fn semantic_counts(page: &sextant_engine::DistilledPage) -> SemanticCounts {
         }
     }
     counts
+}
+
+fn distillation_label(page: &sextant_engine::DistilledPage) -> String {
+    page.metadata
+        .get("distillation_backend")
+        .or_else(|| page.metadata.get("source"))
+        .or_else(|| page.metadata.get("distiller"))
+        .cloned()
+        .unwrap_or_else(|| "unknown".to_string())
 }
 
 fn status_label(status: &LogStatus) -> &'static str {

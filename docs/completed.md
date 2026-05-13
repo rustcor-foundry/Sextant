@@ -19,6 +19,9 @@ Audit trail of completed work sessions. Newest first.
 - Confirmed `--operator-run https://httpbin.org/forms/post --fill "input[name=custname]" "Sextant Operator" --expect "Sextant Operator"` now passes
 - Found and fixed click-driven navigation drift: native browser interactions now return the current Servo URL and update the engine tab after click/submit navigation
 - Confirmed `--operator-run https://example.com --click "a" --expect "IANA"` now passes after navigating away from the original page
+- Improved distillation quality for harder sites by adding paragraph/list/code-style text nodes to live DOM and reader semantic maps
+- Added weak-live-DOM quality fallback so low-structure HTTP/HTTPS snapshots can switch to the richer reader distiller
+- Confirmed higher-difficulty probes pass for Wikipedia, MDN, GitHub, docs.rs, rust-lang.org, `neverssl`, `example.com`, and the `httpbin` form workflow
 
 ---
 
