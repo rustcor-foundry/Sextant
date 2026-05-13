@@ -4,32 +4,66 @@ version = "0.1.0"
 edition = "2021"
 description = "Hardware-accelerated UI shell for Sextant Browser"
 
+[features]
+default = ["xilem-shell", "servo-backend"]
+xilem-shell = [
+    "dep:accesskit",
+    "dep:masonry",
+    "dep:sextant-airgap",
+    "dep:sextant-bio",
+    "dep:sextant-inference",
+    "dep:sextant-mesh",
+    "dep:sextant-pilot",
+    "dep:sextant-pq",
+    "dep:sextant-privacy",
+    "dep:sextant-sync",
+    "dep:sextant-vault",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:smallvec",
+    "dep:tokio",
+    "dep:vello",
+    "dep:wgpu",
+    "dep:xilem",
+]
+servo-backend = ["sextant-engine/servo-backend"]
+
+[[bin]]
+name = "sextant-hull"
+path = "src/main.rs"
+required-features = ["xilem-shell"]
+
+[[bin]]
+name = "sextant-hull-lite"
+path = "src/lite.rs"
+
 [dependencies]
-xilem = "0.1"
-masonry = "0.2"
-vello = "0.1"
-wgpu = "0.19"
+xilem = { version = "0.1", optional = true }
+masonry = { version = "0.2", optional = true }
+vello = { version = "0.1", optional = true }
+wgpu = { version = "0.19", optional = true }
 winit = "0.29"
-tokio = { version = "1.0", features = ["full"] }
+softbuffer = "0.4"
+tokio = { version = "1.0", features = ["full"], optional = true }
 tracing = "0.1"
 tracing-subscriber = "0.3"
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.3", features = ["v4", "serde"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"], optional = true }
+serde_json = { version = "1.0", optional = true }
 dirs = "5"
-accesskit = "0.14"
-smallvec = "1.13"
-sextant-vault = { path = "../sextant-vault" }
+accesskit = { version = "0.14", optional = true }
+smallvec = { version = "1.13", optional = true }
+sextant-vault = { path = "../sextant-vault", optional = true }
 sextant-engine = { path = "../sextant-engine" }
 sextant-wake = { path = "../sextant-wake" }
-sextant-pilot = { path = "../sextant-pilot" }
-sextant-sync = { path = "../sextant-sync" }
-sextant-bio = { path = "../sextant-bio" }
-sextant-mesh = { path = "../sextant-mesh" }
-sextant-airgap = { path = "../sextant-airgap" }
+sextant-pilot = { path = "../sextant-pilot", optional = true }
+sextant-sync = { path = "../sextant-sync", optional = true }
+sextant-bio = { path = "../sextant-bio", optional = true }
+sextant-mesh = { path = "../sextant-mesh", optional = true }
+sextant-airgap = { path = "../sextant-airgap", optional = true }
 sextant-log = { path = "../sextant-log" }
-sextant-pq = { path = "../sextant-pq" }
-sextant-privacy = { path = "../sextant-privacy" }
-sextant-inference = { path = "../sextant-inference" }
+sextant-pq = { path = "../sextant-pq", optional = true }
+sextant-privacy = { path = "../sextant-privacy", optional = true }
+sextant-inference = { path = "../sextant-inference", optional = true }
 url = "2.5"

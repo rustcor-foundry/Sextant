@@ -1,8 +1,8 @@
-use crate::deferred::DeferredState;
 use crate::app_core::{
     build_brain, spawn_command, AiProvider, AppCommand, AppEvent, AppServices, AppSession,
-    ProviderConfig, RefreshSnapshot,
+    ProviderConfig, RefreshSnapshot, StartupPhase,
 };
+use crate::deferred::DeferredState;
 use chrono::{DateTime, Utc};
 use sextant_airgap::{AirGapStatus, SextantAirGap};
 use sextant_engine::{DistilledPage, EngineStatus, SextantEngine, Tab};
@@ -25,6 +25,10 @@ pub struct SextantState {
     pub log: Arc<Mutex<CaptainsLog>>,
     pub pilot: Arc<Mutex<SextantPilot>>,
     pub intent: String,
+    pub location_input: String,
+    pub startup_phase: StartupPhase,
+    pub startup_detail: String,
+    pub startup_bootstrap_requested: bool,
     pub pilot_status: PilotStatus,
     pub pilot_brain_name: String,
     pub engine_status: Option<EngineStatus>,
@@ -104,6 +108,61 @@ impl SextantState {
             .find(|tab| tab.id == tab_id)
             .and_then(|tab| tab.url.as_ref().map(|url| url.to_string()))
             .unwrap_or_else(|| "about:blank".to_string())
+    }
+
+    pub fn active_tab_can_go_back(&self) -> bool {
+        self.active_tab_id
+            .and_then(|tab_id| self.tabs.iter().find(|tab| tab.id == tab_id))
+            .map(|tab| tab.can_go_back)
+            .unwrap_or(false)
+    }
+
+    pub fn active_tab_can_go_forward(&self) -> bool {
+        self.active_tab_id
+            .and_then(|tab_id| self.tabs.iter().find(|tab| tab.id == tab_id))
+            .map(|tab| tab.can_go_forward)
+            .unwrap_or(false)
+    }
+
+    pub fn current_location_text(&self) -> String {
+        self.active_tab_id
+            .and_then(|tab_id| self.tabs.iter().find(|tab| tab.id == tab_id))
+            .and_then(|tab| tab.url.as_ref().map(|url| url.to_string()))
+            .or_else(|| self.active_page.as_ref().map(|page| page.url.to_string()))
+            .unwrap_or_default()
+    }
+
+    pub fn sync_location_input_from_active_tab(&mut self) {
+        self.location_input = self.current_location_text();
+    }
+
+    pub fn startup_allows_interaction(&self) -> bool {
+        matches!(
+            self.startup_phase,
+            StartupPhase::Ready | StartupPhase::Degraded
+        )
+    }
+
+    pub fn set_startup_phase(&mut self, phase: StartupPhase, detail: impl Into<String>) {
+        self.startup_phase = phase;
+        self.startup_detail = detail.into();
+    }
+
+    pub fn lifecycle_log(&mut self, message: impl Into<String>) {
+        self.add_log(&format!("LIFECYCLE: {}", message.into()));
+    }
+
+    pub fn ensure_startup_bootstrap(&mut self) {
+        if self.startup_bootstrap_requested {
+            return;
+        }
+        self.startup_bootstrap_requested = true;
+        self.set_startup_phase(
+            StartupPhase::WarmingUp,
+            "Window painted. Bringing up the shell first; engine work is deferred until browser use.",
+        );
+        self.lifecycle_log("Queued runtime bootstrap after first paint.");
+        self.queue_async_command(AppCommand::BootstrapRuntime);
     }
 
     pub fn add_startup_alert(&mut self, message: impl Into<String>) {
@@ -402,14 +461,30 @@ impl SextantState {
         self.update_audit_validation_progress();
     }
 
+    #[allow(dead_code)]
     pub async fn sync_tabs(&mut self) {
-        let engine = self.engine.lock().await;
-        self.tabs = engine.get_tabs();
-        self.active_tab_id = engine.get_active_tab().map(|t| t.id);
-        if let Some(tab) = engine.get_active_tab() {
-            self.active_page = tab.distilled_page.clone();
-            self.engine_status = Some(tab.status.clone());
+        let (tabs, active_tab_id, active_page, engine_status) = {
+            let engine = self.engine.lock().await;
+            let active_tab = engine.get_active_tab().cloned();
+            (
+                engine.get_tabs(),
+                active_tab.as_ref().map(|tab| tab.id),
+                active_tab
+                    .as_ref()
+                    .and_then(|tab| tab.distilled_page.clone()),
+                active_tab.map(|tab| tab.status),
+            )
+        };
+        self.tabs = tabs;
+        self.active_tab_id = active_tab_id;
+        if let Some(page) = active_page {
+            self.active_page = Some(page);
+            self.engine_status = engine_status;
+        } else {
+            self.active_page = None;
+            self.engine_status = None;
         }
+        self.sync_location_input_from_active_tab();
     }
 
     pub async fn refresh_pilot_snapshot(&mut self) {
@@ -427,10 +502,12 @@ impl SextantState {
         self.audit_trail = snapshot.audit_trail;
         self.pilot_status = snapshot.pilot.status.clone();
         self.pilot_brain_name = snapshot.pilot.brain_name;
+        self.sync_location_input_from_active_tab();
         self.update_audit_validation_progress();
     }
 
     pub fn queue_async_command(&mut self, command: AppCommand) {
+        let command_label = command.label();
         let session = AppSession {
             persona_id: self
                 .active_persona
@@ -457,7 +534,19 @@ impl SextantState {
             wake: self.wake.clone(),
             log: self.log.clone(),
         };
+        let was_idle = self.pending_async_jobs == 0;
         self.pending_async_jobs += 1;
+        if was_idle {
+            self.lifecycle_log(format!(
+                "Async queue activated by {}. {} job in flight.",
+                command_label, self.pending_async_jobs
+            ));
+        } else {
+            self.add_log(&format!(
+                "Queued {}. {} async job(s) in flight.",
+                command_label, self.pending_async_jobs
+            ));
+        }
         spawn_command(
             &self.runtime,
             self.async_result_tx.clone(),
@@ -545,34 +634,43 @@ impl SextantState {
             ));
         }
 
-        if self.airgap.get_status() != AirGapStatus::Online && !self.provider_ready(AiProvider::Local)
+        if self.airgap.get_status() != AirGapStatus::Online
+            && !self.provider_ready(AiProvider::Local)
         {
             blockers.push("Configure the local endpoint before using offline mode.".to_string());
         }
 
         if !self.provider_load_exercised {
-            workflow_gaps.push("LOAD VAULT once to validate provider settings restore.".to_string());
+            workflow_gaps
+                .push("LOAD VAULT once to validate provider settings restore.".to_string());
         }
         if !self.provider_apply_exercised {
-            workflow_gaps.push("APPLY a provider configuration to validate route activation.".to_string());
+            workflow_gaps
+                .push("APPLY a provider configuration to validate route activation.".to_string());
         }
         if !self.provider_test_exercised {
             workflow_gaps.push("TEST the active provider to validate route health.".to_string());
         }
         if !self.provider_save_exercised {
-            workflow_gaps.push("SAVE VAULT once to validate provider settings persistence.".to_string());
+            workflow_gaps
+                .push("SAVE VAULT once to validate provider settings persistence.".to_string());
         }
 
         if matches!(self.pilot_status, PilotStatus::AwaitingConsent(_)) {
-            active_flow.push("Resolve the pending Captain's Key request with AUTHORIZE or DENY.".to_string());
+            active_flow.push(
+                "Resolve the pending Captain's Key request with AUTHORIZE or DENY.".to_string(),
+            );
         } else if !self.consent_request_exercised {
             workflow_gaps.push("Run a protected intent to open Captain's Key flow.".to_string());
         } else {
             if !self.consent_authorized_exercised {
-                workflow_gaps.push("AUTHORIZE one Captain's Key request to validate plan resume.".to_string());
+                workflow_gaps.push(
+                    "AUTHORIZE one Captain's Key request to validate plan resume.".to_string(),
+                );
             }
             if !self.consent_denied_exercised {
-                workflow_gaps.push("DENY one Captain's Key request to validate plan abort.".to_string());
+                workflow_gaps
+                    .push("DENY one Captain's Key request to validate plan abort.".to_string());
             }
         }
 
@@ -593,34 +691,58 @@ impl SextantState {
             workflow_gaps.push("Run CONSOLIDATE to validate Wake pruning flow.".to_string());
         }
         if self.wake_search_results.is_empty() && self.recent_memory.is_empty() {
-            evidence_gaps.push("Run SEARCH or complete an intent to confirm Wake visibility.".to_string());
+            evidence_gaps
+                .push("Run SEARCH or complete an intent to confirm Wake visibility.".to_string());
         }
 
         if !self.airgap_offline_exercised {
             workflow_gaps.push(
-                "Toggle air-gap into an offline mode to validate local-route enforcement.".to_string(),
+                "Toggle air-gap into an offline mode to validate local-route enforcement."
+                    .to_string(),
             );
         }
         if !self.airgap_online_exercised {
-            workflow_gaps.push("Return air-gap to Online to validate route restoration.".to_string());
+            workflow_gaps
+                .push("Return air-gap to Online to validate route restoration.".to_string());
         }
         if !self.privacy_cycle_exercised {
-            workflow_gaps.push("Cycle privacy once to validate runtime privacy controls.".to_string());
+            workflow_gaps
+                .push("Cycle privacy once to validate runtime privacy controls.".to_string());
         }
 
         if !self.audit_entry_exercised {
-            evidence_gaps.push("Run a command that produces a new Captain's Log entry after reset.".to_string());
+            evidence_gaps.push(
+                "Run a command that produces a new Captain's Log entry after reset.".to_string(),
+            );
         }
 
         if self.validation_successes.is_empty() {
-            evidence_gaps.push("Complete one successful workflow step to seed the validation trail.".to_string());
+            evidence_gaps.push(
+                "Complete one successful workflow step to seed the validation trail.".to_string(),
+            );
         }
 
         let mut checks = Vec::new();
-        checks.extend(blockers.into_iter().map(|check| format!("BLOCKER {}", check)));
-        checks.extend(active_flow.into_iter().map(|check| format!("ACTIVE {}", check)));
-        checks.extend(workflow_gaps.into_iter().map(|check| format!("WORKFLOW {}", check)));
-        checks.extend(evidence_gaps.into_iter().map(|check| format!("EVIDENCE {}", check)));
+        checks.extend(
+            blockers
+                .into_iter()
+                .map(|check| format!("BLOCKER {}", check)),
+        );
+        checks.extend(
+            active_flow
+                .into_iter()
+                .map(|check| format!("ACTIVE {}", check)),
+        );
+        checks.extend(
+            workflow_gaps
+                .into_iter()
+                .map(|check| format!("WORKFLOW {}", check)),
+        );
+        checks.extend(
+            evidence_gaps
+                .into_iter()
+                .map(|check| format!("EVIDENCE {}", check)),
+        );
         checks
     }
 
@@ -675,7 +797,9 @@ impl SextantState {
         self.selected_provider = provider;
         let airgap_status = self.airgap.get_status();
         let provider_ready = self.provider_ready(provider);
-        let (summary, is_error) = if airgap_status != AirGapStatus::Online && provider != AiProvider::Local {
+        let (summary, is_error) = if airgap_status != AirGapStatus::Online
+            && provider != AiProvider::Local
+        {
             (
                 format!(
                     "{} selected in settings. Air-gap is {:?}, so commands still require local inference until you return online and apply.",
@@ -770,16 +894,59 @@ impl SextantState {
     }
 
     pub fn drain_async_results(&mut self) {
+        let mut processed = 0usize;
         while let Ok(result) = self.async_result_rx.try_recv() {
+            processed += 1;
             if self.pending_async_jobs > 0 {
                 self.pending_async_jobs -= 1;
             }
             match result {
+                AppEvent::RuntimeBootstrapped {
+                    phase,
+                    alerts,
+                    notes,
+                    snapshot,
+                } => {
+                    self.apply_refresh_snapshot(snapshot);
+                    self.startup_alerts.clear();
+                    for alert in alerts {
+                        self.add_startup_alert(alert);
+                    }
+                    for note in notes {
+                        self.lifecycle_log(note);
+                    }
+                    match phase {
+                        StartupPhase::Ready => {
+                            self.set_startup_phase(
+                                StartupPhase::Ready,
+                                "Runtime ready. Browser controls are live.",
+                            );
+                            self.set_command_summary("Startup finished. Hull is ready.", false);
+                        }
+                        StartupPhase::Degraded => {
+                            self.set_startup_phase(
+                                StartupPhase::Degraded,
+                                "Runtime is usable with alerts. Check startup status before manual testing.",
+                            );
+                            self.set_command_summary(
+                                "Startup finished with alerts. Hull is usable but degraded.",
+                                true,
+                            );
+                        }
+                        StartupPhase::Booting | StartupPhase::WarmingUp => {
+                            self.set_startup_phase(
+                                StartupPhase::WarmingUp,
+                                "Runtime bootstrap is still in progress.",
+                            );
+                        }
+                    }
+                }
                 AppEvent::IntentProcessed(result, snapshot) => {
                     self.apply_refresh_snapshot(snapshot);
                     match result {
                         Ok(message) => {
-                            if let PilotStatus::AwaitingConsent(request) = self.pilot_status.clone() {
+                            if let PilotStatus::AwaitingConsent(request) = self.pilot_status.clone()
+                            {
                                 self.consent_request_exercised = true;
                                 self.set_command_summary(
                                     format!("Captain's Key required: {}", request),
@@ -805,6 +972,26 @@ impl SextantState {
                         }
                     }
                 }
+                AppEvent::DirectNavigation(result, snapshot) => {
+                    self.apply_refresh_snapshot(snapshot);
+                    match result {
+                        Ok(message) => {
+                            self.set_command_summary("Direct navigation completed.", false);
+                            self.add_log(&message);
+                            self.record_validation_step(
+                                "TAB",
+                                format!("Direct browser navigation completed: {}", message),
+                            );
+                        }
+                        Err(e) => {
+                            self.set_command_summary(
+                                format!("Direct navigation failed: {}", e),
+                                true,
+                            );
+                            self.add_log(&format!("Direct navigation failed: {}", e));
+                        }
+                    }
+                }
                 AppEvent::AirgapToggled {
                     next,
                     forced_local,
@@ -816,7 +1003,8 @@ impl SextantState {
                     self.airgap.set_status(next.clone());
                     if forced_local {
                         if previous_airgap == AirGapStatus::Online {
-                            self.preferred_online_provider_config = self.applied_provider_config.clone();
+                            self.preferred_online_provider_config =
+                                self.applied_provider_config.clone();
                         }
                         self.selected_provider = AiProvider::Local;
                         self.applied_provider = AiProvider::Local;
@@ -899,10 +1087,13 @@ impl SextantState {
                             "Air-gap returned online. Restored {} provider routing.",
                             self.applied_provider.label()
                         ));
-                        self.record_validation_step("CONTROLS", format!(
-                            "Air-gap returned online and restored {} routing.",
-                            self.applied_provider.label()
-                        ));
+                        self.record_validation_step(
+                            "CONTROLS",
+                            format!(
+                                "Air-gap returned online and restored {} routing.",
+                                self.applied_provider.label()
+                            ),
+                        );
                     } else {
                         self.airgap_online_exercised = true;
                         self.set_ai_status(
@@ -924,10 +1115,13 @@ impl SextantState {
                             "Air-gap returned online. {} remained active.",
                             self.applied_provider.label()
                         ));
-                        self.record_validation_step("CONTROLS", format!(
-                            "Air-gap returned online with {} still active.",
-                            self.applied_provider.label()
-                        ));
+                        self.record_validation_step(
+                            "CONTROLS",
+                            format!(
+                                "Air-gap returned online with {} still active.",
+                                self.applied_provider.label()
+                            ),
+                        );
                     }
                 }
                 AppEvent::PrivacyCycled { next, snapshot } => {
@@ -935,11 +1129,11 @@ impl SextantState {
                     self.apply_refresh_snapshot(snapshot);
                     self.privacy_cycle_exercised = true;
                     self.add_log(&format!("Privacy changed to {:?}.", next));
-                    self.set_command_summary(
-                        format!("Privacy set to {:?}.", next),
-                        false,
+                    self.set_command_summary(format!("Privacy set to {:?}.", next), false);
+                    self.record_validation_step(
+                        "CONTROLS",
+                        format!("Privacy cycled to {:?}.", next),
                     );
-                    self.record_validation_step("CONTROLS", format!("Privacy cycled to {:?}.", next));
                 }
                 AppEvent::WakeSearch(result) => match result {
                     Ok(results) => {
@@ -949,10 +1143,13 @@ impl SextantState {
                             false,
                         );
                         self.wake_search_results = results;
-                        self.record_validation_step("WAKE", format!(
-                            "Wake search returned {} result(s).",
-                            self.wake_search_results.len()
-                        ));
+                        self.record_validation_step(
+                            "WAKE",
+                            format!(
+                                "Wake search returned {} result(s).",
+                                self.wake_search_results.len()
+                            ),
+                        );
                     }
                     Err(e) => {
                         self.wake_search_results.clear();
@@ -970,10 +1167,10 @@ impl SextantState {
                                 false,
                             );
                             self.add_log(&format!("Wake consolidated. Pruned {} entries.", count));
-                            self.record_validation_step("WAKE", format!(
-                                "Wake consolidation pruned {} entries.",
-                                count
-                            ));
+                            self.record_validation_step(
+                                "WAKE",
+                                format!("Wake consolidation pruned {} entries.", count),
+                            );
                         }
                         Err(e) => {
                             self.set_command_summary(
@@ -1008,11 +1205,14 @@ impl SextantState {
                             format!("Applied {} provider.", provider.label()),
                             false,
                         );
-                        self.add_log(&format!("Applied {} as the active provider.", provider.label()));
-                        self.record_validation_step("PROVIDER", format!(
+                        self.add_log(&format!(
                             "Applied {} as the active provider.",
                             provider.label()
                         ));
+                        self.record_validation_step(
+                            "PROVIDER",
+                            format!("Applied {} as the active provider.", provider.label()),
+                        );
                     } else {
                         self.set_ai_status(
                             format!(
@@ -1046,16 +1246,19 @@ impl SextantState {
                             false,
                         );
                         self.add_log(&format!("{} provider test passed.", provider.label()));
-                        self.record_validation_step("PROVIDER", format!(
-                            "{} provider test passed.",
-                            provider.label()
-                        ));
+                        self.record_validation_step(
+                            "PROVIDER",
+                            format!("{} provider test passed.", provider.label()),
+                        );
                     }
                     Err(e) => {
                         self.last_tested_provider = Some(provider);
                         self.last_test_success = false;
                         self.last_test_message = e.clone();
-                        self.set_ai_status(format!("{} test failed: {}", provider.label(), e), true);
+                        self.set_ai_status(
+                            format!("{} test failed: {}", provider.label(), e),
+                            true,
+                        );
                         self.set_command_summary(
                             format!("{} provider test failed.", provider.label()),
                             true,
@@ -1078,10 +1281,10 @@ impl SextantState {
                             "{} settings and credentials were stored in Vault.",
                             provider.label()
                         ));
-                        self.record_validation_step("PROVIDER", format!(
-                            "Saved {} settings to Vault.",
-                            provider.label()
-                        ));
+                        self.record_validation_step(
+                            "PROVIDER",
+                            format!("Saved {} settings to Vault.", provider.label()),
+                        );
                     }
                     Err(e) => {
                         self.set_ai_status(format!("Failed to save AI settings: {}", e), true);
@@ -1140,10 +1343,13 @@ impl SextantState {
                             "Loaded {} settings from Vault into the panel.",
                             loaded_provider_label
                         ));
-                        self.record_validation_step("PROVIDER", format!(
-                            "Loaded {} settings from Vault into the panel.",
-                            loaded_provider_label
-                        ));
+                        self.record_validation_step(
+                            "PROVIDER",
+                            format!(
+                                "Loaded {} settings from Vault into the panel.",
+                                loaded_provider_label
+                            ),
+                        );
                     }
                     Err(e) => {
                         self.set_ai_status(format!("Failed to load AI settings: {}", e), true);
@@ -1156,7 +1362,10 @@ impl SextantState {
                     match result {
                         Ok(message) => {
                             self.consent_authorized_exercised = true;
-                            self.set_command_summary("Consent authorized. Pilot resumed the plan.", false);
+                            self.set_command_summary(
+                                "Consent authorized. Pilot resumed the plan.",
+                                false,
+                            );
                             self.add_log(&format!("Consent authorized: {}", message));
                             self.record_validation_step(
                                 "CONSENT",
@@ -1213,7 +1422,10 @@ impl SextantState {
                             self.tab_switch_exercised = true;
                             self.set_command_summary("Switched active tab.", false);
                             self.add_log(&format!("Switched to tab {}.", tab_label));
-                            self.record_validation_step("TAB", format!("Switched to tab {}.", tab_label));
+                            self.record_validation_step(
+                                "TAB",
+                                format!("Switched to tab {}.", tab_label),
+                            );
                         }
                         Err(e) => {
                             self.set_command_summary(format!("Failed to switch tab: {}", e), true);
@@ -1229,7 +1441,10 @@ impl SextantState {
                             self.tab_close_exercised = true;
                             self.set_command_summary("Closed active tab.", false);
                             self.add_log(&format!("Closed tab {}.", tab_label));
-                            self.record_validation_step("TAB", format!("Closed tab {}.", tab_label));
+                            self.record_validation_step(
+                                "TAB",
+                                format!("Closed tab {}.", tab_label),
+                            );
                         }
                         Err(e) => {
                             self.set_command_summary(format!("Failed to close tab: {}", e), true);
@@ -1237,6 +1452,76 @@ impl SextantState {
                         }
                     }
                 }
+                AppEvent::ActiveTabReloaded(result, snapshot) => {
+                    self.apply_refresh_snapshot(snapshot);
+                    match result {
+                        Ok(message) => {
+                            self.set_command_summary("Reloaded active tab.", false);
+                            self.add_log(&message);
+                            self.record_validation_step(
+                                "TAB",
+                                format!("Reloaded active tab: {}", message),
+                            );
+                        }
+                        Err(e) => {
+                            self.set_command_summary(format!("Reload failed: {}", e), true);
+                            self.add_log(&format!("Reload failed: {}", e));
+                        }
+                    }
+                }
+                AppEvent::ActiveTabWentBack(result, snapshot) => {
+                    self.apply_refresh_snapshot(snapshot);
+                    match result {
+                        Ok(message) => {
+                            self.set_command_summary("Moved back in active tab history.", false);
+                            self.add_log(&message);
+                            self.record_validation_step(
+                                "TAB",
+                                format!("Moved back in active tab history: {}", message),
+                            );
+                        }
+                        Err(e) => {
+                            self.set_command_summary(
+                                format!("Back navigation failed: {}", e),
+                                true,
+                            );
+                            self.add_log(&format!("Back navigation failed: {}", e));
+                        }
+                    }
+                }
+                AppEvent::ActiveTabWentForward(result, snapshot) => {
+                    self.apply_refresh_snapshot(snapshot);
+                    match result {
+                        Ok(message) => {
+                            self.set_command_summary("Moved forward in active tab history.", false);
+                            self.add_log(&message);
+                            self.record_validation_step(
+                                "TAB",
+                                format!("Moved forward in active tab history: {}", message),
+                            );
+                        }
+                        Err(e) => {
+                            self.set_command_summary(
+                                format!("Forward navigation failed: {}", e),
+                                true,
+                            );
+                            self.add_log(&format!("Forward navigation failed: {}", e));
+                        }
+                    }
+                }
+            }
+        }
+        if processed > 0 {
+            if self.pending_async_jobs == 0 {
+                self.lifecycle_log(format!(
+                    "Async queue drained after processing {} event(s).",
+                    processed
+                ));
+            } else {
+                self.add_log(&format!(
+                    "Processed {} async event(s). {} job(s) still in flight.",
+                    processed, self.pending_async_jobs
+                ));
             }
         }
     }
@@ -1288,11 +1573,19 @@ impl SextantState {
     }
 
     pub fn runtime_status_message(&self) -> String {
+        if !self.startup_allows_interaction() {
+            return format!(
+                "RUNTIME startup phase {:?}: {}",
+                self.startup_phase, self.startup_detail
+            );
+        }
         match &self.pilot_status {
             PilotStatus::AwaitingConsent(message) => {
                 format!("RUNTIME waiting for Captain's Key: {}", message)
             }
-            PilotStatus::Reasoning => "RUNTIME pilot is reasoning about the current intent.".to_string(),
+            PilotStatus::Reasoning => {
+                "RUNTIME pilot is reasoning about the current intent.".to_string()
+            }
             PilotStatus::Navigating(url) => format!("RUNTIME pilot is navigating to {}.", url),
             PilotStatus::Distilling => {
                 "RUNTIME engine is distilling the active page into the Digital Wake.".to_string()
@@ -1304,14 +1597,43 @@ impl SextantState {
                 "RUNTIME plan is staged and async work is still settling.".to_string()
             }
             _ if self.pending_async_jobs > 0 => {
-                format!("RUNTIME {} async job(s) in flight.", self.pending_async_jobs)
+                format!(
+                    "RUNTIME {} async job(s) in flight.",
+                    self.pending_async_jobs
+                )
             }
             _ => "RUNTIME idle and ready for the next command.".to_string(),
         }
     }
 
+    pub fn startup_status_line(&self) -> String {
+        let phase = match self.startup_phase {
+            StartupPhase::Booting => "BOOTING",
+            StartupPhase::WarmingUp => "WARMING UP",
+            StartupPhase::Ready => "READY",
+            StartupPhase::Degraded => "DEGRADED",
+        };
+
+        if self.startup_alerts.is_empty() {
+            format!("STARTUP {} {}", phase, self.startup_detail)
+        } else if self.startup_alerts.len() == 1 {
+            format!(
+                "STARTUP {} {} ALERT {}",
+                phase, self.startup_detail, self.startup_alerts[0]
+            )
+        } else {
+            format!(
+                "STARTUP {} {} ALERTS {} issues",
+                phase,
+                self.startup_detail,
+                self.startup_alerts.len()
+            )
+        }
+    }
+
     pub fn provider_next_step_message(&self) -> String {
-        if self.airgap.get_status() != AirGapStatus::Online && !self.provider_ready(AiProvider::Local)
+        if self.airgap.get_status() != AirGapStatus::Online
+            && !self.provider_ready(AiProvider::Local)
         {
             return "NEXT STEP configure the local endpoint before testing commands in offline mode."
                 .to_string();
@@ -1343,10 +1665,8 @@ impl SextantState {
                 "NEXT STEP review the request, then AUTHORIZE to resume or DENY to abort."
                     .to_string()
             }
-            _ => {
-                "NEXT STEP run a protected intent when you want to exercise Captain's Key flow."
-                    .to_string()
-            }
+            _ => "NEXT STEP run a protected intent when you want to exercise Captain's Key flow."
+                .to_string(),
         }
     }
 }

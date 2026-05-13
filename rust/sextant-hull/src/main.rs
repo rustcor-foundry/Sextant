@@ -15,6 +15,7 @@ use sextant_vault::{CitadelVault, KeyType};
 use sextant_wake::DigitalWake;
 use state::SextantState;
 use std::fs;
+use std::io::Write;
 use std::sync::{mpsc, Arc};
 use tokio::sync::Mutex;
 use util::{app_data_dir, env_key};
@@ -22,6 +23,7 @@ use views::app_logic_native;
 use xilem::Xilem;
 
 fn main() {
+    install_panic_logging();
     tracing_subscriber::fmt::init();
 
     let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
@@ -29,18 +31,9 @@ fn main() {
     let state = rt.block_on(async {
         let data_dir = app_data_dir();
         fs::create_dir_all(&data_dir).expect("Failed to create Sextant data directory");
-        let mut startup_alerts = Vec::new();
 
         let vault = Arc::new(Mutex::new(CitadelVault::new()));
         let engine = Arc::new(Mutex::new(sextant_engine::SextantEngine::new()));
-
-        {
-            let mut engine_guard = engine.lock().await;
-            if let Err(e) = engine_guard.initialize_gpu().await {
-                startup_alerts.push(format!("GPU initialization failed: {}", e));
-                eprintln!("Failed to initialize GPU: {}", e);
-            }
-        }
 
         let wake = Arc::new(Mutex::new(
             DigitalWake::open(data_dir.join("wake.db")).expect("Failed to open Wake"),
@@ -113,6 +106,10 @@ fn main() {
             log: log_store,
             pilot,
             intent: String::new(),
+            location_input: String::new(),
+            startup_phase: app_core::StartupPhase::Booting,
+            startup_detail: "Constructing hull state before first paint.".to_string(),
+            startup_bootstrap_requested: false,
             pilot_status,
             pilot_brain_name,
             engine_status: None,
@@ -201,19 +198,35 @@ fn main() {
             state.update_brain().await;
             state.add_log("Loaded inference credentials from environment.");
         }
-        for startup_alert in startup_alerts {
-            state.add_startup_alert(startup_alert);
-        }
+        state.lifecycle_log("Hull state constructed. Waiting for first paint to bootstrap runtime.");
         state.add_log(&format!("Wake/Log storage: {}", data_dir.display()));
-        state.sync_tabs().await;
-        state.refresh_memory().await;
-        state.audit_baseline_timestamp = state.audit_trail.first().map(|entry| entry.timestamp);
-        state.update_audit_validation_progress();
-        state.refresh_pilot_snapshot().await;
         state
     });
 
     Xilem::new(state, app_logic_native)
         .run_windowed("SEXTANT — Sovereign Browser".to_string())
         .expect("Failed to run Sextant window");
+}
+
+fn install_panic_logging() {
+    let panic_log = app_data_dir().join("panic.log");
+    let previous_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |panic_info| {
+        if let Some(parent) = panic_log.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        if let Ok(mut file) = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&panic_log)
+        {
+            let _ = writeln!(
+                file,
+                "[{}] {}",
+                chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
+                panic_info
+            );
+        }
+        previous_hook(panic_info);
+    }));
 }

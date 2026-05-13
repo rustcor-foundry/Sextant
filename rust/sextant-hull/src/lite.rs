@@ -1,0 +1,2372 @@
+use chrono::Utc;
+use sextant_engine::{
+    BrowserKey, EngineBackend, EngineStatus, NodeType, RenderedFrame, SextantEngine, Tab,
+};
+use sextant_log::{CaptainsLog, LogEntry, LogStatus};
+use sextant_wake::{DigitalWake, WakeEntry};
+use softbuffer::{Context, Surface};
+use std::num::NonZeroU32;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use url::Url;
+use uuid::Uuid;
+use winit::dpi::PhysicalSize;
+use winit::event::{ElementState, Event, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event_loop::{ControlFlow, EventLoop};
+use winit::keyboard::{Key, NamedKey};
+use winit::window::{Window, WindowBuilder};
+
+const BG: u32 = 0x0010161d;
+const PANEL: u32 = 0x0019232c;
+const PANEL_ALT: u32 = 0x00202b35;
+const PANEL_DARK: u32 = 0x000b1016;
+const FIELD: u32 = 0x000d1319;
+const FIELD_FOCUS: u32 = 0x00172229;
+const BUTTON_IDLE: u32 = 0x00345668;
+const BUTTON_HOVER: u32 = 0x004a7488;
+const BUTTON_BRIGHT: u32 = 0x000ec7e8;
+const BUTTON_ACTIVE: u32 = 0x002fbf71;
+const BUTTON_DISABLED: u32 = 0x00212a32;
+const TEXT: u32 = 0x00dce7ef;
+const TEXT_DIM: u32 = 0x0093a4b0;
+const STATUS_OK: u32 = 0x002fbf71;
+const STATUS_WARN: u32 = 0x00d9a441;
+const BORDER: u32 = 0x00313d48;
+const RAIL_WIDTH: u32 = 320;
+const STATUS_BAR_H: u32 = 30;
+const CHROME_H: u32 = 54;
+const STRIP_H: u32 = 48;
+const TAB_H: u32 = 46;
+const METRIC_Y: u32 = CHROME_H + STRIP_H + TAB_H + 12;
+const METRIC_H: u32 = 76;
+const GLYPH_W: u32 = 5;
+const GLYPH_GAP: u32 = 2;
+const FRAME_REFRESH_IDLE: Duration = Duration::from_millis(500);
+const FRAME_REFRESH_DIRTY: Duration = Duration::from_millis(180);
+const FRAME_WARMUP_BUDGET: u8 = 18;
+
+#[derive(Clone, Copy)]
+struct Rect {
+    x: u32,
+    y: u32,
+    w: u32,
+    h: u32,
+}
+
+impl Rect {
+    fn contains(self, x: f64, y: f64) -> bool {
+        x >= self.x as f64
+            && y >= self.y as f64
+            && x < (self.x + self.w) as f64
+            && y < (self.y + self.h) as f64
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Action {
+    Navigate,
+    NewTab,
+    Back,
+    Forward,
+    Reload,
+    CloseTab,
+    DistillActive,
+    SearchWake,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FocusTarget {
+    Address,
+    Wake,
+    Browser,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MainView {
+    Browser,
+    Wake,
+    Log,
+}
+
+struct ButtonRegion {
+    rect: Rect,
+    label: &'static str,
+    action: Action,
+}
+
+struct LiteApp {
+    engine: SextantEngine,
+    wake: DigitalWake,
+    log: CaptainsLog,
+    persona_id: String,
+    address_input: String,
+    wake_query: String,
+    last_status: String,
+    last_ok: bool,
+    cursor: Option<(f64, f64)>,
+    focus: FocusTarget,
+    address_rect: Rect,
+    wake_rect: Rect,
+    browser_tab_rect: Rect,
+    wake_tab_rect: Rect,
+    log_tab_rect: Rect,
+    browser_viewport_rect: Rect,
+    buttons: Vec<ButtonRegion>,
+    wake_results: Vec<WakeEntry>,
+    recent_logs: Vec<LogEntry>,
+    page_scroll: i32,
+    main_view: MainView,
+    latest_frame: Option<RenderedFrame>,
+    last_frame_refresh: Instant,
+    frame_dirty: bool,
+    frame_refresh_budget: u8,
+}
+
+impl LiteApp {
+    fn new() -> Result<Self, String> {
+        let data_dir = app_data_dir().join("lite");
+        std::fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
+        let mut app = Self {
+            engine: SextantEngine::new(),
+            wake: DigitalWake::open(data_dir.join("wake.db")).map_err(|e| e.to_string())?,
+            log: CaptainsLog::new(data_dir.join("captains-log.db")).map_err(|e| e.to_string())?,
+            persona_id: "lite-persona".to_string(),
+            address_input: "https://example.com".to_string(),
+            wake_query: "example".to_string(),
+            last_status: "Ready. Type a URL or search, then press Enter.".to_string(),
+            last_ok: true,
+            cursor: None,
+            focus: FocusTarget::Address,
+            address_rect: Rect {
+                x: 0,
+                y: 0,
+                w: 1,
+                h: 1,
+            },
+            wake_rect: Rect {
+                x: 0,
+                y: 0,
+                w: 1,
+                h: 1,
+            },
+            browser_tab_rect: Rect {
+                x: 0,
+                y: 0,
+                w: 1,
+                h: 1,
+            },
+            wake_tab_rect: Rect {
+                x: 0,
+                y: 0,
+                w: 1,
+                h: 1,
+            },
+            log_tab_rect: Rect {
+                x: 0,
+                y: 0,
+                w: 1,
+                h: 1,
+            },
+            browser_viewport_rect: Rect {
+                x: 0,
+                y: 0,
+                w: 1,
+                h: 1,
+            },
+            buttons: Vec::new(),
+            wake_results: Vec::new(),
+            recent_logs: Vec::new(),
+            page_scroll: 0,
+            main_view: MainView::Browser,
+            latest_frame: None,
+            last_frame_refresh: Instant::now(),
+            frame_dirty: false,
+            frame_refresh_budget: 0,
+        };
+        app.refresh_logs();
+        Ok(app)
+    }
+
+    fn update_title(&self, window: &Window) {
+        window.set_title(&format!("Sextant Lite - {}", self.last_status));
+    }
+
+    fn layout(&mut self, size: PhysicalSize<u32>) {
+        let width = size.width.max(900);
+        let rail_x = right_rail_x(width);
+        let main_right = rail_x.saturating_sub(18);
+        let margin = 24;
+        let gap = 8;
+        let button_h = 30;
+        self.address_rect = Rect {
+            x: 112,
+            y: 12,
+            w: main_right.saturating_sub(224),
+            h: button_h,
+        };
+        self.wake_rect = Rect {
+            x: rail_x + 20,
+            y: size.height.max(620).saturating_sub(STATUS_BAR_H + 66),
+            w: RAIL_WIDTH.saturating_sub(40),
+            h: 36,
+        };
+        self.browser_tab_rect = Rect {
+            x: 24,
+            y: CHROME_H + STRIP_H + 5,
+            w: 138,
+            h: 30,
+        };
+        self.wake_tab_rect = Rect {
+            x: 172,
+            y: CHROME_H + STRIP_H + 5,
+            w: 92,
+            h: 30,
+        };
+        self.log_tab_rect = Rect {
+            x: 274,
+            y: CHROME_H + STRIP_H + 5,
+            w: 134,
+            h: 30,
+        };
+        let main_panel = main_panel_rect(rail_x, size.height.max(620));
+        self.browser_viewport_rect = browser_viewport_rect(main_panel);
+        if self.latest_frame.is_some() {
+            self.frame_dirty = true;
+        }
+
+        let go_x = self.address_rect.x + self.address_rect.w + gap;
+        self.buttons = vec![
+            ButtonRegion {
+                rect: Rect {
+                    x: go_x,
+                    y: 12,
+                    w: 78,
+                    h: button_h,
+                },
+                label: "GO",
+                action: Action::Navigate,
+            },
+            ButtonRegion {
+                rect: Rect {
+                    x: margin,
+                    y: 64,
+                    w: 82,
+                    h: button_h,
+                },
+                label: "NEW TAB",
+                action: Action::NewTab,
+            },
+            ButtonRegion {
+                rect: Rect {
+                    x: margin + 82 + gap,
+                    y: 64,
+                    w: 66,
+                    h: button_h,
+                },
+                label: "BACK",
+                action: Action::Back,
+            },
+            ButtonRegion {
+                rect: Rect {
+                    x: margin + 148 + gap * 2,
+                    y: 64,
+                    w: 82,
+                    h: button_h,
+                },
+                label: "FORWARD",
+                action: Action::Forward,
+            },
+            ButtonRegion {
+                rect: Rect {
+                    x: margin + 230 + gap * 3,
+                    y: 64,
+                    w: 76,
+                    h: button_h,
+                },
+                label: "RELOAD",
+                action: Action::Reload,
+            },
+            ButtonRegion {
+                rect: Rect {
+                    x: margin + 306 + gap * 4,
+                    y: 64,
+                    w: 88,
+                    h: button_h,
+                },
+                label: "CLOSE TAB",
+                action: Action::CloseTab,
+            },
+            ButtonRegion {
+                rect: Rect {
+                    x: main_right.saturating_sub(210),
+                    y: 64,
+                    w: 90,
+                    h: button_h,
+                },
+                label: "DISTILL",
+                action: Action::DistillActive,
+            },
+            ButtonRegion {
+                rect: Rect {
+                    x: main_right.saturating_sub(106),
+                    y: 64,
+                    w: 98,
+                    h: button_h,
+                },
+                label: "WAKE",
+                action: Action::SearchWake,
+            },
+        ];
+    }
+
+    fn click(&mut self, x: f64, y: f64) {
+        if self.address_rect.contains(x, y) {
+            self.focus = FocusTarget::Address;
+            return;
+        }
+        if self.wake_rect.contains(x, y) {
+            self.focus = FocusTarget::Wake;
+            return;
+        }
+        if self.browser_tab_rect.contains(x, y) {
+            self.main_view = MainView::Browser;
+            return;
+        }
+        if self.wake_tab_rect.contains(x, y) {
+            self.main_view = MainView::Wake;
+            return;
+        }
+        if self.log_tab_rect.contains(x, y) {
+            self.main_view = MainView::Log;
+            return;
+        }
+
+        let Some(action) = self
+            .buttons
+            .iter()
+            .find(|button| button.rect.contains(x, y))
+            .map(|button| button.action)
+        else {
+            self.last_status = "Click missed a control.".to_string();
+            self.last_ok = false;
+            return;
+        };
+
+        if !self.action_enabled(action) {
+            self.last_status = disabled_reason(action).to_string();
+            self.last_ok = false;
+            return;
+        }
+
+        self.run_action(action);
+    }
+
+    fn handle_key(&mut self, event: KeyEvent) {
+        if self.focus == FocusTarget::Browser && self.latest_frame.is_some() {
+            self.forward_browser_key(&event);
+            return;
+        }
+
+        if event.state != ElementState::Pressed {
+            return;
+        }
+        match &event.logical_key {
+            Key::Named(NamedKey::Enter) => match self.focus {
+                FocusTarget::Address => self.navigate_input(),
+                FocusTarget::Wake => self.search_wake(),
+                FocusTarget::Browser => {}
+            },
+            Key::Named(NamedKey::Tab) => {
+                self.focus = match self.focus {
+                    FocusTarget::Address => FocusTarget::Wake,
+                    FocusTarget::Wake => FocusTarget::Address,
+                    FocusTarget::Browser => FocusTarget::Address,
+                };
+            }
+            Key::Named(NamedKey::Backspace) => {
+                self.focused_text_mut().pop();
+            }
+            Key::Named(NamedKey::Space) => {
+                self.focused_text_mut().push(' ');
+            }
+            Key::Character(value) => {
+                if value.chars().all(|c| !c.is_control()) {
+                    self.focused_text_mut().push_str(value);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_mouse_input(&mut self, x: f64, y: f64, state: ElementState) -> bool {
+        if self.main_view != MainView::Browser || !self.browser_viewport_rect.contains(x, y) {
+            return false;
+        }
+
+        self.focus = FocusTarget::Browser;
+        self.last_status = "Browser viewport focused.".to_string();
+        self.last_ok = true;
+        let Some((local_x, local_y)) = self.browser_point(x, y) else {
+            return true;
+        };
+        let _ = self
+            .engine
+            .enqueue_mouse_move_current_viewport(local_x, local_y);
+        let _ = self.engine.enqueue_mouse_button_current_viewport(
+            local_x,
+            local_y,
+            state == ElementState::Pressed,
+        );
+        self.frame_dirty = true;
+        true
+    }
+
+    fn handle_mouse_move(&mut self, x: f64, y: f64) {
+        if self.focus != FocusTarget::Browser || !self.browser_viewport_rect.contains(x, y) {
+            return;
+        }
+        if let Some((local_x, local_y)) = self.browser_point(x, y) {
+            let _ = self
+                .engine
+                .enqueue_mouse_move_current_viewport(local_x, local_y);
+        }
+    }
+
+    fn forward_browser_key(&mut self, event: &KeyEvent) {
+        let pressed = event.state == ElementState::Pressed;
+        match &event.logical_key {
+            Key::Character(value) if value.chars().all(|c| !c.is_control()) => {
+                let _ = self
+                    .engine
+                    .enqueue_key_character_current_viewport(value.to_string(), pressed);
+                self.frame_dirty = true;
+            }
+            Key::Named(NamedKey::Space) => {
+                let _ = self
+                    .engine
+                    .enqueue_key_character_current_viewport(" ".to_string(), pressed);
+                self.frame_dirty = true;
+            }
+            Key::Named(named) => {
+                if let Some(key) = browser_key_from_winit(named) {
+                    let _ = self.engine.enqueue_key_named_current_viewport(key, pressed);
+                    self.frame_dirty = true;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn browser_point(&self, x: f64, y: f64) -> Option<(f32, f32)> {
+        if !self.browser_viewport_rect.contains(x, y) {
+            return None;
+        }
+        Some((
+            (x - self.browser_viewport_rect.x as f64).max(0.0) as f32,
+            (y - self.browser_viewport_rect.y as f64).max(0.0) as f32,
+        ))
+    }
+
+    fn scroll_at(&mut self, x: f64, y: f64, delta: &MouseScrollDelta, size: PhysicalSize<u32>) {
+        if self.main_view != MainView::Browser {
+            return;
+        }
+        let rail_x = right_rail_x(size.width.max(900));
+        let panel = main_panel_rect(rail_x, size.height.max(620));
+        let viewport = browser_viewport_rect(panel);
+        if !viewport.contains(x, y) {
+            return;
+        }
+        let (delta_x, delta_y, pixel_mode) = match delta {
+            MouseScrollDelta::LineDelta(dx, dy) => {
+                ((*dx * 76.0) as f64, (*dy * 76.0) as f64, false)
+            }
+            MouseScrollDelta::PixelDelta(position) => (position.x, position.y, true),
+        };
+        if self.latest_frame.is_some()
+            && self
+                .engine
+                .wheel_current_viewport(delta_x, delta_y, pixel_mode)
+                .is_ok()
+        {
+            self.refresh_frame();
+            return;
+        }
+        self.page_scroll = (self.page_scroll - delta_y as i32).clamp(0, 4000);
+    }
+
+    fn focused_text_mut(&mut self) -> &mut String {
+        match self.focus {
+            FocusTarget::Address => &mut self.address_input,
+            FocusTarget::Wake => &mut self.wake_query,
+            FocusTarget::Browser => unreachable!("browser focus does not edit shell text"),
+        }
+    }
+
+    fn run_action(&mut self, action: Action) {
+        match action {
+            Action::Navigate => self.navigate_input(),
+            Action::NewTab => self.new_tab(),
+            Action::Back => self.back(),
+            Action::Forward => self.forward(),
+            Action::Reload => self.reload(),
+            Action::CloseTab => self.close_tab(),
+            Action::DistillActive => self.distill_active(),
+            Action::SearchWake => self.search_wake(),
+        }
+        self.refresh_logs();
+    }
+
+    fn navigate_input(&mut self) {
+        let raw = self.address_input.trim();
+        if raw.is_empty() {
+            self.last_status = "Enter a URL or search phrase first.".to_string();
+            self.last_ok = false;
+            return;
+        }
+        match parse_navigation_target(raw) {
+            Ok(url) => self.navigate_to(url),
+            Err(error) => {
+                self.last_status = error;
+                self.last_ok = false;
+            }
+        }
+    }
+
+    fn navigate_to(&mut self, url: Url) {
+        match self
+            .engine
+            .navigate_with_fallback(url.clone(), &self.persona_id)
+        {
+            Ok(status) => {
+                self.address_input = url.to_string();
+                self.page_scroll = 0;
+                self.begin_frame_warmup();
+                self.refresh_frame();
+                self.last_status = format!(
+                    "{} {} with {}. Distill fetches real page content.",
+                    render_action_label(),
+                    short_url(&url),
+                    backend(status)
+                );
+                self.last_ok = true;
+                let _ = self.record_log(&format!("navigate {}", url), LogStatus::Success);
+            }
+            Err(error) => {
+                self.last_status = format!("Open failed: {}", error);
+                self.last_ok = false;
+                let _ = self.record_log(&format!("navigate {}", url), LogStatus::Failure(error));
+            }
+        }
+    }
+
+    fn new_tab(&mut self) {
+        let id = self.engine.open_tab();
+        self.address_input = "about:blank".to_string();
+        self.latest_frame = None;
+        self.last_status = format!("Created tab {}.", short_id(id));
+        self.last_ok = true;
+        let _ = self.record_log("new tab", LogStatus::Success);
+    }
+
+    fn close_tab(&mut self) {
+        let Some(tab) = self.active_tab().cloned() else {
+            self.last_status = "No active tab to close.".to_string();
+            self.last_ok = false;
+            return;
+        };
+
+        match self.engine.close_tab(&tab.id) {
+            Ok(()) => {
+                self.sync_address_to_active_tab();
+                self.latest_frame = None;
+                self.last_status = format!("Closed tab {}.", short_id(tab.id));
+                self.last_ok = true;
+                let _ = self.record_log("close tab", LogStatus::Success);
+            }
+            Err(error) => {
+                self.last_status = format!("Close failed: {}", error);
+                self.last_ok = false;
+                let _ = self.record_log("close tab", LogStatus::Failure(error));
+            }
+        }
+    }
+
+    fn reload(&mut self) {
+        match self.engine.reload_active_tab() {
+            Ok(status) => {
+                self.sync_address_to_active_tab();
+                self.begin_frame_warmup();
+                self.refresh_frame();
+                self.last_status = format!("Reloaded active tab with {}.", backend(status));
+                self.last_ok = true;
+                let _ = self.record_log("reload", LogStatus::Success);
+            }
+            Err(error) => {
+                self.last_status = format!("Reload failed: {}", error);
+                self.last_ok = false;
+                let _ = self.record_log("reload", LogStatus::Failure(error));
+            }
+        }
+    }
+
+    fn back(&mut self) {
+        match self.engine.go_back_active_tab() {
+            Ok(status) => {
+                self.sync_address_to_active_tab();
+                self.begin_frame_warmup();
+                self.refresh_frame();
+                self.last_status = format!("Went back with {}.", backend(status));
+                self.last_ok = true;
+                let _ = self.record_log("back", LogStatus::Success);
+            }
+            Err(error) => {
+                self.last_status = format!("Back unavailable: {}", error);
+                self.last_ok = false;
+                let _ = self.record_log("back", LogStatus::Failure(error));
+            }
+        }
+    }
+
+    fn forward(&mut self) {
+        match self.engine.go_forward_active_tab() {
+            Ok(status) => {
+                self.sync_address_to_active_tab();
+                self.begin_frame_warmup();
+                self.refresh_frame();
+                self.last_status = format!("Went forward with {}.", backend(status));
+                self.last_ok = true;
+                let _ = self.record_log("forward", LogStatus::Success);
+            }
+            Err(error) => {
+                self.last_status = format!("Forward unavailable: {}", error);
+                self.last_ok = false;
+                let _ = self.record_log("forward", LogStatus::Failure(error));
+            }
+        }
+    }
+
+    fn distill_active(&mut self) {
+        match self.engine.distill_current_page() {
+            Ok(page) => match self.wake.record(&self.persona_id, &page, None) {
+                Ok(()) => {
+                    self.page_scroll = 0;
+                    self.begin_frame_warmup();
+                    self.refresh_frame();
+                    self.wake_query = page.title.clone();
+                    self.last_status = format!("Distilled '{}' into Wake.", page.title);
+                    self.last_ok = true;
+                    let _ = self.record_log("distill active", LogStatus::Success);
+                    self.search_wake();
+                }
+                Err(error) => {
+                    self.last_status = format!("Wake record failed: {}", error);
+                    self.last_ok = false;
+                    let _ =
+                        self.record_log("distill active", LogStatus::Failure(error.to_string()));
+                }
+            },
+            Err(error) => {
+                self.last_status = format!("Distill failed: {}", error);
+                self.last_ok = false;
+                let _ = self.record_log("distill active", LogStatus::Failure(error));
+            }
+        }
+    }
+
+    fn search_wake(&mut self) {
+        let query = self.wake_query.trim();
+        match self.wake.search(&self.persona_id, query) {
+            Ok(results) => {
+                self.last_status = format!("Wake search found {} result(s).", results.len());
+                self.last_ok = true;
+                self.wake_results = results;
+                let _ = self.record_log(&format!("search Wake '{}'", query), LogStatus::Success);
+            }
+            Err(error) => {
+                self.last_status = format!("Wake search failed: {}", error);
+                self.last_ok = false;
+                let _ = self.record_log("search Wake", LogStatus::Failure(error.to_string()));
+            }
+        }
+    }
+
+    fn active_tab(&self) -> Option<&Tab> {
+        self.engine.get_active_tab()
+    }
+
+    fn action_enabled(&self, action: Action) -> bool {
+        match action {
+            Action::Navigate => !self.address_input.trim().is_empty(),
+            Action::NewTab => true,
+            Action::Back => self
+                .active_tab()
+                .map(|tab| tab.can_go_back)
+                .unwrap_or(false),
+            Action::Forward => self
+                .active_tab()
+                .map(|tab| tab.can_go_forward)
+                .unwrap_or(false),
+            Action::Reload => self.active_tab().and_then(|tab| tab.url.as_ref()).is_some(),
+            Action::CloseTab | Action::DistillActive => self.active_tab().is_some(),
+            Action::SearchWake => !self.wake_query.trim().is_empty(),
+        }
+    }
+
+    fn sync_address_to_active_tab(&mut self) {
+        if let Some(url) = self.active_tab().and_then(|tab| tab.url.clone()) {
+            self.address_input = url.to_string();
+        } else {
+            self.address_input = "about:blank".to_string();
+        }
+    }
+
+    fn refresh_logs(&mut self) {
+        self.recent_logs = self
+            .log
+            .get_entries(&self.persona_id, 5)
+            .unwrap_or_default();
+    }
+
+    fn refresh_frame(&mut self) {
+        let viewport = self.browser_viewport_rect;
+        let _ = self
+            .engine
+            .resize_current_viewport(viewport.w.max(1), viewport.h.max(1));
+        match self.engine.capture_current_frame() {
+            Ok(frame) => {
+                self.latest_frame = Some(frame);
+                self.last_frame_refresh = Instant::now();
+                self.frame_refresh_budget = self.frame_refresh_budget.saturating_sub(1);
+                self.frame_dirty = self.frame_refresh_budget > 0;
+            }
+            Err(error) => {
+                self.last_frame_refresh = Instant::now();
+                self.frame_refresh_budget = self.frame_refresh_budget.saturating_sub(1);
+                self.frame_dirty = self.frame_refresh_budget > 0;
+                self.last_status = format!("Servo frame unavailable: {}", error);
+                self.last_ok = false;
+            }
+        }
+    }
+
+    fn maybe_refresh_frame(&mut self) -> bool {
+        if self.main_view != MainView::Browser
+            || (self.latest_frame.is_none() && self.frame_refresh_budget == 0)
+        {
+            return false;
+        }
+
+        let elapsed = self.last_frame_refresh.elapsed();
+        let due = if self.frame_dirty || self.frame_refresh_budget > 0 {
+            elapsed >= FRAME_REFRESH_DIRTY
+        } else {
+            self.focus == FocusTarget::Browser && elapsed >= FRAME_REFRESH_IDLE
+        };
+
+        if due {
+            self.refresh_frame();
+            return true;
+        }
+        false
+    }
+
+    fn begin_frame_warmup(&mut self) {
+        self.frame_refresh_budget = FRAME_WARMUP_BUDGET;
+        self.frame_dirty = true;
+    }
+
+    fn record_log(&self, intent: &str, status: LogStatus) -> Result<(), String> {
+        self.log
+            .record(&LogEntry {
+                id: Uuid::new_v4(),
+                timestamp: Utc::now(),
+                persona_id: self.persona_id.clone(),
+                intent: intent.to_string(),
+                plan_json: "{}".to_string(),
+                signature: "lite-shell".to_string(),
+                consent_signature: None,
+                status,
+            })
+            .map_err(|e| e.to_string())
+    }
+}
+
+fn app_data_dir() -> PathBuf {
+    dirs::data_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("Sextant")
+}
+
+fn main() {
+    tracing_subscriber::fmt::init();
+
+    let event_loop = EventLoop::new().expect("event loop should initialize");
+    let window = Arc::new(
+        WindowBuilder::new()
+            .with_title("Sextant Lite")
+            .with_inner_size(PhysicalSize::new(1180, 760))
+            .build(&event_loop)
+            .expect("window should build"),
+    );
+
+    let context = Context::new(window.clone()).expect("softbuffer context should initialize");
+    let mut surface =
+        Surface::new(&context, window.clone()).expect("softbuffer surface should initialize");
+    let mut app = LiteApp::new().expect("lite app should initialize");
+    app.layout(window.inner_size());
+    app.update_title(&window);
+
+    event_loop
+        .run(move |event, elwt| match event {
+            Event::WindowEvent { event, .. } => match event {
+                WindowEvent::CloseRequested => elwt.exit(),
+                WindowEvent::Resized(size) => {
+                    app.layout(size);
+                    window.request_redraw();
+                }
+                WindowEvent::CursorMoved { position, .. } => {
+                    app.cursor = Some((position.x, position.y));
+                    app.handle_mouse_move(position.x, position.y);
+                    window.request_redraw();
+                }
+                WindowEvent::KeyboardInput { event, .. } => {
+                    app.handle_key(event);
+                    app.update_title(&window);
+                    window.request_redraw();
+                }
+                WindowEvent::MouseInput {
+                    state,
+                    button: MouseButton::Left,
+                    ..
+                } => {
+                    if let Some((x, y)) = app.cursor {
+                        if !app.handle_mouse_input(x, y, state) && state == ElementState::Released {
+                            app.click(x, y);
+                        }
+                        app.update_title(&window);
+                        window.request_redraw();
+                    }
+                }
+                WindowEvent::MouseWheel { delta, .. } => {
+                    if let Some((x, y)) = app.cursor {
+                        app.scroll_at(x, y, &delta, window.inner_size());
+                        window.request_redraw();
+                    }
+                }
+                WindowEvent::RedrawRequested => {
+                    if let Err(error) = draw(&window, &mut surface, &app) {
+                        window.set_title(&format!("Sextant Lite - draw failed: {}", error));
+                    }
+                }
+                _ => {}
+            },
+            Event::AboutToWait => {
+                if app.maybe_refresh_frame() {
+                    window.request_redraw();
+                }
+                if app.main_view == MainView::Browser
+                    && (app.latest_frame.is_some() || app.frame_refresh_budget > 0)
+                {
+                    let delay = if app.frame_dirty {
+                        FRAME_REFRESH_DIRTY
+                    } else {
+                        FRAME_REFRESH_IDLE
+                    };
+                    elwt.set_control_flow(ControlFlow::WaitUntil(Instant::now() + delay));
+                } else {
+                    elwt.set_control_flow(ControlFlow::Wait);
+                }
+            }
+            _ => {}
+        })
+        .expect("event loop should run");
+}
+
+fn parse_navigation_target(input: &str) -> Result<Url, String> {
+    if let Ok(url) = Url::parse(input) {
+        return Ok(url);
+    }
+    if input.contains('.') && !input.contains(' ') {
+        return Url::parse(&format!("https://{}", input))
+            .map_err(|error| format!("URL parse failed: {}", error));
+    }
+    let query = url::form_urlencoded::byte_serialize(input.as_bytes()).collect::<String>();
+    Url::parse(&format!("https://duckduckgo.com/?q={}", query))
+        .map_err(|error| format!("Search URL parse failed: {}", error))
+}
+
+fn browser_key_from_winit(key: &NamedKey) -> Option<BrowserKey> {
+    match key {
+        NamedKey::Enter => Some(BrowserKey::Enter),
+        NamedKey::Backspace => Some(BrowserKey::Backspace),
+        NamedKey::Tab => Some(BrowserKey::Tab),
+        NamedKey::Escape => Some(BrowserKey::Escape),
+        NamedKey::ArrowLeft => Some(BrowserKey::ArrowLeft),
+        NamedKey::ArrowRight => Some(BrowserKey::ArrowRight),
+        NamedKey::ArrowUp => Some(BrowserKey::ArrowUp),
+        NamedKey::ArrowDown => Some(BrowserKey::ArrowDown),
+        NamedKey::Delete => Some(BrowserKey::Delete),
+        _ => None,
+    }
+}
+
+fn short_url(url: &Url) -> String {
+    let value = url.to_string();
+    if value.len() > 58 {
+        format!("{}...", &value[..55])
+    } else {
+        value
+    }
+}
+
+fn short_id(id: Uuid) -> String {
+    id.to_string()[..8].to_string()
+}
+
+fn backend(status: EngineStatus) -> &'static str {
+    match status.active_backend {
+        EngineBackend::Servo => "Servo",
+        EngineBackend::Gecko => "Gecko",
+        EngineBackend::Chromium => "Chromium",
+    }
+}
+
+fn display_backend(app: &LiteApp, tab: &Tab) -> &'static str {
+    if cfg!(feature = "servo-backend") && app.latest_frame.is_some() {
+        "Servo"
+    } else {
+        match tab.status.active_backend {
+            EngineBackend::Servo => "Servo",
+            EngineBackend::Gecko => "Fallback",
+            EngineBackend::Chromium => "Legacy",
+        }
+    }
+}
+
+fn render_mode_label() -> &'static str {
+    if cfg!(feature = "servo-backend") {
+        "LIVE"
+    } else {
+        "SIM"
+    }
+}
+
+fn render_action_label() -> &'static str {
+    if cfg!(feature = "servo-backend") {
+        "Opened"
+    } else {
+        "Tracked"
+    }
+}
+
+fn draw(
+    window: &Window,
+    surface: &mut Surface<Arc<Window>, Arc<Window>>,
+    app: &LiteApp,
+) -> Result<(), String> {
+    let size = window.inner_size();
+    let width = size.width.max(1);
+    let height = size.height.max(1);
+    surface
+        .resize(
+            NonZeroU32::new(width).ok_or("invalid width")?,
+            NonZeroU32::new(height).ok_or("invalid height")?,
+        )
+        .map_err(|e| e.to_string())?;
+
+    let mut buffer = surface.buffer_mut().map_err(|e| e.to_string())?;
+    for pixel in buffer.iter_mut() {
+        *pixel = BG;
+    }
+
+    draw_top_bar(&mut buffer, width, height, app);
+    draw_controls(&mut buffer, width, height, app);
+    draw_metric_cards(&mut buffer, width, height, app);
+    match app.main_view {
+        MainView::Browser => draw_page_panel(&mut buffer, width, height, app),
+        MainView::Wake => draw_wake_panel(&mut buffer, width, height, app),
+        MainView::Log => draw_log_panel(&mut buffer, width, height, app),
+    }
+    draw_ai_rail(&mut buffer, width, height, app);
+    draw_status_bar(&mut buffer, width, height, app);
+
+    buffer.present().map_err(|e| e.to_string())
+}
+
+fn draw_top_bar(buffer: &mut [u32], width: u32, height: u32, app: &LiteApp) {
+    let rail_x = right_rail_x(width);
+    fill_rect(
+        buffer,
+        width,
+        height,
+        Rect {
+            x: 0,
+            y: 0,
+            w: width,
+            h: CHROME_H,
+        },
+        PANEL_DARK,
+    );
+    fill_rect(
+        buffer,
+        width,
+        height,
+        Rect {
+            x: 0,
+            y: CHROME_H.saturating_sub(1),
+            w: width,
+            h: 1,
+        },
+        BORDER,
+    );
+    draw_text(buffer, width, height, 24, 14, "SEXTANT", TEXT, 1);
+    draw_text(buffer, width, height, 24, 34, "LITE", TEXT_DIM, 1);
+    let tabs = app.engine.get_tabs();
+    let tab_label = format!("TABS {}", tabs.len());
+    draw_text(
+        buffer,
+        width,
+        height,
+        rail_x.saturating_sub(94),
+        24,
+        &tab_label,
+        TEXT_DIM,
+        1,
+    );
+    draw_text(buffer, width, height, rail_x + 26, 18, "MAYA", TEXT, 1);
+    draw_text(
+        buffer,
+        width,
+        height,
+        rail_x + 26,
+        36,
+        "LOCAL ONLINE",
+        STATUS_OK,
+        1,
+    );
+}
+
+fn draw_controls(buffer: &mut [u32], width: u32, height: u32, app: &LiteApp) {
+    let rail_x = right_rail_x(width);
+    fill_rect(
+        buffer,
+        width,
+        height,
+        Rect {
+            x: 0,
+            y: CHROME_H,
+            w: rail_x,
+            h: STRIP_H,
+        },
+        PANEL,
+    );
+    fill_rect(
+        buffer,
+        width,
+        height,
+        Rect {
+            x: 0,
+            y: CHROME_H + STRIP_H - 1,
+            w: rail_x,
+            h: 1,
+        },
+        BORDER,
+    );
+    draw_field(
+        buffer,
+        width,
+        height,
+        app.address_rect,
+        &app.address_input,
+        app.focus == FocusTarget::Address,
+    );
+
+    for button in &app.buttons {
+        let hovered = app
+            .cursor
+            .map(|(x, y)| button.rect.contains(x, y))
+            .unwrap_or(false);
+        draw_button(
+            buffer,
+            width,
+            height,
+            button.rect,
+            button.label,
+            hovered,
+            app.action_enabled(button.action),
+        );
+    }
+
+    draw_pill(
+        buffer,
+        width,
+        height,
+        app.browser_tab_rect,
+        "BROWSER",
+        app.main_view == MainView::Browser,
+    );
+    draw_pill(
+        buffer,
+        width,
+        height,
+        app.wake_tab_rect,
+        "WAKE",
+        app.main_view == MainView::Wake,
+    );
+    draw_pill(
+        buffer,
+        width,
+        height,
+        app.log_tab_rect,
+        "CAPTAIN LOG",
+        app.main_view == MainView::Log,
+    );
+    draw_text(
+        buffer,
+        width,
+        height,
+        rail_x.saturating_sub(184),
+        CHROME_H + STRIP_H + 14,
+        "AI READY",
+        STATUS_OK,
+        1,
+    );
+}
+
+fn draw_metric_cards(buffer: &mut [u32], width: u32, height: u32, app: &LiteApp) {
+    let rail_x = right_rail_x(width);
+    let left = 24;
+    let gap = 12;
+    let card_w = ((rail_x.saturating_sub(left * 2 + gap * 3)) / 4).max(120);
+    let tabs = app.engine.get_tabs();
+    let wake_count = app.wake_results.len();
+    let backend_label = app
+        .active_tab()
+        .map(|tab| display_backend(app, tab).to_string())
+        .unwrap_or_else(|| "NONE".to_string());
+    let page_label = app
+        .active_tab()
+        .and_then(|tab| tab.distilled_page.as_ref())
+        .map(|_| "READY".to_string())
+        .unwrap_or_else(|| "PENDING".to_string());
+
+    draw_metric_card(
+        buffer,
+        width,
+        height,
+        Rect {
+            x: left,
+            y: METRIC_Y,
+            w: card_w,
+            h: METRIC_H,
+        },
+        "TABS",
+        &tabs.len().to_string(),
+        "ACTIVE SESSION",
+        STATUS_OK,
+    );
+    draw_metric_card(
+        buffer,
+        width,
+        height,
+        Rect {
+            x: left + (card_w + gap),
+            y: METRIC_Y,
+            w: card_w,
+            h: METRIC_H,
+        },
+        "ENGINE",
+        &backend_label,
+        "LOCAL BUILD",
+        BUTTON_BRIGHT,
+    );
+    draw_metric_card(
+        buffer,
+        width,
+        height,
+        Rect {
+            x: left + (card_w + gap) * 2,
+            y: METRIC_Y,
+            w: card_w,
+            h: METRIC_H,
+        },
+        "WAKE",
+        &wake_count.to_string(),
+        "SEARCH HITS",
+        if wake_count > 0 { STATUS_OK } else { TEXT_DIM },
+    );
+    draw_metric_card(
+        buffer,
+        width,
+        height,
+        Rect {
+            x: left + (card_w + gap) * 3,
+            y: METRIC_Y,
+            w: card_w,
+            h: METRIC_H,
+        },
+        "PAGE",
+        &page_label,
+        "DISTILL STATUS",
+        if page_label == "READY" {
+            STATUS_OK
+        } else {
+            STATUS_WARN
+        },
+    );
+}
+
+fn draw_page_panel(buffer: &mut [u32], width: u32, height: u32, app: &LiteApp) {
+    let rail_x = right_rail_x(width);
+    let page = main_panel_rect(rail_x, height);
+    let panel = Rect {
+        x: 24,
+        y: page.y,
+        w: rail_x.saturating_sub(48),
+        h: page.h,
+    };
+    fill_rect(buffer, width, height, panel, PANEL_ALT);
+    stroke_rect(buffer, width, height, panel, BORDER);
+    draw_text(
+        buffer,
+        width,
+        height,
+        44,
+        panel.y + 20,
+        "ACTIVE PAGE",
+        TEXT,
+        1,
+    );
+
+    let status_color = if app.last_ok { STATUS_OK } else { STATUS_WARN };
+    fill_rect(
+        buffer,
+        width,
+        height,
+        Rect {
+            x: 44,
+            y: panel.y + 46,
+            w: 10,
+            h: 10,
+        },
+        status_color,
+    );
+    draw_text(
+        buffer,
+        width,
+        height,
+        62,
+        panel.y + 44,
+        &truncate(
+            &app.last_status,
+            ((panel.w.saturating_sub(62)) / 8) as usize,
+        ),
+        TEXT,
+        1,
+    );
+
+    if let Some(tab) = app.active_tab() {
+        let url = tab
+            .url
+            .as_ref()
+            .map(short_url)
+            .unwrap_or_else(|| "about:blank".to_string());
+        let status = format!(
+            "TAB {} | BACK {} | FORWARD {} | RENDER {} {}",
+            short_id(tab.id),
+            tab.can_go_back,
+            tab.can_go_forward,
+            display_backend(app, tab),
+            render_mode_label()
+        );
+        draw_text(
+            buffer,
+            width,
+            height,
+            44,
+            panel.y + 76,
+            &truncate(&url, ((panel.w.saturating_sub(40)) / 8) as usize),
+            TEXT_DIM,
+            1,
+        );
+        draw_text(
+            buffer,
+            width,
+            height,
+            44,
+            panel.y + 100,
+            &truncate(&status, ((panel.w.saturating_sub(40)) / 8) as usize),
+            TEXT_DIM,
+            1,
+        );
+        if let Some(frame) = app.latest_frame.as_ref() {
+            draw_rendered_frame(buffer, width, height, panel, frame);
+        } else if let Some(page) = tab.distilled_page.as_ref() {
+            draw_reader_page(buffer, width, height, panel, page, app.page_scroll);
+        } else {
+            draw_text(
+                buffer,
+                width,
+                height,
+                44,
+                panel.y + 134,
+                if cfg!(feature = "servo-backend") {
+                    "NO SERVO FRAME YET"
+                } else {
+                    "NO DISTILLED PAGE YET"
+                },
+                TEXT,
+                1,
+            );
+            draw_text(
+                buffer,
+                width,
+                height,
+                44,
+                panel.y + 160,
+                if cfg!(feature = "servo-backend") {
+                    "PRESS GO OR DISTILL TO CAPTURE THE LIVE VIEWPORT."
+                } else {
+                    "PRESS DISTILL TO FETCH AND PARSE THE CURRENT URL."
+                },
+                TEXT_DIM,
+                1,
+            );
+        }
+    } else {
+        draw_text(
+            buffer,
+            width,
+            height,
+            44,
+            panel.y + 86,
+            "NO ACTIVE TAB",
+            TEXT_DIM,
+            1,
+        );
+    }
+}
+
+fn draw_wake_panel(buffer: &mut [u32], width: u32, height: u32, app: &LiteApp) {
+    let rail_x = right_rail_x(width);
+    let panel = main_panel_rect(rail_x, height);
+    fill_rect(buffer, width, height, panel, PANEL_ALT);
+    stroke_rect(buffer, width, height, panel, BORDER);
+    draw_text(
+        buffer,
+        width,
+        height,
+        44,
+        panel.y + 18,
+        "DIGITAL WAKE",
+        TEXT,
+        1,
+    );
+
+    if app.wake_results.is_empty() {
+        draw_text(
+            buffer,
+            width,
+            height,
+            44,
+            panel.y + 54,
+            "NO WAKE RESULTS YET. DISTILL A PAGE OR ENTER A QUERY IN THE AI RAIL.",
+            TEXT_DIM,
+            1,
+        );
+        return;
+    }
+
+    let max_rows = panel.h.saturating_sub(56) / 30;
+    for (index, entry) in app.wake_results.iter().take(max_rows as usize).enumerate() {
+        let y = panel.y + 52 + index as u32 * 30;
+        let line = format!("{} | {}", entry.title, short_url(&entry.url));
+        draw_text(
+            buffer,
+            width,
+            height,
+            44,
+            y,
+            &truncate(&line, ((panel.w.saturating_sub(40)) / 8) as usize),
+            TEXT_DIM,
+            1,
+        );
+        let detail = format!(
+            "IMPORTANCE {:.2} | USED {}",
+            entry.importance, entry.usage_count
+        );
+        draw_text(
+            buffer,
+            width,
+            height,
+            44,
+            y + 14,
+            &truncate(&detail, ((panel.w.saturating_sub(40)) / 8) as usize),
+            TEXT_DIM,
+            1,
+        );
+    }
+}
+
+fn draw_reader_page(
+    buffer: &mut [u32],
+    width: u32,
+    height: u32,
+    panel: Rect,
+    page: &sextant_engine::DistilledPage,
+    scroll: i32,
+) {
+    let clip = Rect {
+        x: panel.x + 18,
+        y: panel.y + 126,
+        w: panel.w.saturating_sub(36),
+        h: panel.h.saturating_sub(142),
+    };
+    fill_rect(buffer, width, height, clip, PANEL_ALT);
+    let max_chars = ((clip.w.saturating_sub(8)) / char_advance(1)) as usize;
+    let max_title_chars = ((clip.w.saturating_sub(8)) / char_advance(2)) as usize;
+    let mut y = clip.y as i32 - scroll;
+
+    for line in wrap_text(&page.title, max_title_chars).into_iter().take(3) {
+        draw_text_clipped(buffer, width, height, clip, clip.x, y, &line, TEXT, 2);
+        y += 20;
+    }
+    y += 8;
+    draw_text_clipped(
+        buffer,
+        width,
+        height,
+        clip,
+        clip.x,
+        y,
+        &truncate(page.url.as_str(), max_chars),
+        TEXT_DIM,
+        1,
+    );
+    y += 28;
+
+    for line in wrap_text(&page.content, max_chars).into_iter().take(24) {
+        draw_text_clipped(buffer, width, height, clip, clip.x, y, &line, TEXT_DIM, 1);
+        y += 18;
+    }
+
+    y += 14;
+    draw_text_clipped(
+        buffer,
+        width,
+        height,
+        clip,
+        clip.x,
+        y,
+        "SEMANTIC MAP",
+        TEXT,
+        1,
+    );
+    y += 24;
+    let counts = semantic_counts(page);
+    let semantic_line = format!(
+        "HEADINGS {} | LINKS {} | INPUTS {} | IMAGES {} | TEXT NODES {}",
+        counts.headings, counts.links, counts.inputs, counts.images, counts.text
+    );
+    draw_text_clipped(
+        buffer,
+        width,
+        height,
+        clip,
+        clip.x,
+        y,
+        &truncate(&semantic_line, max_chars),
+        TEXT_DIM,
+        1,
+    );
+    y += 24;
+
+    let key_nodes = page
+        .semantic_map
+        .iter()
+        .filter(|node| matches!(node.node_type, NodeType::Heading | NodeType::Link))
+        .take(2)
+        .map(|node| node.text.as_str())
+        .collect::<Vec<_>>()
+        .join(" | ");
+    if !key_nodes.is_empty() {
+        draw_text_clipped(
+            buffer,
+            width,
+            height,
+            clip,
+            clip.x,
+            y,
+            &truncate(&key_nodes, max_chars),
+            TEXT_DIM,
+            1,
+        );
+    }
+
+    if scroll > 0 {
+        draw_text(
+            buffer,
+            width,
+            height,
+            panel.x + panel.w - 108,
+            panel.y + 20,
+            "SCROLLED",
+            TEXT_DIM,
+            1,
+        );
+    } else {
+        draw_text(
+            buffer,
+            width,
+            height,
+            panel.x + panel.w - 112,
+            panel.y + 20,
+            "WHEEL TO READ",
+            TEXT_DIM,
+            1,
+        );
+    }
+}
+
+fn draw_rendered_frame(
+    buffer: &mut [u32],
+    width: u32,
+    height: u32,
+    panel: Rect,
+    frame: &RenderedFrame,
+) {
+    let viewport = browser_viewport_rect(panel);
+    fill_rect(buffer, width, height, viewport, FIELD);
+    if frame.width == 0 || frame.height == 0 || frame.pixels.is_empty() {
+        draw_text(
+            buffer,
+            width,
+            height,
+            viewport.x + 12,
+            viewport.y + 12,
+            "SERVO FRAME IS EMPTY",
+            STATUS_WARN,
+            1,
+        );
+        return;
+    }
+
+    let scale_x = viewport.w as f32 / frame.width as f32;
+    let scale_y = viewport.h as f32 / frame.height as f32;
+    let scale = scale_x.min(scale_y).max(0.01);
+    let draw_w = (frame.width as f32 * scale).max(1.0) as u32;
+    let draw_h = (frame.height as f32 * scale).max(1.0) as u32;
+    let offset_x = viewport.x + viewport.w.saturating_sub(draw_w) / 2;
+    let offset_y = viewport.y + viewport.h.saturating_sub(draw_h) / 2;
+
+    for dy in 0..draw_h.min(viewport.h) {
+        let src_y = ((dy as f32 / scale) as u32).min(frame.height - 1);
+        for dx in 0..draw_w.min(viewport.w) {
+            let src_x = ((dx as f32 / scale) as u32).min(frame.width - 1);
+            let src_idx = src_y as usize * frame.width as usize + src_x as usize;
+            if let Some(pixel) = frame.pixels.get(src_idx) {
+                let dest_x = offset_x + dx;
+                let dest_y = offset_y + dy;
+                if dest_x < width && dest_y < height {
+                    buffer[dest_y as usize * width as usize + dest_x as usize] = *pixel;
+                }
+            }
+        }
+    }
+
+    stroke_rect(buffer, width, height, viewport, BUTTON_ACTIVE);
+    let label = format!("SERVO FRAME {}x{}", frame.width, frame.height);
+    draw_text(
+        buffer,
+        width,
+        height,
+        panel.x + panel.w.saturating_sub(174),
+        panel.y + 20,
+        &label,
+        TEXT_DIM,
+        1,
+    );
+}
+
+fn draw_log_panel(buffer: &mut [u32], width: u32, height: u32, app: &LiteApp) {
+    let rail_x = right_rail_x(width);
+    let panel = main_panel_rect(rail_x, height);
+    fill_rect(buffer, width, height, panel, PANEL_ALT);
+    stroke_rect(buffer, width, height, panel, BORDER);
+    draw_text(
+        buffer,
+        width,
+        height,
+        44,
+        panel.y + 18,
+        "CAPTAIN'S LOG",
+        TEXT,
+        1,
+    );
+
+    if app.recent_logs.is_empty() {
+        draw_text(
+            buffer,
+            width,
+            height,
+            44,
+            panel.y + 54,
+            "NO LOG ENTRIES YET",
+            TEXT_DIM,
+            1,
+        );
+        return;
+    }
+
+    let max_rows = panel.h.saturating_sub(50) / 22;
+    for (index, entry) in app.recent_logs.iter().take(max_rows as usize).enumerate() {
+        let y = panel.y + 52 + index as u32 * 22;
+        let line = format!("{} | {}", status_label(&entry.status), entry.intent);
+        draw_text(
+            buffer,
+            width,
+            height,
+            44,
+            y,
+            &truncate(&line, ((panel.w.saturating_sub(40)) / 8) as usize),
+            TEXT_DIM,
+            1,
+        );
+    }
+}
+
+fn draw_field(buffer: &mut [u32], width: u32, height: u32, rect: Rect, value: &str, focused: bool) {
+    fill_rect(
+        buffer,
+        width,
+        height,
+        rect,
+        if focused { FIELD_FOCUS } else { FIELD },
+    );
+    stroke_rect(
+        buffer,
+        width,
+        height,
+        rect,
+        if focused { BUTTON_ACTIVE } else { BORDER },
+    );
+    let visible = truncate(value, ((rect.w.saturating_sub(24)) / 8) as usize);
+    draw_text(
+        buffer,
+        width,
+        height,
+        rect.x + 12,
+        rect.y + 9,
+        &visible,
+        TEXT,
+        1,
+    );
+    if focused {
+        let caret_x = rect.x + 12 + text_width(&visible, 1) + 2;
+        fill_rect(
+            buffer,
+            width,
+            height,
+            Rect {
+                x: caret_x.min(rect.x + rect.w.saturating_sub(8)),
+                y: rect.y + 7,
+                w: 2,
+                h: 16,
+            },
+            BUTTON_ACTIVE,
+        );
+    }
+}
+
+fn draw_ai_rail(buffer: &mut [u32], width: u32, height: u32, app: &LiteApp) {
+    let rail_x = right_rail_x(width);
+    fill_rect(
+        buffer,
+        width,
+        height,
+        Rect {
+            x: rail_x,
+            y: 64,
+            w: RAIL_WIDTH,
+            h: height.saturating_sub(64 + STATUS_BAR_H),
+        },
+        PANEL_DARK,
+    );
+    fill_rect(
+        buffer,
+        width,
+        height,
+        Rect {
+            x: rail_x,
+            y: 64,
+            w: 1,
+            h: height.saturating_sub(64),
+        },
+        BORDER,
+    );
+    draw_text(
+        buffer,
+        width,
+        height,
+        rail_x + 20,
+        92,
+        "SEXTANT AI",
+        TEXT,
+        2,
+    );
+    draw_text(
+        buffer,
+        width,
+        height,
+        rail_x + 20,
+        118,
+        "LOCAL ASSISTANT ONLINE",
+        STATUS_OK,
+        1,
+    );
+    let active_url = app
+        .active_tab()
+        .and_then(|tab| tab.url.as_ref())
+        .map(short_url)
+        .unwrap_or_else(|| "NO ACTIVE PAGE".to_string());
+    let page_state = app
+        .active_tab()
+        .and_then(|tab| tab.distilled_page.as_ref())
+        .map(|page| format!("I HAVE DISTILLED '{}'.", page.title))
+        .unwrap_or_else(|| format!("TRACKING {}. DISTILL RUNS REAL HTTP FETCH.", active_url));
+    let next_step = if app.active_tab().is_none() {
+        "OPEN A PAGE TO START THE BROWSER LOOP."
+    } else if app
+        .active_tab()
+        .and_then(|tab| tab.distilled_page.as_ref())
+        .is_none()
+    {
+        "NEXT: DISTILL THE PAGE INTO WAKE."
+    } else if app.wake_results.is_empty() {
+        "NEXT: SEARCH WAKE FOR THE DISTILLED PAGE."
+    } else {
+        "WAKE HAS RESULTS. ASK A QUESTION OR OPEN ANOTHER PAGE."
+    };
+
+    draw_chat_bubble(
+        buffer,
+        width,
+        height,
+        Rect {
+            x: rail_x + 20,
+            y: 156,
+            w: RAIL_WIDTH.saturating_sub(40),
+            h: 92,
+        },
+        &page_state,
+        false,
+    );
+    draw_chat_bubble(
+        buffer,
+        width,
+        height,
+        Rect {
+            x: rail_x + 56,
+            y: 270,
+            w: RAIL_WIDTH.saturating_sub(76),
+            h: 66,
+        },
+        next_step,
+        true,
+    );
+    draw_chat_bubble(
+        buffer,
+        width,
+        height,
+        Rect {
+            x: rail_x + 20,
+            y: 358,
+            w: RAIL_WIDTH.saturating_sub(40),
+            h: 82,
+        },
+        &truncate(&app.last_status, 72),
+        false,
+    );
+
+    draw_text(
+        buffer,
+        width,
+        height,
+        app.wake_rect.x,
+        app.wake_rect.y.saturating_sub(18),
+        "ASK OR SEARCH WAKE",
+        TEXT_DIM,
+        1,
+    );
+    draw_field(
+        buffer,
+        width,
+        height,
+        app.wake_rect,
+        &app.wake_query,
+        app.focus == FocusTarget::Wake,
+    );
+}
+
+fn draw_status_bar(buffer: &mut [u32], width: u32, height: u32, app: &LiteApp) {
+    let y = height.saturating_sub(STATUS_BAR_H);
+    fill_rect(
+        buffer,
+        width,
+        height,
+        Rect {
+            x: 0,
+            y,
+            w: width,
+            h: STATUS_BAR_H,
+        },
+        PANEL_DARK,
+    );
+    fill_rect(
+        buffer,
+        width,
+        height,
+        Rect {
+            x: 0,
+            y,
+            w: width,
+            h: 1,
+        },
+        BORDER,
+    );
+    let backend = app
+        .active_tab()
+        .map(|tab| display_backend(app, tab).to_string())
+        .unwrap_or_else(|| "NO TAB".to_string());
+    let status = format!(
+        "RENDER {} {}    DISTILL REAL FETCH    WAKE RESULTS {}    LOG ENTRIES {}    PRIVACY LOCAL",
+        backend,
+        render_mode_label(),
+        app.wake_results.len(),
+        app.recent_logs.len()
+    );
+    draw_text(buffer, width, height, 24, y + 14, &status, TEXT_DIM, 1);
+    draw_text(
+        buffer,
+        width,
+        height,
+        width.saturating_sub(124),
+        y + 14,
+        "LITE EDGE",
+        TEXT_DIM,
+        1,
+    );
+}
+
+fn draw_metric_card(
+    buffer: &mut [u32],
+    width: u32,
+    height: u32,
+    rect: Rect,
+    label: &str,
+    value: &str,
+    hint: &str,
+    accent: u32,
+) {
+    fill_rect(buffer, width, height, rect, PANEL_ALT);
+    stroke_rect(buffer, width, height, rect, BORDER);
+    fill_rect(
+        buffer,
+        width,
+        height,
+        Rect {
+            x: rect.x,
+            y: rect.y,
+            w: rect.w,
+            h: 2,
+        },
+        accent,
+    );
+    draw_text(
+        buffer,
+        width,
+        height,
+        rect.x + 18,
+        rect.y + 14,
+        label,
+        TEXT_DIM,
+        1,
+    );
+    draw_text(
+        buffer,
+        width,
+        height,
+        rect.x + 18,
+        rect.y + 34,
+        &truncate(value, ((rect.w.saturating_sub(36)) / 13) as usize),
+        accent,
+        2,
+    );
+    draw_text(
+        buffer,
+        width,
+        height,
+        rect.x + 18,
+        rect.y + 62,
+        hint,
+        TEXT_DIM,
+        1,
+    );
+}
+
+fn draw_pill(buffer: &mut [u32], width: u32, height: u32, rect: Rect, label: &str, active: bool) {
+    fill_rect(
+        buffer,
+        width,
+        height,
+        rect,
+        if active { BUTTON_IDLE } else { PANEL_ALT },
+    );
+    stroke_rect(
+        buffer,
+        width,
+        height,
+        rect,
+        if active { BUTTON_BRIGHT } else { BORDER },
+    );
+    draw_text(
+        buffer,
+        width,
+        height,
+        rect.x + 16,
+        rect.y + 10,
+        label,
+        if active { TEXT } else { TEXT_DIM },
+        1,
+    );
+}
+
+fn draw_chat_bubble(
+    buffer: &mut [u32],
+    width: u32,
+    height: u32,
+    rect: Rect,
+    text: &str,
+    user: bool,
+) {
+    fill_rect(
+        buffer,
+        width,
+        height,
+        rect,
+        if user { BUTTON_BRIGHT } else { PANEL_ALT },
+    );
+    stroke_rect(
+        buffer,
+        width,
+        height,
+        rect,
+        if user { BUTTON_BRIGHT } else { BORDER },
+    );
+    let color = if user { FIELD } else { TEXT };
+    let max = ((rect.w.saturating_sub(24)) / 8) as usize;
+    for (index, line) in wrap_text(text, max).iter().take(4).enumerate() {
+        draw_text(
+            buffer,
+            width,
+            height,
+            rect.x + 12,
+            rect.y + 14 + index as u32 * 18,
+            line,
+            color,
+            1,
+        );
+    }
+}
+
+fn draw_button(
+    buffer: &mut [u32],
+    width: u32,
+    height: u32,
+    rect: Rect,
+    label: &str,
+    hovered: bool,
+    enabled: bool,
+) {
+    fill_rect(
+        buffer,
+        width,
+        height,
+        rect,
+        if !enabled {
+            BUTTON_DISABLED
+        } else if hovered {
+            BUTTON_HOVER
+        } else {
+            BUTTON_IDLE
+        },
+    );
+    stroke_rect(
+        buffer,
+        width,
+        height,
+        rect,
+        if enabled { BORDER } else { PANEL },
+    );
+    draw_text(
+        buffer,
+        width,
+        height,
+        rect.x + 12,
+        rect.y + 10,
+        label,
+        if enabled { TEXT } else { TEXT_DIM },
+        1,
+    );
+}
+
+fn disabled_reason(action: Action) -> &'static str {
+    match action {
+        Action::Navigate => "Enter an address or search phrase first.",
+        Action::NewTab => "New tab is always available.",
+        Action::Back => "Back is unavailable for this tab/backend.",
+        Action::Forward => "Forward is unavailable for this tab/backend.",
+        Action::Reload => "Active tab has no URL to reload.",
+        Action::CloseTab => "No active tab to close.",
+        Action::DistillActive => "Open a page before distilling.",
+        Action::SearchWake => "Enter a Wake query first.",
+    }
+}
+
+fn right_rail_x(width: u32) -> u32 {
+    width.saturating_sub(RAIL_WIDTH)
+}
+
+fn main_panel_rect(rail_x: u32, height: u32) -> Rect {
+    let top = METRIC_Y + METRIC_H + 14;
+    let bottom_limit = height.saturating_sub(STATUS_BAR_H + 12);
+    Rect {
+        x: 24,
+        y: top,
+        w: rail_x.saturating_sub(48),
+        h: bottom_limit.saturating_sub(top).max(180),
+    }
+}
+
+fn browser_viewport_rect(panel: Rect) -> Rect {
+    Rect {
+        x: panel.x + 18,
+        y: panel.y + 126,
+        w: panel.w.saturating_sub(36),
+        h: panel.h.saturating_sub(142),
+    }
+}
+
+struct SemanticCounts {
+    headings: usize,
+    links: usize,
+    inputs: usize,
+    images: usize,
+    text: usize,
+}
+
+fn semantic_counts(page: &sextant_engine::DistilledPage) -> SemanticCounts {
+    let mut counts = SemanticCounts {
+        headings: 0,
+        links: 0,
+        inputs: 0,
+        images: 0,
+        text: 0,
+    };
+    for node in &page.semantic_map {
+        match node.node_type {
+            NodeType::Heading => counts.headings += 1,
+            NodeType::Link => counts.links += 1,
+            NodeType::Input => counts.inputs += 1,
+            NodeType::Image => counts.images += 1,
+            NodeType::Text => counts.text += 1,
+            NodeType::Button => {}
+        }
+    }
+    counts
+}
+
+fn status_label(status: &LogStatus) -> &'static str {
+    match status {
+        LogStatus::Success => "OK",
+        LogStatus::Failure(_) => "FAIL",
+        LogStatus::Aborted => "ABORT",
+        LogStatus::AwaitingConsent => "CONSENT",
+    }
+}
+
+fn wrap_text(value: &str, max_chars: usize) -> Vec<String> {
+    let max_chars = max_chars.max(12);
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    for word in value.split_whitespace() {
+        if !current.is_empty() && current.len() + word.len() + 1 > max_chars {
+            lines.push(current);
+            current = String::new();
+        }
+        if !current.is_empty() {
+            current.push(' ');
+        }
+        current.push_str(word);
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    lines
+}
+
+fn truncate(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        return value.to_string();
+    }
+    let mut out = value
+        .chars()
+        .take(max_chars.saturating_sub(3))
+        .collect::<String>();
+    out.push_str("...");
+    out
+}
+
+fn fill_rect(buffer: &mut [u32], width: u32, height: u32, rect: Rect, color: u32) {
+    let max_x = rect.x.saturating_add(rect.w).min(width);
+    let max_y = rect.y.saturating_add(rect.h).min(height);
+    for y in rect.y.min(height)..max_y {
+        let row = y as usize * width as usize;
+        for x in rect.x.min(width)..max_x {
+            buffer[row + x as usize] = color;
+        }
+    }
+}
+
+fn stroke_rect(buffer: &mut [u32], width: u32, height: u32, rect: Rect, color: u32) {
+    fill_rect(
+        buffer,
+        width,
+        height,
+        Rect {
+            x: rect.x,
+            y: rect.y,
+            w: rect.w,
+            h: 1,
+        },
+        color,
+    );
+    fill_rect(
+        buffer,
+        width,
+        height,
+        Rect {
+            x: rect.x,
+            y: rect.y.saturating_add(rect.h.saturating_sub(1)),
+            w: rect.w,
+            h: 1,
+        },
+        color,
+    );
+    fill_rect(
+        buffer,
+        width,
+        height,
+        Rect {
+            x: rect.x,
+            y: rect.y,
+            w: 1,
+            h: rect.h,
+        },
+        color,
+    );
+    fill_rect(
+        buffer,
+        width,
+        height,
+        Rect {
+            x: rect.x.saturating_add(rect.w.saturating_sub(1)),
+            y: rect.y,
+            w: 1,
+            h: rect.h,
+        },
+        color,
+    );
+}
+
+fn draw_text(
+    buffer: &mut [u32],
+    width: u32,
+    height: u32,
+    mut x: u32,
+    y: u32,
+    text: &str,
+    color: u32,
+    scale: u32,
+) {
+    let scale = scale.max(1);
+    for ch in text.chars() {
+        if ch == '\n' {
+            x = 0;
+            continue;
+        }
+        draw_char(buffer, width, height, x, y, ch, color, scale);
+        x += char_advance(scale);
+    }
+}
+
+fn draw_text_clipped(
+    buffer: &mut [u32],
+    width: u32,
+    height: u32,
+    clip: Rect,
+    mut x: u32,
+    y: i32,
+    text: &str,
+    color: u32,
+    scale: u32,
+) {
+    let scale = scale.max(1);
+    for ch in text.chars() {
+        draw_char_clipped(buffer, width, height, clip, x, y, ch, color, scale);
+        x += char_advance(scale);
+        if x >= clip.x.saturating_add(clip.w) {
+            break;
+        }
+    }
+}
+
+fn text_width(text: &str, scale: u32) -> u32 {
+    let chars = text.chars().count() as u32;
+    if chars == 0 {
+        0
+    } else {
+        chars * char_advance(scale)
+    }
+}
+
+fn char_advance(scale: u32) -> u32 {
+    (GLYPH_W + GLYPH_GAP) * scale.max(1)
+}
+
+fn draw_char(
+    buffer: &mut [u32],
+    width: u32,
+    height: u32,
+    x: u32,
+    y: u32,
+    ch: char,
+    color: u32,
+    scale: u32,
+) {
+    let glyph = glyph(ch);
+    for (row, bits) in glyph.iter().enumerate() {
+        for col in 0..5 {
+            if bits & (1 << (4 - col)) != 0 {
+                fill_rect(
+                    buffer,
+                    width,
+                    height,
+                    Rect {
+                        x: x + col * scale,
+                        y: y + row as u32 * scale,
+                        w: scale,
+                        h: scale,
+                    },
+                    color,
+                );
+            }
+        }
+    }
+}
+
+fn draw_char_clipped(
+    buffer: &mut [u32],
+    width: u32,
+    height: u32,
+    clip: Rect,
+    x: u32,
+    y: i32,
+    ch: char,
+    color: u32,
+    scale: u32,
+) {
+    let glyph = glyph(ch);
+    for (row, bits) in glyph.iter().enumerate() {
+        let pixel_y = y + row as i32 * scale as i32;
+        if pixel_y < clip.y as i32 || pixel_y >= (clip.y + clip.h) as i32 {
+            continue;
+        }
+        for col in 0..5 {
+            let pixel_x = x + col * scale;
+            if pixel_x < clip.x || pixel_x >= clip.x.saturating_add(clip.w) {
+                continue;
+            }
+            if bits & (1 << (4 - col)) != 0 {
+                fill_rect(
+                    buffer,
+                    width,
+                    height,
+                    Rect {
+                        x: pixel_x,
+                        y: pixel_y as u32,
+                        w: scale,
+                        h: scale,
+                    },
+                    color,
+                );
+            }
+        }
+    }
+}
+
+fn glyph(ch: char) -> [u8; 7] {
+    match ch.to_ascii_uppercase() {
+        'A' => [0x0e, 0x11, 0x11, 0x1f, 0x11, 0x11, 0x11],
+        'B' => [0x1e, 0x11, 0x11, 0x1e, 0x11, 0x11, 0x1e],
+        'C' => [0x0f, 0x10, 0x10, 0x10, 0x10, 0x10, 0x0f],
+        'D' => [0x1e, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1e],
+        'E' => [0x1f, 0x10, 0x10, 0x1e, 0x10, 0x10, 0x1f],
+        'F' => [0x1f, 0x10, 0x10, 0x1e, 0x10, 0x10, 0x10],
+        'G' => [0x0f, 0x10, 0x10, 0x13, 0x11, 0x11, 0x0f],
+        'H' => [0x11, 0x11, 0x11, 0x1f, 0x11, 0x11, 0x11],
+        'I' => [0x1f, 0x04, 0x04, 0x04, 0x04, 0x04, 0x1f],
+        'J' => [0x01, 0x01, 0x01, 0x01, 0x11, 0x11, 0x0e],
+        'K' => [0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11],
+        'L' => [0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1f],
+        'M' => [0x11, 0x1b, 0x15, 0x15, 0x11, 0x11, 0x11],
+        'N' => [0x11, 0x19, 0x15, 0x13, 0x11, 0x11, 0x11],
+        'O' => [0x0e, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0e],
+        'P' => [0x1e, 0x11, 0x11, 0x1e, 0x10, 0x10, 0x10],
+        'Q' => [0x0e, 0x11, 0x11, 0x11, 0x15, 0x12, 0x0d],
+        'R' => [0x1e, 0x11, 0x11, 0x1e, 0x14, 0x12, 0x11],
+        'S' => [0x0f, 0x10, 0x10, 0x0e, 0x01, 0x01, 0x1e],
+        'T' => [0x1f, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04],
+        'U' => [0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0e],
+        'V' => [0x11, 0x11, 0x11, 0x11, 0x11, 0x0a, 0x04],
+        'W' => [0x11, 0x11, 0x11, 0x15, 0x15, 0x15, 0x0a],
+        'X' => [0x11, 0x11, 0x0a, 0x04, 0x0a, 0x11, 0x11],
+        'Y' => [0x11, 0x11, 0x0a, 0x04, 0x04, 0x04, 0x04],
+        'Z' => [0x1f, 0x01, 0x02, 0x04, 0x08, 0x10, 0x1f],
+        '0' => [0x0e, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0e],
+        '1' => [0x04, 0x0c, 0x04, 0x04, 0x04, 0x04, 0x0e],
+        '2' => [0x0e, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1f],
+        '3' => [0x1e, 0x01, 0x01, 0x0e, 0x01, 0x01, 0x1e],
+        '4' => [0x02, 0x06, 0x0a, 0x12, 0x1f, 0x02, 0x02],
+        '5' => [0x1f, 0x10, 0x10, 0x1e, 0x01, 0x01, 0x1e],
+        '6' => [0x0e, 0x10, 0x10, 0x1e, 0x11, 0x11, 0x0e],
+        '7' => [0x1f, 0x01, 0x02, 0x04, 0x08, 0x08, 0x08],
+        '8' => [0x0e, 0x11, 0x11, 0x0e, 0x11, 0x11, 0x0e],
+        '9' => [0x0e, 0x11, 0x11, 0x0f, 0x01, 0x01, 0x0e],
+        '.' => [0x00, 0x00, 0x00, 0x00, 0x00, 0x0c, 0x0c],
+        ':' => [0x00, 0x0c, 0x0c, 0x00, 0x0c, 0x0c, 0x00],
+        '/' => [0x01, 0x01, 0x02, 0x04, 0x08, 0x10, 0x10],
+        '-' => [0x00, 0x00, 0x00, 0x1f, 0x00, 0x00, 0x00],
+        '_' => [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x1f],
+        '?' => [0x0e, 0x11, 0x01, 0x02, 0x04, 0x00, 0x04],
+        '&' => [0x0c, 0x12, 0x14, 0x08, 0x15, 0x12, 0x0d],
+        '=' => [0x00, 0x00, 0x1f, 0x00, 0x1f, 0x00, 0x00],
+        '\'' => [0x0c, 0x04, 0x08, 0x00, 0x00, 0x00, 0x00],
+        '"' => [0x0a, 0x0a, 0x00, 0x00, 0x00, 0x00, 0x00],
+        '|' => [0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04],
+        ' ' => [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+        _ => [0x1f, 0x11, 0x01, 0x02, 0x04, 0x00, 0x04],
+    }
+}

@@ -1,12 +1,12 @@
-use serde::{Serialize, Deserialize};
-use url::Url;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use url::Url;
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub enum FirewallAction {
     Allow,
     Block,
-    Audit, // Allow but log extensively
+    Audit,   // Allow but log extensively
     Isolate, // Allow only in a high-security sandbox
 }
 
@@ -25,34 +25,38 @@ pub struct SextantFirewall {
 impl SextantFirewall {
     pub fn new() -> Self {
         let mut persona_rules = HashMap::new();
-        
+
         // Default Work Persona Rules
-        persona_rules.insert("Work".to_string(), vec![
-            FirewallRule {
-                domain_pattern: "*.google.com".into(),
-                action: FirewallAction::Allow,
-                reason: "Productivity suite".into(),
-            },
-            FirewallRule {
-                domain_pattern: "github.com".into(),
-                action: FirewallAction::Allow,
-                reason: "Source control".into(),
-            },
-            FirewallRule {
-                domain_pattern: "facebook.com".into(),
-                action: FirewallAction::Block,
-                reason: "Social media restricted in Work persona".into(),
-            },
-        ]);
+        persona_rules.insert(
+            "Work".to_string(),
+            vec![
+                FirewallRule {
+                    domain_pattern: "*.google.com".into(),
+                    action: FirewallAction::Allow,
+                    reason: "Productivity suite".into(),
+                },
+                FirewallRule {
+                    domain_pattern: "github.com".into(),
+                    action: FirewallAction::Allow,
+                    reason: "Source control".into(),
+                },
+                FirewallRule {
+                    domain_pattern: "facebook.com".into(),
+                    action: FirewallAction::Block,
+                    reason: "Social media restricted in Work persona".into(),
+                },
+            ],
+        );
 
         // Default Personal Persona Rules
-        persona_rules.insert("Personal".to_string(), vec![
-            FirewallRule {
+        persona_rules.insert(
+            "Personal".to_string(),
+            vec![FirewallRule {
                 domain_pattern: "*".into(),
                 action: FirewallAction::Allow,
                 reason: "Unrestricted personal browsing".into(),
-            },
-        ]);
+            }],
+        );
 
         Self {
             persona_rules,
@@ -93,6 +97,47 @@ impl SextantFirewall {
     }
 
     pub fn add_rule(&mut self, persona_id: &str, rule: FirewallRule) {
-        self.persona_rules.entry(persona_id.to_string()).or_default().push(rule);
+        self.persona_rules
+            .entry(persona_id.to_string())
+            .or_default()
+            .push(rule);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn global_blacklist_blocks_before_persona_rules() {
+        let firewall = SextantFirewall::new();
+        let url = Url::parse("https://malicious-site.net/path").unwrap();
+
+        let (action, reason) = firewall.check_access("Personal", &url);
+
+        assert_eq!(action, FirewallAction::Block);
+        assert_eq!(reason, "Global blacklist match");
+    }
+
+    #[test]
+    fn work_persona_blocks_social_media() {
+        let firewall = SextantFirewall::new();
+        let url = Url::parse("https://facebook.com/messages").unwrap();
+
+        let (action, reason) = firewall.check_access("Work", &url);
+
+        assert_eq!(action, FirewallAction::Block);
+        assert!(reason.contains("Social media"));
+    }
+
+    #[test]
+    fn unmatched_persona_audits_by_default() {
+        let firewall = SextantFirewall::new();
+        let url = Url::parse("https://example.com").unwrap();
+
+        let (action, reason) = firewall.check_access("Unknown", &url);
+
+        assert_eq!(action, FirewallAction::Audit);
+        assert_eq!(reason, "No specific rule matched");
     }
 }

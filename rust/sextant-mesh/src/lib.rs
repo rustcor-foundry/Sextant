@@ -1,13 +1,21 @@
-use serde::{Serialize, Deserialize};
 use chrono::{DateTime, Utc};
-use uuid::Uuid;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use uuid::Uuid;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum MeshPayload {
     ChatMessage(String),
-    TabShare { url: String, title: String },
-    FileShare { name: String, size: u64, type_id: String, content_base64: String },
+    TabShare {
+        url: String,
+        title: String,
+    },
+    FileShare {
+        name: String,
+        size: u64,
+        type_id: String,
+        content_base64: String,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -47,7 +55,8 @@ impl SextantMesh {
 
     pub fn setup_wireguard_tunnel(&mut self, peer_did: &str, public_key: &str) {
         // In a real app, this would use wireguard-uapi to configure the kernel/userspace interface
-        self.peer_tunnels.insert(peer_did.to_string(), public_key.to_string());
+        self.peer_tunnels
+            .insert(peer_did.to_string(), public_key.to_string());
     }
 
     pub fn wireguard_interface(&self) -> &str {

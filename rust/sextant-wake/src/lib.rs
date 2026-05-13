@@ -1,10 +1,10 @@
-use rusqlite::{params, Connection, Result};
-use serde::{Serialize, Deserialize};
 use chrono::{DateTime, Utc};
-use uuid::Uuid;
-use url::Url;
+use rusqlite::{params, Connection, Result};
+use serde::{Deserialize, Serialize};
 use sextant_engine::DistilledPage;
 use std::path::Path;
+use url::Url;
+use uuid::Uuid;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct WakeEntry {
@@ -32,7 +32,9 @@ fn bincode_serialize(vec: &Vec<f32>) -> Vec<u8> {
 }
 
 fn bincode_deserialize(bytes: &[u8]) -> Option<Vec<f32>> {
-    if bytes.len() % 4 != 0 { return None; }
+    if bytes.len() % 4 != 0 {
+        return None;
+    }
     let mut res = Vec::with_capacity(bytes.len() / 4);
     for chunk in bytes.chunks_exact(4) {
         let arr: [u8; 4] = chunk.try_into().ok()?;
@@ -48,7 +50,7 @@ fn cosine_similarity(v1: &[f32], v2: &[f32]) -> f32 {
     let dot_product: f32 = v1.iter().zip(v2.iter()).map(|(a, b)| a * b).sum();
     let norm_v1: f32 = v1.iter().map(|a| a * a).sum::<f32>().sqrt();
     let norm_v2: f32 = v2.iter().map(|a| a * a).sum::<f32>().sqrt();
-    
+
     if norm_v1 == 0.0 || norm_v2 == 0.0 {
         return 0.0;
     }
@@ -113,7 +115,7 @@ impl DigitalWake {
             )",
             [],
         )?;
-        
+
         // FTS5 Virtual Table for high-performance text search
         self.conn.execute(
             "CREATE VIRTUAL TABLE IF NOT EXISTS wake_fts USING fts5(
@@ -152,22 +154,40 @@ impl DigitalWake {
     }
 
     /// Records a new experience into the Digital Wake.
-    pub fn record(&self, persona_id: &str, page: &DistilledPage, embedding: Option<Vec<f32>>) -> Result<()> {
+    pub fn record(
+        &self,
+        persona_id: &str,
+        page: &DistilledPage,
+        embedding: Option<Vec<f32>>,
+    ) -> Result<()> {
         let id = Uuid::new_v4().to_string();
         let timestamp = Utc::now().to_rfc3339();
         let semantic_map = serde_json::to_string(&page.semantic_map).unwrap_or_default();
         let metadata = serde_json::to_string(&page.metadata).unwrap_or_default();
-        
+
         // Importance heuristic:
         // - Longer content is generally more important (up to a point)
         // - Presence of specific metadata (e.g., 'author', 'priority') increases importance
         let mut importance: f32 = 0.3;
-        
-        if page.content.len() > 1000 { importance += 0.2; }
-        if page.content.len() > 5000 { importance += 0.2; }
-        if page.metadata.contains_key("author") { importance += 0.1; }
-        if page.metadata.get("priority").map(|v| v == "high").unwrap_or(false) { importance += 0.2; }
-        
+
+        if page.content.len() > 1000 {
+            importance += 0.2;
+        }
+        if page.content.len() > 5000 {
+            importance += 0.2;
+        }
+        if page.metadata.contains_key("author") {
+            importance += 0.1;
+        }
+        if page
+            .metadata
+            .get("priority")
+            .map(|v| v == "high")
+            .unwrap_or(false)
+        {
+            importance += 0.2;
+        }
+
         importance = importance.min(1.0_f32);
 
         let embedding_blob = embedding.map(|v| bincode_serialize(&v));
@@ -192,7 +212,12 @@ impl DigitalWake {
     }
 
     /// Performs a hybrid search (FTS5 + Semantic Re-ranking) isolated by persona.
-    pub fn search_hybrid(&self, persona_id: &str, query: &str, query_vector: Option<&[f32]>) -> Result<Vec<WakeEntry>> {
+    pub fn search_hybrid(
+        &self,
+        persona_id: &str,
+        query: &str,
+        query_vector: Option<&[f32]>,
+    ) -> Result<Vec<WakeEntry>> {
         let normalized_query = normalize_fts_query(query);
         if normalized_query.is_empty() {
             return self.get_recent(persona_id, 10);
@@ -215,9 +240,9 @@ impl DigitalWake {
              FROM wake_entries 
              JOIN wake_fts ON wake_entries.rowid = wake_fts.rowid
              WHERE wake_entries.persona_id = ?1 AND wake_fts MATCH ?2 
-             ORDER BY rank LIMIT 50"
+             ORDER BY rank LIMIT 50",
         )?;
-        
+
         let entries = stmt.query_map(params![persona_id, normalized_query], |row| {
             self.map_row_to_entry(row)
         })?;
@@ -230,9 +255,19 @@ impl DigitalWake {
         // 2. If a query vector is provided, re-rank candidates using cosine similarity
         if let Some(q_vec) = query_vector {
             candidates.sort_by(|a, b| {
-                let score_a = a.embedding.as_ref().map(|v| cosine_similarity(v, q_vec)).unwrap_or(0.0);
-                let score_b = b.embedding.as_ref().map(|v| cosine_similarity(v, q_vec)).unwrap_or(0.0);
-                score_b.partial_cmp(&score_a).unwrap_or(std::cmp::Ordering::Equal)
+                let score_a = a
+                    .embedding
+                    .as_ref()
+                    .map(|v| cosine_similarity(v, q_vec))
+                    .unwrap_or(0.0);
+                let score_b = b
+                    .embedding
+                    .as_ref()
+                    .map(|v| cosine_similarity(v, q_vec))
+                    .unwrap_or(0.0);
+                score_b
+                    .partial_cmp(&score_a)
+                    .unwrap_or(std::cmp::Ordering::Equal)
             });
         }
 
@@ -266,10 +301,9 @@ impl DigitalWake {
              WHERE persona_id = ?1
              ORDER BY timestamp DESC LIMIT ?2"
         )?;
-        
-        let entries = stmt.query_map(params![persona_id, limit], |row| {
-            self.map_row_to_entry(row)
-        })?;
+
+        let entries =
+            stmt.query_map(params![persona_id, limit], |row| self.map_row_to_entry(row))?;
 
         let mut result = Vec::new();
         for entry in entries {
@@ -285,7 +319,7 @@ impl DigitalWake {
         let url_str: String = row.get(3)?;
         let last_acc_str: Option<String> = row.get(10)?;
         let embedding_blob: Option<Vec<u8>> = row.get(11)?;
-        
+
         let embedding = embedding_blob.and_then(|b| bincode_deserialize(&b));
         let last_accessed = last_acc_str.and_then(|s| {
             DateTime::parse_from_rfc3339(&s)
@@ -317,10 +351,10 @@ impl DigitalWake {
         let mut associations_created = 0;
 
         for i in 0..entries.len() {
-            for j in i+1..entries.len() {
+            for j in i + 1..entries.len() {
                 let e1 = &entries[i];
                 let e2 = &entries[j];
-                
+
                 if let (Some(v1), Some(v2)) = (&e1.embedding, &e2.embedding) {
                     let similarity = cosine_similarity(v1, v2);
                     if similarity > 0.8 {
@@ -392,10 +426,10 @@ impl DigitalWake {
         let mut to_delete = Vec::new();
 
         for i in 0..entries.len() {
-            for j in i+1..entries.len() {
+            for j in i + 1..entries.len() {
                 let e1 = &entries[i];
                 let e2 = &entries[j];
-                
+
                 if let (Some(v1), Some(v2)) = (&e1.embedding, &e2.embedding) {
                     if cosine_similarity(v1, v2) > 0.95 {
                         // Keep the one with higher importance or the newer one
@@ -410,10 +444,9 @@ impl DigitalWake {
         }
 
         for id in to_delete {
-            deleted_count += self.conn.execute(
-                "DELETE FROM wake_entries WHERE id = ?1",
-                params![id],
-            )?;
+            deleted_count += self
+                .conn
+                .execute("DELETE FROM wake_entries WHERE id = ?1", params![id])?;
         }
 
         Ok(deleted_count)
@@ -455,5 +488,43 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].title, "Test Page");
         assert_eq!(results[0].persona_id, persona_id);
+    }
+
+    #[test]
+    fn search_is_isolated_by_persona() {
+        let wake = DigitalWake::new_in_memory().unwrap();
+        let page = DistilledPage {
+            title: "Shared Keyword".to_string(),
+            url: Url::parse("https://example.com").unwrap(),
+            content: "needle belongs to persona one".to_string(),
+            semantic_map: vec![],
+            metadata: HashMap::new(),
+        };
+
+        wake.record("persona-one", &page, None).unwrap();
+
+        let visible = wake.search("persona-one", "needle").unwrap();
+        let hidden = wake.search("persona-two", "needle").unwrap();
+
+        assert_eq!(visible.len(), 1);
+        assert!(hidden.is_empty());
+    }
+
+    #[test]
+    fn punctuation_heavy_search_queries_do_not_break_fts() {
+        let wake = DigitalWake::new_in_memory().unwrap();
+        let page = DistilledPage {
+            title: "Rust Search".to_string(),
+            url: Url::parse("https://example.com/rust").unwrap(),
+            content: "rust async runtime browser".to_string(),
+            semantic_map: vec![],
+            metadata: HashMap::new(),
+        };
+
+        wake.record("persona", &page, None).unwrap();
+        let results = wake.search("persona", "rust??? async!!!").unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title, "Rust Search");
     }
 }

@@ -154,7 +154,9 @@ impl SextantState {
             None
         };
 
-        self.deferred.mesh.broadcast(MeshPayload::ChatMessage(text), pq_sig);
+        self.deferred
+            .mesh
+            .broadcast(MeshPayload::ChatMessage(text), pq_sig);
         self.deferred.mesh_input.clear();
     }
 
@@ -168,7 +170,9 @@ impl SextantState {
 
                 let pq_sig = if let Some(persona) = &self.active_persona {
                     let vault = self.vault.lock().await;
-                    vault.sign_with_pq(&persona.id, url.as_str().as_bytes()).ok()
+                    vault
+                        .sign_with_pq(&persona.id, url.as_str().as_bytes())
+                        .ok()
                 } else {
                     None
                 };

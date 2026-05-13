@@ -1,11 +1,11 @@
 use serde::{Deserialize, Serialize};
 use serde_json;
+use sextant_engine::SextantEngine;
+use sextant_log::{CaptainsLog, LogEntry, LogStatus};
+use sextant_vault::CitadelVault;
+use sextant_wake::DigitalWake;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use sextant_vault::CitadelVault;
-use sextant_engine::SextantEngine;
-use sextant_wake::DigitalWake;
-use sextant_log::{CaptainsLog, LogEntry, LogStatus};
 use url::Url;
 use uuid::Uuid;
 
@@ -24,7 +24,7 @@ pub enum PilotStatus {
 pub enum PilotAction {
     Navigate(Url),
     Distill,
-    Perceive, // Multi-tab semantic capture
+    Perceive,           // Multi-tab semantic capture
     PerceiveMultiModal, // Neural Bridge (audio/video) capture
     RequestConsent(String),
     Analyze(String),
@@ -37,7 +37,11 @@ pub enum PilotAction {
 /// This allows the browser to be vendor-agnostic (Gemini, Local Llama, etc.)
 #[async_trait::async_trait]
 pub trait PilotBrain: Send + Sync {
-    async fn reason(&self, intent: &str, context: &[sextant_wake::WakeEntry]) -> Result<Vec<PilotAction>, String>;
+    async fn reason(
+        &self,
+        intent: &str,
+        context: &[sextant_wake::WakeEntry],
+    ) -> Result<Vec<PilotAction>, String>;
     async fn embed(&self, text: &str) -> Result<Vec<f32>, String>;
     fn name(&self) -> &str;
 }
@@ -106,11 +110,7 @@ impl SextantPilot {
         self.brain = brain;
     }
 
-    async fn update_active_log_status(
-        &self,
-        status: LogStatus,
-        consent_signature: Option<String>,
-    ) {
+    async fn update_active_log_status(&self, status: LogStatus, consent_signature: Option<String>) {
         if let Some(log_id) = self.active_log_id {
             let log_guard = self.log.lock().await;
             let _ = log_guard.update_status(&log_id, status, consent_signature);
@@ -121,20 +121,22 @@ impl SextantPilot {
     pub async fn process_intent(&mut self, intent: &str) -> Result<String, String> {
         self.status = PilotStatus::Reasoning;
         self.plan_results.clear();
-        
+
         let persona_id = self.active_persona_id.as_deref().unwrap_or("default");
 
         // 1. Query the Wake for context using Hybrid Search
         // Generate an embedding for the intent to enable semantic re-ranking
         let query_vector = self.brain.embed(intent).await.ok();
-        
+
         let wake_guard = self.wake.lock().await;
-        let context = wake_guard.search_hybrid(persona_id, intent, query_vector.as_deref()).map_err(|e| e.to_string())?;
+        let context = wake_guard
+            .search_hybrid(persona_id, intent, query_vector.as_deref())
+            .map_err(|e| e.to_string())?;
         drop(wake_guard); // Release lock before reasoning
-        
+
         // 2. Formulate a plan using the selected Brain
         let mut plan = self.brain.reason(intent, &context).await?;
-        
+
         // 3. Sign the plan via the Vault (Captain's Key)
         // This provides a cryptographic proof that the Pilot's reasoning was authorized.
         let plan_json = serde_json::to_string(&plan).map_err(|e| e.to_string())?;
@@ -163,12 +165,13 @@ impl SextantPilot {
 
         plan.reverse(); // Reverse so we can pop from the end
         self.current_plan = plan;
-        
+
         // 4. Execute the plan
         let execution = self.execute_remaining_plan().await;
         match &execution {
             Ok(_) if !matches!(self.status, PilotStatus::AwaitingConsent(_)) => {
-                self.update_active_log_status(LogStatus::Success, None).await;
+                self.update_active_log_status(LogStatus::Success, None)
+                    .await;
             }
             Err(e) => {
                 self.status = PilotStatus::Idle;
@@ -183,7 +186,10 @@ impl SextantPilot {
     /// Resumes execution after user provides Captain's Key consent.
     pub async fn provide_consent(&mut self, signature: &str) -> Result<String, String> {
         if let PilotStatus::AwaitingConsent(_) = self.status {
-            self.plan_results.push(format!("Captain's Key Authorized. Signature: {}", signature));
+            self.plan_results.push(format!(
+                "Captain's Key Authorized. Signature: {}",
+                signature
+            ));
             let consent_signature = Some(signature.to_string());
             let execution = self.execute_remaining_plan().await;
             match &execution {
@@ -197,11 +203,8 @@ impl SextantPilot {
                 }
                 Err(e) => {
                     self.status = PilotStatus::Idle;
-                    self.update_active_log_status(
-                        LogStatus::Failure(e.clone()),
-                        consent_signature,
-                    )
-                    .await;
+                    self.update_active_log_status(LogStatus::Failure(e.clone()), consent_signature)
+                        .await;
                 }
             }
             execution
@@ -216,7 +219,8 @@ impl SextantPilot {
             self.status = PilotStatus::Idle;
             self.plan_results
                 .push(format!("Captain's Key denied: {}", message));
-            self.update_active_log_status(LogStatus::Aborted, None).await;
+            self.update_active_log_status(LogStatus::Aborted, None)
+                .await;
             Ok("Consent request denied. Pending plan aborted.".to_string())
         } else {
             Err("Pilot is not awaiting consent.".into())
@@ -230,32 +234,40 @@ impl SextantPilot {
                     self.status = PilotStatus::Navigating(url.clone());
                     let mut engine = self.engine.lock().await;
                     let persona_id = self.active_persona_id.as_deref().unwrap_or("default");
-                    engine.navigate_with_fallback(url.clone(), persona_id).map_err(|e| e.to_string())?;
+                    engine
+                        .navigate_with_fallback(url.clone(), persona_id)
+                        .map_err(|e| e.to_string())?;
                     self.plan_results.push(format!("Navigated to {}", url));
                 }
                 PilotAction::Distill => {
                     self.status = PilotStatus::Distilling;
-                    
+
                     let mut engine = self.engine.lock().await;
                     let page = engine.distill_current_page().map_err(|e| e.to_string())?;
                     drop(engine);
 
                     // Generate embedding for the content
                     let embedding = self.brain.embed(&page.content).await.ok();
-                    
+
                     let persona_id = self.active_persona_id.as_deref().unwrap_or("default");
                     let wake = self.wake.lock().await;
-                    wake.record(persona_id, &page, embedding).map_err(|e| e.to_string())?;
-                    
-                    self.plan_results.push(format!("Distilled page '{}' and recorded to Digital Wake.", page.title));
+                    wake.record(persona_id, &page, embedding)
+                        .map_err(|e| e.to_string())?;
+
+                    self.plan_results.push(format!(
+                        "Distilled page '{}' and recorded to Digital Wake.",
+                        page.title
+                    ));
                 }
                 PilotAction::PerceiveMultiModal => {
-                    self.status = PilotStatus::ExecutingAction("Perceiving via Neural Bridge...".into());
-                    
+                    self.status =
+                        PilotStatus::ExecutingAction("Perceiving via Neural Bridge...".into());
+
                     let engine = self.engine.lock().await;
                     match engine.bridge_perceive() {
                         Ok(perception) => {
-                            self.plan_results.push(format!("Neural Bridge Perception: {}", perception.summary));
+                            self.plan_results
+                                .push(format!("Neural Bridge Perception: {}", perception.summary));
                             if let Some(trans) = perception.transcription {
                                 self.plan_results.push(format!("Audio: {}", trans));
                             }
@@ -263,24 +275,30 @@ impl SextantPilot {
                                 self.plan_results.push(format!("Visual: {}", vis));
                             }
                         }
-                        Err(e) => self.plan_results.push(format!("Neural Bridge Error: {}", e)),
+                        Err(e) => self
+                            .plan_results
+                            .push(format!("Neural Bridge Error: {}", e)),
                     }
                 }
                 PilotAction::Perceive => {
                     self.status = PilotStatus::Distilling;
-                    
+
                     let mut engine = self.engine.lock().await;
                     let pages = engine.perceive_all_tabs();
                     drop(engine);
-                    
+
                     let persona_id = self.active_persona_id.as_deref().unwrap_or("default");
                     let wake = self.wake.lock().await;
                     for page in &pages {
                         let embedding = self.brain.embed(&page.content).await.ok();
-                        wake.record(persona_id, page, embedding).map_err(|e| e.to_string())?;
+                        wake.record(persona_id, page, embedding)
+                            .map_err(|e| e.to_string())?;
                     }
-                    
-                    self.plan_results.push(format!("Perceived {} tabs and recorded to Digital Wake.", pages.len()));
+
+                    self.plan_results.push(format!(
+                        "Perceived {} tabs and recorded to Digital Wake.",
+                        pages.len()
+                    ));
                 }
                 PilotAction::RequestConsent(msg) => {
                     self.status = PilotStatus::AwaitingConsent(msg.clone());
@@ -291,8 +309,11 @@ impl SextantPilot {
                     let id = engine.open_tab();
                     engine.switch_to_tab(id).map_err(|e| e.to_string())?;
                     let persona = self.active_persona_id.as_deref().unwrap_or("default");
-                    engine.navigate_with_fallback(url.clone(), persona).map_err(|e| e.to_string())?;
-                    self.plan_results.push(format!("Opened new tab with URL {} (ID: {})", url, id));
+                    engine
+                        .navigate_with_fallback(url.clone(), persona)
+                        .map_err(|e| e.to_string())?;
+                    self.plan_results
+                        .push(format!("Opened new tab with URL {} (ID: {})", url, id));
                 }
                 PilotAction::SwitchTab(id) => {
                     let mut engine = self.engine.lock().await;
@@ -432,7 +453,10 @@ fn fallback_plan(intent: &str) -> Vec<PilotAction> {
 fn parse_model_plan(intent: &str, response: &str) -> Result<Vec<PilotAction>, String> {
     let payload = extract_json_payload(response);
     let envelope: BrainPlanEnvelope = serde_json::from_str(payload)
-        .or_else(|_| serde_json::from_str::<Vec<BrainPlanAction>>(payload).map(|actions| BrainPlanEnvelope { actions }))
+        .or_else(|_| {
+            serde_json::from_str::<Vec<BrainPlanAction>>(payload)
+                .map(|actions| BrainPlanEnvelope { actions })
+        })
         .map_err(|e| format!("Failed to parse model plan JSON: {}", e))?;
 
     if envelope.actions.is_empty() {
@@ -475,19 +499,15 @@ fn parse_model_plan(intent: &str, response: &str) -> Result<Vec<PilotAction>, St
                 plan.push(PilotAction::OpenTab(url));
             }
             "switch_tab" => {
-                let tab_id = item
-                    .tab_id
-                    .as_deref()
-                    .and_then(parse_uuid)
-                    .ok_or_else(|| "Model plan switch_tab action missing valid tab_id.".to_string())?;
+                let tab_id = item.tab_id.as_deref().and_then(parse_uuid).ok_or_else(|| {
+                    "Model plan switch_tab action missing valid tab_id.".to_string()
+                })?;
                 plan.push(PilotAction::SwitchTab(tab_id));
             }
             "close_tab" => {
-                let tab_id = item
-                    .tab_id
-                    .as_deref()
-                    .and_then(parse_uuid)
-                    .ok_or_else(|| "Model plan close_tab action missing valid tab_id.".to_string())?;
+                let tab_id = item.tab_id.as_deref().and_then(parse_uuid).ok_or_else(|| {
+                    "Model plan close_tab action missing valid tab_id.".to_string()
+                })?;
                 plan.push(PilotAction::CloseTab(tab_id));
             }
             _ => {}
@@ -529,7 +549,11 @@ impl PilotBrain for GeminiBrain {
         "Gemini-1.5-Pro"
     }
 
-    async fn reason(&self, intent: &str, context: &[sextant_wake::WakeEntry]) -> Result<Vec<PilotAction>, String> {
+    async fn reason(
+        &self,
+        intent: &str,
+        context: &[sextant_wake::WakeEntry],
+    ) -> Result<Vec<PilotAction>, String> {
         let prompt = plan_prompt(intent, context);
         let response = self.inference.generate(&prompt, &self.config).await?;
         parse_model_plan(intent, &response).or_else(|_| Ok(fallback_plan(intent)))
@@ -568,7 +592,11 @@ impl PilotBrain for OpenAIBrain {
         "GPT-4o"
     }
 
-    async fn reason(&self, intent: &str, context: &[sextant_wake::WakeEntry]) -> Result<Vec<PilotAction>, String> {
+    async fn reason(
+        &self,
+        intent: &str,
+        context: &[sextant_wake::WakeEntry],
+    ) -> Result<Vec<PilotAction>, String> {
         let prompt = plan_prompt(intent, context);
         let response = self.inference.generate(&prompt, &self.config).await?;
         parse_model_plan(intent, &response).or_else(|_| Ok(fallback_plan(intent)))
@@ -607,7 +635,11 @@ impl PilotBrain for AnthropicBrain {
         "Claude-3.5-Sonnet"
     }
 
-    async fn reason(&self, intent: &str, context: &[sextant_wake::WakeEntry]) -> Result<Vec<PilotAction>, String> {
+    async fn reason(
+        &self,
+        intent: &str,
+        context: &[sextant_wake::WakeEntry],
+    ) -> Result<Vec<PilotAction>, String> {
         let prompt = plan_prompt(intent, context);
         let response = self.inference.generate(&prompt, &self.config).await?;
         parse_model_plan(intent, &response).or_else(|_| Ok(fallback_plan(intent)))
@@ -618,7 +650,7 @@ impl PilotBrain for AnthropicBrain {
     }
 }
 
-use sextant_inference::{SextantInference, InferenceConfig, InferenceBackend};
+use sextant_inference::{InferenceBackend, InferenceConfig, SextantInference};
 
 /// A Brain implementation that uses a local model (e.g., via llama.cpp, vLLM, Ollama, or MLC-LLM)
 pub struct LocalBrain {
@@ -656,7 +688,11 @@ impl PilotBrain for LocalBrain {
         }
     }
 
-    async fn reason(&self, intent: &str, context: &[sextant_wake::WakeEntry]) -> Result<Vec<PilotAction>, String> {
+    async fn reason(
+        &self,
+        intent: &str,
+        context: &[sextant_wake::WakeEntry],
+    ) -> Result<Vec<PilotAction>, String> {
         let prompt = plan_prompt(intent, context);
         let response = self.inference.generate(&prompt, &self.config).await?;
         parse_model_plan(intent, &response).or_else(|_| Ok(fallback_plan(intent)))
@@ -737,7 +773,9 @@ mod tests {
         let engine_guard = engine.lock().await;
         let tabs = engine_guard.get_tabs();
         assert_eq!(tabs.len(), 2, "expected a new tab to be opened");
-        let active_tab = engine_guard.get_active_tab().expect("active tab should exist");
+        let active_tab = engine_guard
+            .get_active_tab()
+            .expect("active tab should exist");
         assert_eq!(active_tab.url.as_ref(), Some(&target_url));
     }
 
@@ -757,7 +795,9 @@ mod tests {
         assert!(result_text.contains("recorded to Digital Wake"));
 
         let engine_guard = engine.lock().await;
-        let active_tab = engine_guard.get_active_tab().expect("active tab should exist");
+        let active_tab = engine_guard
+            .get_active_tab()
+            .expect("active tab should exist");
         let page = active_tab
             .distilled_page
             .as_ref()
@@ -775,16 +815,21 @@ mod tests {
 
         let log_guard = log.lock().await;
         let log_entries = log_guard.get_entries("default", 10).unwrap();
-        assert_eq!(log_entries.len(), 1, "expected a single captain's log entry");
+        assert_eq!(
+            log_entries.len(),
+            1,
+            "expected a single captain's log entry"
+        );
         assert!(matches!(log_entries[0].status, LogStatus::Success));
     }
 
     #[tokio::test]
     async fn process_intent_request_consent_sets_awaiting_status_and_can_be_denied() {
-        let (mut pilot, _engine, _wake, log) = create_test_pilot(vec![PilotAction::RequestConsent(
-            "Authorize this sensitive action?".to_string(),
-        )])
-        .await;
+        let (mut pilot, _engine, _wake, log) =
+            create_test_pilot(vec![PilotAction::RequestConsent(
+                "Authorize this sensitive action?".to_string(),
+            )])
+            .await;
 
         let result = pilot.process_intent("delete the current thing").await;
         assert!(result.is_ok(), "pilot returned error: {:?}", result.err());
@@ -793,12 +838,20 @@ mod tests {
         assert!(matches!(pilot.status(), PilotStatus::AwaitingConsent(_)));
 
         let deny_result = pilot.deny_consent().await;
-        assert!(deny_result.is_ok(), "deny returned error: {:?}", deny_result.err());
+        assert!(
+            deny_result.is_ok(),
+            "deny returned error: {:?}",
+            deny_result.err()
+        );
         assert!(matches!(pilot.status(), PilotStatus::Idle));
 
         let log_guard = log.lock().await;
         let log_entries = log_guard.get_entries("default", 10).unwrap();
-        assert_eq!(log_entries.len(), 1, "expected a single captain's log entry");
+        assert_eq!(
+            log_entries.len(),
+            1,
+            "expected a single captain's log entry"
+        );
         assert!(matches!(log_entries[0].status, LogStatus::Aborted));
     }
 
@@ -812,7 +865,9 @@ mod tests {
         ])
         .await;
 
-        let result = pilot.process_intent("do the protected blank-page flow").await;
+        let result = pilot
+            .process_intent("do the protected blank-page flow")
+            .await;
         assert!(result.is_ok(), "pilot returned error: {:?}", result.err());
         assert!(matches!(pilot.status(), PilotStatus::AwaitingConsent(_)));
 
@@ -828,19 +883,32 @@ mod tests {
         assert!(matches!(pilot.status(), PilotStatus::Idle));
 
         let engine_guard = engine.lock().await;
-        let active_tab = engine_guard.get_active_tab().expect("active tab should exist");
+        let active_tab = engine_guard
+            .get_active_tab()
+            .expect("active tab should exist");
         assert_eq!(active_tab.url.as_ref(), Some(&target_url));
         drop(engine_guard);
 
         let wake_guard = wake.lock().await;
         let wake_entries = wake_guard.search("default", "").unwrap();
-        assert_eq!(wake_entries.len(), 1, "expected one wake entry after consent");
+        assert_eq!(
+            wake_entries.len(),
+            1,
+            "expected one wake entry after consent"
+        );
         drop(wake_guard);
 
         let log_guard = log.lock().await;
         let log_entries = log_guard.get_entries("default", 10).unwrap();
-        assert_eq!(log_entries.len(), 1, "expected a single captain's log entry");
-        assert_eq!(log_entries[0].consent_signature.as_deref(), Some("test-signature"));
+        assert_eq!(
+            log_entries.len(),
+            1,
+            "expected a single captain's log entry"
+        );
+        assert_eq!(
+            log_entries[0].consent_signature.as_deref(),
+            Some("test-signature")
+        );
         assert!(matches!(log_entries[0].status, LogStatus::Success));
     }
 }

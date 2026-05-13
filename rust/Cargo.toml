@@ -17,3 +17,7 @@ members = [
     "sextant-airgap",
 ]
 resolver = "2"
+
+[patch.crates-io]
+masonry = { path = "vendor/masonry-0.2.0" }
+vello = { path = "vendor/vello-0.1.0" }

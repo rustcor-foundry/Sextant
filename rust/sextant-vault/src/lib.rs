@@ -1,22 +1,24 @@
-use bip39::{Mnemonic, Language};
-use ed25519_dalek::{SigningKey as EdSigningKey, VerifyingKey as EdVerifyingKey, Signature as EdSignature, Signer as EdSigner};
-use p256::ecdsa::{SigningKey as EcSigningKey, VerifyingKey as EcVerifyingKey, Signature as EcSignature};
-use rand::rngs::OsRng;
-use serde::{Serialize, Deserialize};
-use zeroize::{Zeroize, ZeroizeOnDrop};
 use aes_gcm::{
     aead::{Aead, KeyInit},
-    Aes256Gcm, Nonce
+    Aes256Gcm, Nonce,
+};
+use bip39::{Language, Mnemonic};
+use ed25519_dalek::{
+    Signature as EdSignature, Signer as EdSigner, SigningKey as EdSigningKey,
+    VerifyingKey as EdVerifyingKey,
 };
 use hmac::{Hmac, Mac};
-use sha2::Sha512;
-type HmacSha512 = Hmac<Sha512>;
-use sextant_bio::{SextantBioAuth, BioProof};
-use sextant_pq::{SextantPqCore, PqIdentity};
-use argon2::{
-    password_hash::SaltString,
-    Argon2
+use p256::ecdsa::{
+    Signature as EcSignature, SigningKey as EcSigningKey, VerifyingKey as EcVerifyingKey,
 };
+use rand::rngs::OsRng;
+use serde::{Deserialize, Serialize};
+use sha2::Sha512;
+use zeroize::{Zeroize, ZeroizeOnDrop};
+type HmacSha512 = Hmac<Sha512>;
+use argon2::{password_hash::SaltString, Argon2};
+use sextant_bio::{BioProof, SextantBioAuth};
+use sextant_pq::{PqIdentity, SextantPqCore};
 use std::collections::HashMap;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -43,7 +45,7 @@ pub struct VaultIdentity {
     pub did: String,
     #[zeroize(skip)]
     pub key_type: KeyType,
-    #[serde(skip_serializing)]
+    #[serde(default, skip_serializing)]
     pub secret_key: Vec<u8>,
     pub public_key: Vec<u8>,
     pub derivation_path: String,
@@ -88,22 +90,27 @@ impl CitadelVault {
         // We don't store the phrase, we derive the seed immediately
         let seed = mnemonic.to_seed("");
         self.master_seed = Some(seed);
-        
+
         // Derive master encryption key from passphrase
         let salt = SaltString::generate(&mut OsRng);
         let salt_str = salt.to_string();
         self.salt = Some(salt_str.clone());
         self.unlock(passphrase, &salt_str)?;
-        
+
         Ok(phrase)
     }
 
     pub fn unlock(&mut self, passphrase: &str, salt: &str) -> Result<(), String> {
         let salt_obj = SaltString::from_b64(salt).map_err(|e| e.to_string())?;
         let argon2 = Argon2::default();
-        
+
         let mut key = [0u8; 32];
-        argon2.hash_password_into(passphrase.as_bytes(), salt_obj.as_str().as_bytes(), &mut key)
+        argon2
+            .hash_password_into(
+                passphrase.as_bytes(),
+                salt_obj.as_str().as_bytes(),
+                &mut key,
+            )
             .map_err(|e| e.to_string())?;
 
         self.master_key = Some(key);
@@ -121,7 +128,10 @@ impl CitadelVault {
                 self.is_locked = false;
                 Ok(())
             } else {
-                Err("Vault must be initialized with a passphrase before Bio-Auth can be used.".into())
+                Err(
+                    "Vault must be initialized with a passphrase before Bio-Auth can be used."
+                        .into(),
+                )
             }
         } else {
             Err("Biometric verification failed.".into())
@@ -165,7 +175,8 @@ impl CitadelVault {
     }
 
     pub fn get_identities(&self, persona_id: &str) -> Vec<VaultIdentity> {
-        self.identities.values()
+        self.identities
+            .values()
             .filter(|i| i.persona_id == persona_id)
             .cloned()
             .collect()
@@ -180,7 +191,8 @@ impl CitadelVault {
         }
 
         let pq_identity = self.pq_core.generate_identity();
-        self.pq_identities.insert(persona_id.to_string(), pq_identity.clone());
+        self.pq_identities
+            .insert(persona_id.to_string(), pq_identity.clone());
         Ok(pq_identity)
     }
 
@@ -201,7 +213,13 @@ impl CitadelVault {
 
     /// Derives a new identity from the master seed using a derivation path.
     /// Path format: m/purpose'/coin_type'/account'/change/address_index
-    pub fn derive_identity(&mut self, persona_id: &str, label: &str, key_type: KeyType, path: &str) -> Result<VaultIdentity, String> {
+    pub fn derive_identity(
+        &mut self,
+        persona_id: &str,
+        label: &str,
+        key_type: KeyType,
+        path: &str,
+    ) -> Result<VaultIdentity, String> {
         if self.is_locked || self.master_seed.is_none() {
             return Err("Vault is locked or seed not initialized.".into());
         }
@@ -211,7 +229,7 @@ impl CitadelVault {
         }
 
         let seed_bytes = self.master_seed.as_ref().unwrap();
-        
+
         // Persona-aware derivation
         // We use the persona_id as a salt to ensure identities are isolated between personas
         let mut mac = <HmacSha512 as Mac>::new_from_slice(seed_bytes).map_err(|e| e.to_string())?;
@@ -226,26 +244,31 @@ impl CitadelVault {
                 let signing_key = EdSigningKey::from_bytes(derived_bytes[..32].try_into().unwrap());
                 let verifying_key = EdVerifyingKey::from(&signing_key);
                 let pk_bytes = verifying_key.to_bytes().to_vec();
-                
+
                 // Multicodec prefix for Ed25519 is 0xed 0x01
                 let mut multicodec = vec![0xed, 0x01];
                 multicodec.extend_from_slice(&pk_bytes);
-                let encoded = bs58::encode(multicodec).with_alphabet(bs58::Alphabet::BITCOIN).into_string();
+                let encoded = bs58::encode(multicodec)
+                    .with_alphabet(bs58::Alphabet::BITCOIN)
+                    .into_string();
                 let did = format!("did:key:z{}", encoded);
-                
+
                 (signing_key.to_bytes().to_vec(), pk_bytes, did)
             }
             KeyType::EcdsaP256 => {
-                let signing_key = EcSigningKey::from_bytes((&derived_bytes[..32]).into()).map_err(|e| e.to_string())?;
+                let signing_key = EcSigningKey::from_bytes((&derived_bytes[..32]).into())
+                    .map_err(|e| e.to_string())?;
                 let verifying_key = EcVerifyingKey::from(&signing_key);
                 let pk_bytes = verifying_key.to_encoded_point(true).as_bytes().to_vec();
-                
+
                 // Multicodec prefix for P-256 is 0x1200
                 let mut multicodec = vec![0x12, 0x00];
                 multicodec.extend_from_slice(&pk_bytes);
-                let encoded = bs58::encode(multicodec).with_alphabet(bs58::Alphabet::BITCOIN).into_string();
+                let encoded = bs58::encode(multicodec)
+                    .with_alphabet(bs58::Alphabet::BITCOIN)
+                    .into_string();
                 let did = format!("did:key:z{}", encoded);
-                
+
                 (signing_key.to_bytes().to_vec(), pk_bytes, did)
             }
         };
@@ -275,17 +298,26 @@ impl CitadelVault {
             return Err("Vault is locked.".into());
         }
 
-        let identity = self.identities.get(id)
+        let identity = self
+            .identities
+            .get(id)
             .ok_or_else(|| format!("Identity {} not found", id))?;
 
         match identity.key_type {
             KeyType::Ed25519 => {
-                let signing_key = EdSigningKey::from_bytes(identity.secret_key.as_slice().try_into().map_err(|_| "Invalid key length")?);
+                let signing_key = EdSigningKey::from_bytes(
+                    identity
+                        .secret_key
+                        .as_slice()
+                        .try_into()
+                        .map_err(|_| "Invalid key length")?,
+                );
                 let signature: EdSignature = signing_key.sign(message);
                 Ok(signature.to_bytes().to_vec())
             }
             KeyType::EcdsaP256 => {
-                let signing_key = EcSigningKey::from_bytes(identity.secret_key.as_slice().into()).map_err(|e| e.to_string())?;
+                let signing_key = EcSigningKey::from_bytes(identity.secret_key.as_slice().into())
+                    .map_err(|e| e.to_string())?;
                 let signature: EcSignature = signing_key.sign(message);
                 Ok(signature.to_der().as_bytes().to_vec())
             }
@@ -295,13 +327,15 @@ impl CitadelVault {
     pub fn encrypt_data(&self, plaintext: &[u8]) -> Result<Vec<u8>, String> {
         let key_bytes = self.master_key.ok_or("Vault not unlocked")?;
         let cipher = Aes256Gcm::new_from_slice(&key_bytes).map_err(|e| e.to_string())?;
-        
+
         let mut nonce_bytes = [0u8; 12];
         rand::RngCore::fill_bytes(&mut OsRng, &mut nonce_bytes);
         let nonce = Nonce::from_slice(&nonce_bytes);
 
-        let ciphertext = cipher.encrypt(nonce, plaintext).map_err(|e| e.to_string())?;
-        
+        let ciphertext = cipher
+            .encrypt(nonce, plaintext)
+            .map_err(|e| e.to_string())?;
+
         let mut result = nonce_bytes.to_vec();
         result.extend(ciphertext);
         Ok(result)
@@ -334,7 +368,10 @@ impl CitadelVault {
         if self.is_locked {
             return Err("Vault is locked".into());
         }
-        let encrypted = self.secrets.get(key).ok_or_else(|| format!("Secret '{}' not found", key))?;
+        let encrypted = self
+            .secrets
+            .get(key)
+            .ok_or_else(|| format!("Secret '{}' not found", key))?;
         let decrypted = self.decrypt_data(encrypted)?;
         String::from_utf8(decrypted).map_err(|e| e.to_string())
     }
@@ -382,7 +419,8 @@ impl CitadelVault {
     pub fn sign_consent(&self, message: &str) -> Result<String, String> {
         if !self.is_locked {
             if let Some(seed) = self.master_seed {
-                let mut hmac = <HmacSha512 as Mac>::new_from_slice(&seed).map_err(|e| e.to_string())?;
+                let mut hmac =
+                    <HmacSha512 as Mac>::new_from_slice(&seed).map_err(|e| e.to_string())?;
                 hmac.update(message.as_bytes());
                 hmac.update(b"CONSENT_DOMAIN_SEPARATOR");
                 let result = hmac.finalize().into_bytes();
@@ -409,16 +447,34 @@ mod tests {
         let persona = vault.create_persona("Default", "Primary persona").unwrap();
 
         // Test Ed25519
-        let ed_identity = vault.derive_identity(&persona.id, "Ed Pilot", KeyType::Ed25519, "m/44'/0'/0'/0/0").unwrap();
+        let ed_identity = vault
+            .derive_identity(&persona.id, "Ed Pilot", KeyType::Ed25519, "m/44'/0'/0'/0/0")
+            .unwrap();
         let msg = b"Sextant Ed25519 Test";
         let sig = vault.sign_with_identity(&ed_identity.id, msg).unwrap();
-        let pk = EdVerifyingKey::from_bytes(ed_identity.public_key.as_slice().try_into().unwrap()).unwrap();
-        assert!(pk.verify(msg, &EdSignature::from_bytes(sig.as_slice().try_into().unwrap())).is_ok());
+        let pk = EdVerifyingKey::from_bytes(ed_identity.public_key.as_slice().try_into().unwrap())
+            .unwrap();
+        assert!(pk
+            .verify(
+                msg,
+                &EdSignature::from_bytes(sig.as_slice().try_into().unwrap())
+            )
+            .is_ok());
 
         // Test ECDSA P-256
-        let ec_identity = vault.derive_identity(&persona.id, "Ec Pilot", KeyType::EcdsaP256, "m/44'/0'/0'/0/1").unwrap();
+        let ec_identity = vault
+            .derive_identity(
+                &persona.id,
+                "Ec Pilot",
+                KeyType::EcdsaP256,
+                "m/44'/0'/0'/0/1",
+            )
+            .unwrap();
         let sig_ec = vault.sign_with_identity(&ec_identity.id, msg).unwrap();
-        let pk_ec = EcVerifyingKey::from_encoded_point(&p256::EncodedPoint::from_bytes(&ec_identity.public_key).unwrap()).unwrap();
+        let pk_ec = EcVerifyingKey::from_encoded_point(
+            &p256::EncodedPoint::from_bytes(&ec_identity.public_key).unwrap(),
+        )
+        .unwrap();
         let signature_ec = EcSignature::from_der(&sig_ec).unwrap();
         assert!(pk_ec.verify(msg, &signature_ec).is_ok());
     }

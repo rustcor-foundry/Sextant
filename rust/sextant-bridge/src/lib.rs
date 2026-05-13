@@ -1,7 +1,7 @@
-use serde::{Serialize, Deserialize};
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use sextant_privacy::{PrivacyLevel, PrivacyMasker};
 use uuid::Uuid;
-use sextant_privacy::{PrivacyMasker, PrivacyLevel};
 
 use std::sync::Mutex;
 
@@ -82,20 +82,63 @@ impl NeuralBridge {
     pub fn bridge_to_neural_engine(&self, packets: Vec<MediaPacket>) -> MultiModalPerception {
         // This simulates the "Neural Bridge" processing the raw packets
         // into a format the PilotBrain can understand.
-        
-        let has_video = packets.iter().any(|p| matches!(p.media_type, MediaType::VideoFrame));
-        let has_audio = packets.iter().any(|p| matches!(p.media_type, MediaType::AudioChunk));
 
-        let visual_desc: Option<String> = if has_video { Some("A technical dashboard with real-time graphs and a code editor.".to_string()) } else { None };
-        let transcription: Option<String> = if has_audio { Some("The speaker is discussing the benefits of Rust for systems programming.".to_string()) } else { None };
+        let has_video = packets
+            .iter()
+            .any(|p| matches!(p.media_type, MediaType::VideoFrame));
+        let has_audio = packets
+            .iter()
+            .any(|p| matches!(p.media_type, MediaType::AudioChunk));
 
-        let level = self.privacy_level.lock().unwrap();
+        let visual_desc: Option<String> = if has_video {
+            Some("A technical dashboard with real-time graphs and a code editor.".to_string())
+        } else {
+            None
+        };
+        let transcription: Option<String> = if has_audio {
+            Some(
+                "The speaker is discussing the benefits of Rust for systems programming."
+                    .to_string(),
+            )
+        } else {
+            None
+        };
+
+        let level = self
+            .privacy_level
+            .lock()
+            .map(|level| level.clone())
+            .unwrap_or(PrivacyLevel::Standard);
 
         MultiModalPerception {
-            summary: format!("Perceived {} media packets via Neural Bridge.", packets.len()),
+            summary: format!(
+                "Perceived {} media packets via Neural Bridge.",
+                packets.len()
+            ),
             detected_entities: vec!["User Interface".into(), "Video Player".into()],
             transcription: transcription.map(|t| self.privacy_masker.redact_text(&t, &level)),
             visual_description: visual_desc.map(|v| self.privacy_masker.redact_text(&v, &level)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::panic::{self, AssertUnwindSafe};
+
+    #[test]
+    fn bridge_perception_survives_poisoned_privacy_lock() {
+        let bridge = NeuralBridge::new();
+        let _ = panic::catch_unwind(AssertUnwindSafe(|| {
+            let _guard = bridge.privacy_level.lock().unwrap();
+            panic!("poison privacy lock for regression coverage");
+        }));
+
+        let perception = bridge.bridge_to_neural_engine(Vec::new());
+        assert_eq!(
+            perception.summary,
+            "Perceived 0 media packets via Neural Bridge."
+        );
     }
 }

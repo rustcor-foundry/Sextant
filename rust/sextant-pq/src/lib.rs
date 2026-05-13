@@ -1,7 +1,7 @@
-use serde::{Serialize, Deserialize};
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use sha3::{Digest, Sha3_256};
 use uuid::Uuid;
-use sha3::{Sha3_256, Digest};
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub enum PqAlgorithm {
@@ -36,7 +36,7 @@ impl SextantPqCore {
         hasher.update(id.as_bytes());
         hasher.update(b"PQ_KEY_GEN_SALT");
         let hash = hasher.finalize();
-        
+
         PqIdentity {
             id,
             algorithm: self.active_algorithm.clone(),
@@ -52,7 +52,7 @@ impl SextantPqCore {
         hasher.update(message);
         hasher.update(b"PQ_SIG_DOMAIN_SEPARATOR");
         let hash = hasher.finalize();
-        
+
         format!("pq-sig-{}", hex::encode(hash))
     }
 

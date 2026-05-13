@@ -9,6 +9,7 @@ servo-backend = ["dep:servo"]
 
 [dependencies]
 servo = { git = "https://github.com/servo/servo", branch = "main", optional = true }
+dpi = "0.1.2"
 readability = "0.2"
 html5ever = "0.26"
 selectors = "0.25"
@@ -25,3 +26,5 @@ sextant-firewall = { path = "../sextant-firewall" }
 sextant-bridge = { path = "../sextant-bridge" }
 sextant-privacy = { path = "../sextant-privacy" }
 rand = "0.8"
+distill = { path = "../../../wsky-distiller/distill" }
+rustls = { version = "0.23", features = ["ring"] }

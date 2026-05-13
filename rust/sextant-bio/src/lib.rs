@@ -1,8 +1,8 @@
-use serde::{Serialize, Deserialize};
 use chrono::{DateTime, Utc};
-use uuid::Uuid;
 use hmac::{Hmac, Mac};
+use serde::{Deserialize, Serialize};
 use sha2::Sha256;
+use uuid::Uuid;
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub enum BioMethod {
@@ -48,9 +48,9 @@ impl SextantBioAuth {
         // In a real app, this would call OS-specific biometric APIs
         let timestamp = Utc::now();
         let payload = format!("{:?}-{}", method, timestamp.to_rfc3339());
-        
-        let mut mac = Hmac::<Sha256>::new_from_slice(&self.hardware_key)
-            .map_err(|e| e.to_string())?;
+
+        let mut mac =
+            Hmac::<Sha256>::new_from_slice(&self.hardware_key).map_err(|e| e.to_string())?;
         mac.update(payload.as_bytes());
         let result = mac.finalize();
         let signature = hex::encode(result.into_bytes());
@@ -65,15 +65,33 @@ impl SextantBioAuth {
 
     pub fn verify_proof(&self, proof: &BioProof) -> bool {
         let payload = format!("{:?}-{}", proof.method, proof.timestamp.to_rfc3339());
-        let mut mac = Hmac::<Sha256>::new_from_slice(&self.hardware_key).unwrap();
+        let Ok(mut mac) = Hmac::<Sha256>::new_from_slice(&self.hardware_key) else {
+            return false;
+        };
         mac.update(payload.as_bytes());
         let result = mac.finalize();
         let expected_signature = hex::encode(result.into_bytes());
-        
+
         proof.hardware_signature == expected_signature
     }
 
     pub fn get_available_methods(&self) -> Vec<BioMethod> {
         self.enrolled_methods.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn verifies_authentic_proof_and_rejects_tampering() {
+        let auth = SextantBioAuth::new();
+        let mut proof = auth.authenticate(BioMethod::TouchID).unwrap();
+
+        assert!(auth.verify_proof(&proof));
+
+        proof.hardware_signature.push_str("tamper");
+        assert!(!auth.verify_proof(&proof));
     }
 }
