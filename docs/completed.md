@@ -17,6 +17,8 @@ Audit trail of completed work sessions. Newest first.
 - Confirmed `--operator-probe https://www.rust-lang.org` now passes, distills `Rust Programming Language`, writes Wake/Log state, and captures a Servo frame
 - Found and fixed form-state observability: live DOM distillation now includes current `input`, `textarea`, and `select` values in the semantic map
 - Confirmed `--operator-run https://httpbin.org/forms/post --fill "input[name=custname]" "Sextant Operator" --expect "Sextant Operator"` now passes
+- Found and fixed click-driven navigation drift: native browser interactions now return the current Servo URL and update the engine tab after click/submit navigation
+- Confirmed `--operator-run https://example.com --click "a" --expect "IANA"` now passes after navigating away from the original page
 
 ---
 

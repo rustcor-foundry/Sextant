@@ -47,6 +47,7 @@ mod servo_runtime {
     const DEFAULT_VIEWPORT_HEIGHT: u32 = 720;
     const NAVIGATION_TIMEOUT: Duration = Duration::from_secs(8);
     const LOAD_SETTLE_TIMEOUT: Duration = Duration::from_millis(750);
+    const INTERACTION_NAVIGATION_TIMEOUT: Duration = Duration::from_secs(3);
     const SERVICE_REPLY_TIMEOUT: Duration = Duration::from_secs(20);
     const EVENT_LOOP_PAUSE: Duration = Duration::from_millis(10);
 
@@ -1026,6 +1027,8 @@ mod servo_runtime {
             .sessions
             .get(&tab_id)
             .ok_or_else(|| "Servo session was not created".to_string())?;
+        let previous_url = session.webview.url();
+        let _ = wait_for_load(&mut runtime.servo, &session.webview, LOAD_SETTLE_TIMEOUT);
         let script = browser_interaction_script(interaction)?;
         let value = evaluate_javascript_sync(
             &mut runtime.servo,
@@ -1033,13 +1036,33 @@ mod servo_runtime {
             &script,
             NAVIGATION_TIMEOUT,
         )?;
-        let result = interaction_result_from_js(value)?;
+        let mut result = interaction_result_from_js(value)?;
         runtime.servo.spin_event_loop();
+        if result.ok && interaction_may_navigate(interaction) {
+            if wait_for_changed_url(
+                &mut runtime.servo,
+                &session.webview,
+                previous_url.as_ref(),
+                INTERACTION_NAVIGATION_TIMEOUT,
+            )
+            .is_ok()
+            {
+                let _ = wait_for_load(&mut runtime.servo, &session.webview, LOAD_SETTLE_TIMEOUT);
+            }
+        }
+        result.current_url = session.webview.url();
         if result.ok {
             Ok(result)
         } else {
             Err(result.message)
         }
+    }
+
+    fn interaction_may_navigate(interaction: &BrowserInteraction) -> bool {
+        matches!(
+            interaction,
+            BrowserInteraction::ClickSelector { .. } | BrowserInteraction::SubmitSelector { .. }
+        )
     }
 
     fn browser_interaction_script(interaction: &BrowserInteraction) -> Result<String, String> {
@@ -1153,6 +1176,7 @@ mod servo_runtime {
                 .get("value")
                 .and_then(extract_string)
                 .unwrap_or_default(),
+            current_url: None,
         })
     }
 
@@ -1744,6 +1768,7 @@ pub struct BrowserInteractionResult {
     pub tag: String,
     pub text: String,
     pub value: String,
+    pub current_url: Option<Url>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy)]
@@ -3072,8 +3097,12 @@ impl SextantEngine {
                 }
             }
             if let Some(tab) = self.tabs.get_mut(&tab_id) {
+                if let Some(current_url) = result.current_url.clone() {
+                    tab.url = Some(current_url);
+                }
                 tab.distilled_page = None;
             }
+            self.sync_tab_navigation_state(tab_id);
             Ok(result)
         }
 
@@ -3598,6 +3627,44 @@ mod tests {
             "unexpected missing selector error: {}",
             error
         );
+    }
+
+    #[cfg(feature = "servo-backend")]
+    #[test]
+    fn native_browser_click_updates_tab_after_navigation() {
+        let mut engine = SextantEngine::new();
+        let destination =
+            "data:text/html,%3C!DOCTYPE%20html%3E%3Ctitle%3EClicked%20Destination%3C/title%3E%3Cmain%3EArrived%20after%20click%3C/main%3E";
+        let normalized_destination =
+            "data:text/html,<!DOCTYPE html><title>Clicked Destination</title><main>Arrived after click</main>";
+        let url = Url::parse(&format!(
+            "data:text/html,<!DOCTYPE html><title>Click Source</title><main><a id='next' href='{}'>Next</a></main>",
+            destination
+        ))
+        .expect("data URL should parse");
+        let destination_url =
+            Url::parse(normalized_destination).expect("destination URL should parse");
+
+        engine
+            .navigate_with_fallback(url, "default")
+            .expect("Servo navigation should succeed");
+
+        let click = engine
+            .click_selector_current_page("#next")
+            .expect("click interaction should succeed");
+        assert!(click.ok);
+        assert_eq!(click.current_url.as_ref(), Some(&destination_url));
+        assert_eq!(
+            engine.get_active_tab().and_then(|tab| tab.url.clone()),
+            Some(destination_url.clone())
+        );
+
+        let page = engine
+            .distill_current_page()
+            .expect("distillation should read the clicked destination");
+        assert_eq!(page.url, destination_url);
+        assert_eq!(page.title, "Clicked Destination");
+        assert!(page.content.contains("Arrived after click"));
     }
 
     #[cfg(feature = "servo-backend")]

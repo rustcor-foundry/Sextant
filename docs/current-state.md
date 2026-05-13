@@ -62,6 +62,7 @@ The biggest remaining gaps are now heavy browsing hardening, real-window Servo b
 | Default tab startup | ✅ | engine starts with a blank active tab again |
 | New-tab targeting | ✅ | new tabs become active so navigation/distillation targets the intended tab |
 | Multi-tab perception mapping | ✅ | failed tab distillation no longer reassigns another tab's page to the wrong tab |
+| Click-driven navigation sync | ✅ baseline | selector click/submit interactions update the active tab URL before later distillation |
 
 ## Regression Coverage In Place
 
