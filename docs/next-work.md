@@ -60,6 +60,8 @@ Next work is not starting from scratch. It is to make that path reliable:
 
 Recent progress: `https://www.rust-lang.org` exposed a live DOM distillation timeout. The engine now gives Servo requests more room, does not poison the Servo service on a request timeout, and falls back to reader distillation when live DOM distillation fails.
 
+Recent progress: `https://httpbin.org/forms/post` exposed that filled form values were interactable but not visible to distillation. Live DOM distillation now includes current input/select/textarea values in the semantic map, and scripted expectations search semantic attributes as well as page text.
+
 ### 2. Full In-Window Workflow Validation (~1-2 hours)
 
 The old Xilem validation checklist is reference material. Rebuild the same workflow coverage in the native-lite shell around its actual controls and browser viewport, then run a real click-through pass that exercises the app end to end in the window and fixes anything that still only works in tests or partial runtime paths.

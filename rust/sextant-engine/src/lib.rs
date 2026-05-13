@@ -1405,6 +1405,7 @@ mod servo_runtime {
             Some("heading") => NodeType::Heading,
             Some("link") => NodeType::Link,
             Some("image") => NodeType::Image,
+            Some("input") => NodeType::Input,
             Some(_) | None => return Ok(None),
         };
         let id = object
@@ -1429,6 +1430,18 @@ mod servo_runtime {
         }
         if let Some(alt) = object.get("alt").and_then(extract_string) {
             attributes.insert("alt".to_string(), alt);
+        }
+        if let Some(name) = object.get("name").and_then(extract_string) {
+            attributes.insert("name".to_string(), name);
+        }
+        if let Some(input_type) = object.get("inputType").and_then(extract_string) {
+            attributes.insert("type".to_string(), input_type);
+        }
+        if let Some(value) = object.get("value").and_then(extract_string) {
+            attributes.insert("value".to_string(), value);
+        }
+        if let Some(placeholder) = object.get("placeholder").and_then(extract_string) {
+            attributes.insert("placeholder".to_string(), placeholder);
         }
 
         Ok(Some(SemanticNode {
@@ -1503,6 +1516,7 @@ mod servo_runtime {
   const headingNodes = Array.from(document.querySelectorAll('h1, h2, h3')).slice(0, 24);
   const linkNodes = Array.from(document.querySelectorAll('a[href]')).slice(0, 24);
   const imageNodes = Array.from(document.querySelectorAll('img[src]')).slice(0, 12);
+  const inputNodes = Array.from(document.querySelectorAll('input, textarea, select')).slice(0, 48);
   const bodyNodes = Array.from(document.querySelectorAll('main, article, section, p, li')).slice(0, 400);
   const semanticMap = [];
 
@@ -1533,6 +1547,22 @@ mod servo_runtime {
       selector: 'img',
       src: node.src || '',
       alt: node.alt || ''
+    });
+  });
+
+  inputNodes.forEach((node, index) => {
+    const label = node.labels && node.labels.length
+      ? Array.from(node.labels).map(label => toText(label.textContent || '')).filter(Boolean).join(' ')
+      : '';
+    semanticMap.push({
+      id: node.id ? `input_${node.id}` : `input_${index}`,
+      type: 'input',
+      text: label || node.getAttribute('aria-label') || node.getAttribute('name') || node.getAttribute('placeholder') || '',
+      selector: node.id ? `#${node.id}` : node.name ? `[name="${node.name}"]` : node.tagName.toLowerCase(),
+      name: node.getAttribute('name') || '',
+      inputType: node.getAttribute('type') || node.tagName.toLowerCase(),
+      value: 'value' in node ? String(node.value || '') : '',
+      placeholder: node.getAttribute('placeholder') || ''
     });
   });
 
@@ -2154,6 +2184,7 @@ fn semantic_map_from_html(html: &str) -> Result<Vec<SemanticNode>, String> {
     let heading_text = extract_text(&document, "h1, h2, h3", 24)?;
     let link_selector = parse_selector("a[href]")?;
     let image_selector = parse_selector("img[src]")?;
+    let input_selector = parse_selector("input, textarea, select")?;
     let mut semantic_map = Vec::new();
 
     for (index, text) in heading_text.iter().enumerate() {
@@ -2194,6 +2225,49 @@ fn semantic_map_from_html(html: &str) -> Result<Vec<SemanticNode>, String> {
             node_type: NodeType::Image,
             text: node.value().attr("alt").unwrap_or_default().to_string(),
             selector: "img".to_string(),
+            attributes,
+        });
+    }
+
+    for (index, node) in document.select(&input_selector).take(48).enumerate() {
+        let mut attributes = HashMap::new();
+        if let Some(name) = node.value().attr("name") {
+            attributes.insert("name".to_string(), name.to_string());
+        }
+        if let Some(input_type) = node.value().attr("type") {
+            attributes.insert("type".to_string(), input_type.to_string());
+        }
+        if let Some(value) = node.value().attr("value") {
+            attributes.insert("value".to_string(), value.to_string());
+        }
+        if let Some(placeholder) = node.value().attr("placeholder") {
+            attributes.insert("placeholder".to_string(), placeholder.to_string());
+        }
+        let text = node
+            .value()
+            .attr("aria-label")
+            .or_else(|| node.value().attr("name"))
+            .or_else(|| node.value().attr("placeholder"))
+            .unwrap_or_default()
+            .to_string();
+        semantic_map.push(SemanticNode {
+            id: node
+                .value()
+                .attr("id")
+                .map(|id| format!("input_{}", id))
+                .unwrap_or_else(|| format!("input_{}", index)),
+            node_type: NodeType::Input,
+            text,
+            selector: node
+                .value()
+                .attr("id")
+                .map(|id| format!("#{}", id))
+                .or_else(|| {
+                    node.value()
+                        .attr("name")
+                        .map(|name| format!("[name=\"{}\"]", name))
+                })
+                .unwrap_or_else(|| node.value().name().to_string()),
             attributes,
         });
     }
@@ -3491,6 +3565,17 @@ mod tests {
             page.content.contains("native interaction filled"),
             "distilled content should reflect native browser interaction, got '{}'",
             page.content
+        );
+        assert!(
+            page.semantic_map.iter().any(|node| {
+                matches!(node.node_type, NodeType::Input)
+                    && node
+                        .attributes
+                        .get("value")
+                        .map(|value| value == "native interaction filled")
+                        .unwrap_or(false)
+            }),
+            "semantic map should expose current input values after native interaction"
         );
     }
 

@@ -15,6 +15,8 @@ Audit trail of completed work sessions. Newest first.
 - Confirmed `--operator-probe https://example.com` passes, distills `Example Domain`, writes Wake/Log state, and captures a Servo frame
 - Found and fixed a real probe blocker on `https://www.rust-lang.org`: Servo distillation timeout no longer marks the whole service failed, and distillation can fall back to the reader path
 - Confirmed `--operator-probe https://www.rust-lang.org` now passes, distills `Rust Programming Language`, writes Wake/Log state, and captures a Servo frame
+- Found and fixed form-state observability: live DOM distillation now includes current `input`, `textarea`, and `select` values in the semantic map
+- Confirmed `--operator-run https://httpbin.org/forms/post --fill "input[name=custname]" "Sextant Operator" --expect "Sextant Operator"` now passes
 
 ---
 

@@ -1157,7 +1157,7 @@ fn run_operator_script(spec: OperatorRunSpec) -> Result<Vec<String>, String> {
             OperatorStep::Expect { text } => {
                 let page = distill_operator_page(&mut app)?;
                 distilled = true;
-                let haystack = format!("{} {} {}", page.title, page.url, page.content);
+                let haystack = operator_page_search_text(&page);
                 if !haystack.contains(&text) {
                     return Err(format!(
                         "expected text '{}' was not found in distilled page '{}' ({})",
@@ -1310,6 +1310,23 @@ fn distill_operator_page(app: &mut LiteApp) -> Result<sextant_engine::DistilledP
     app.active_tab()
         .and_then(|tab| tab.distilled_page.clone())
         .ok_or_else(|| "operator distill did not attach distilled page data".to_string())
+}
+
+fn operator_page_search_text(page: &sextant_engine::DistilledPage) -> String {
+    let mut values = vec![
+        page.title.clone(),
+        page.url.to_string(),
+        page.content.clone(),
+    ];
+    for node in &page.semantic_map {
+        values.push(node.text.clone());
+        values.push(node.selector.clone());
+        for (key, value) in &node.attributes {
+            values.push(key.clone());
+            values.push(value.clone());
+        }
+    }
+    values.join("\n")
 }
 
 fn parse_operator_run(args: &[String]) -> Result<Option<OperatorRunSpec>, String> {
