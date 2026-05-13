@@ -34,9 +34,10 @@ Native operator bridge:
 cd "D:/Paul/Software Projects/Sextant/rust"
 cargo run -p sextant-hull --bin sextant-hull-lite -- --operator-smoke
 cargo run -p sextant-hull --bin sextant-hull-lite -- --operator-probe https://example.com
+cargo run -p sextant-hull --bin sextant-hull-lite -- --operator-run https://example.com --expect "Example Domain"
 ```
 
-Use `--operator-smoke` for a deterministic data-URL workflow that exercises Servo navigation, native DOM fill/click, live DOM distillation, Wake recording/search, Captain's Log writes, and frame capture. Use `--operator-probe <url-or-search>` to aim the same native-lite path at representative HTTP/HTTPS pages before doing slower manual click-through.
+Use `--operator-smoke` for a deterministic data-URL workflow that exercises Servo navigation, native DOM fill/click, live DOM distillation, Wake recording/search, Captain's Log writes, and frame capture. Use `--operator-probe <url-or-search>` to aim the same native-lite path at representative HTTP/HTTPS pages before doing slower manual click-through. Use `--operator-run <url-or-search>` with `--fill`, `--click`, `--submit`, and `--expect` steps when a blocker requires a repeatable form or interaction script.
 
 ### 1. Stabilize Heavy Browsing In The Owned Shell (~1-2 days)
 
@@ -51,11 +52,13 @@ The active product lane is the first-party `sextant-hull-lite` shell. It uses `w
 
 Next work is not starting from scratch. It is to make that path reliable:
 
-1. run `--operator-probe` against representative HTTP/HTTPS pages, then confirm the same pages in the visible lite shell
+1. run `--operator-probe` and `--operator-run` against representative HTTP/HTTPS pages, then confirm the same pages in the visible lite shell
 2. capture the exact failure modes: blank frame, stale frame, timeout, bad resize, input not reaching forms, navigation state drift, or reader fallback being triggered incorrectly
 3. fix the highest-frequency failure first in `sextant-engine` or `sextant-hull/src/lite.rs`
 4. keep `--no-default-features` working as the fast reader/fallback lane
 5. add focused regression coverage when a bug can be reduced to engine behavior
+
+Recent progress: `https://www.rust-lang.org` exposed a live DOM distillation timeout. The engine now gives Servo requests more room, does not poison the Servo service on a request timeout, and falls back to reader distillation when live DOM distillation fails.
 
 ### 2. Full In-Window Workflow Validation (~1-2 hours)
 

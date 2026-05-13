@@ -90,6 +90,18 @@ enum MainView {
     Log,
 }
 
+enum OperatorStep {
+    Fill { selector: String, value: String },
+    Click { selector: String },
+    Submit { selector: String },
+    Expect { text: String },
+}
+
+struct OperatorRunSpec {
+    target: String,
+    steps: Vec<OperatorStep>,
+}
+
 struct ButtonRegion {
     rect: Rect,
     label: &'static str,
@@ -807,6 +819,26 @@ fn main() {
     tracing_subscriber::fmt::init();
 
     let args: Vec<String> = env::args().collect();
+    match parse_operator_run(&args) {
+        Ok(Some(spec)) => match run_operator_script(spec) {
+            Ok(report) => {
+                for line in report {
+                    println!("[operator-run] {line}");
+                }
+                std::process::exit(0);
+            }
+            Err(error) => {
+                eprintln!("[operator-run] failed: {error}");
+                std::process::exit(1);
+            }
+        },
+        Ok(None) => {}
+        Err(error) => {
+            eprintln!("[operator-run] failed to parse arguments: {error}");
+            std::process::exit(2);
+        }
+    }
+
     if let Some(target) = operator_arg_value(&args, "--operator-probe") {
         match run_operator_probe(&target) {
             Ok(report) => {
@@ -1034,6 +1066,163 @@ fn run_operator_smoke() -> Result<Vec<String>, String> {
     Ok(report)
 }
 
+fn run_operator_script(spec: OperatorRunSpec) -> Result<Vec<String>, String> {
+    let mut report = Vec::new();
+    report.push(format!(
+        "starting scripted native-lite run for {}",
+        spec.target
+    ));
+
+    let data_dir = env::temp_dir().join(format!("sextant-lite-operator-run-{}", Uuid::new_v4()));
+    let mut app = LiteApp::new_with_data_dir(data_dir.clone())?;
+    app.layout(PhysicalSize::new(1180, 760));
+    report.push(format!("isolated data dir: {}", data_dir.display()));
+
+    let url = parse_navigation_target(&spec.target)?;
+    app.navigate_to(url);
+    if !app.last_ok {
+        return Err(app.last_status);
+    }
+    report.push(app.last_status.clone());
+
+    let mut distilled = false;
+    for step in spec.steps {
+        match step {
+            OperatorStep::Fill { selector, value } => {
+                let result = app
+                    .engine
+                    .fill_selector_current_page(&selector, &value)
+                    .map_err(|error| {
+                        format!("native fill interaction failed for {}: {}", selector, error)
+                    })?;
+                if !result.ok || result.value != value {
+                    return Err(format!(
+                        "native fill interaction returned unexpected result: {:?}",
+                        result
+                    ));
+                }
+                app.record_log(
+                    &format!("operator run fill {}", selector),
+                    LogStatus::Success,
+                )?;
+                report.push(format!("filled {} with {}", selector, value));
+                distilled = false;
+            }
+            OperatorStep::Click { selector } => {
+                let result =
+                    app.engine
+                        .click_selector_current_page(&selector)
+                        .map_err(|error| {
+                            format!(
+                                "native click interaction failed for {}: {}",
+                                selector, error
+                            )
+                        })?;
+                if !result.ok {
+                    return Err(format!(
+                        "native click interaction returned unexpected result: {:?}",
+                        result
+                    ));
+                }
+                app.record_log(
+                    &format!("operator run click {}", selector),
+                    LogStatus::Success,
+                )?;
+                report.push(format!("clicked {} tag {}", selector, result.tag));
+                distilled = false;
+            }
+            OperatorStep::Submit { selector } => {
+                let result =
+                    app.engine
+                        .submit_selector_current_page(&selector)
+                        .map_err(|error| {
+                            format!(
+                                "native submit interaction failed for {}: {}",
+                                selector, error
+                            )
+                        })?;
+                if !result.ok {
+                    return Err(format!(
+                        "native submit interaction returned unexpected result: {:?}",
+                        result
+                    ));
+                }
+                app.record_log(
+                    &format!("operator run submit {}", selector),
+                    LogStatus::Success,
+                )?;
+                report.push(format!("submitted {} tag {}", selector, result.tag));
+                distilled = false;
+            }
+            OperatorStep::Expect { text } => {
+                let page = distill_operator_page(&mut app)?;
+                distilled = true;
+                let haystack = format!("{} {} {}", page.title, page.url, page.content);
+                if !haystack.contains(&text) {
+                    return Err(format!(
+                        "expected text '{}' was not found in distilled page '{}' ({})",
+                        text, page.title, page.url
+                    ));
+                }
+                report.push(format!("found expected text '{}'", text));
+            }
+        }
+    }
+
+    if !distilled {
+        let page = distill_operator_page(&mut app)?;
+        let counts = semantic_counts(&page);
+        report.push(format!(
+            "distilled '{}' from {} ({} chars, h={} links={} inputs={} images={} text={})",
+            page.title,
+            page.url,
+            page.content.chars().count(),
+            counts.headings,
+            counts.links,
+            counts.inputs,
+            counts.images,
+            counts.text
+        ));
+    }
+
+    if app.wake_results.is_empty() {
+        return Err("scripted run Wake search returned no result after distillation".to_string());
+    }
+    report.push(format!(
+        "Wake search returned {} result(s)",
+        app.wake_results.len()
+    ));
+
+    app.refresh_logs();
+    report.push(format!(
+        "Captain's Log returned {} recent entries",
+        app.recent_logs.len()
+    ));
+
+    app.refresh_frame();
+    let frame = app
+        .latest_frame
+        .as_ref()
+        .ok_or_else(|| "scripted run did not capture a Servo frame".to_string())?;
+    if frame.width == 0 || frame.height == 0 || frame.pixels.is_empty() {
+        return Err(format!(
+            "scripted run captured an empty Servo frame: {}x{} pixels={}",
+            frame.width,
+            frame.height,
+            frame.pixels.len()
+        ));
+    }
+    report.push(format!(
+        "captured Servo frame {}x{} ({} pixels)",
+        frame.width,
+        frame.height,
+        frame.pixels.len()
+    ));
+
+    report.push("scripted native-lite run passed".to_string());
+    Ok(report)
+}
+
 fn run_operator_probe(target: &str) -> Result<Vec<String>, String> {
     let mut report = Vec::new();
     report.push(format!("starting native-lite probe for {}", target));
@@ -1111,6 +1300,75 @@ fn run_operator_probe(target: &str) -> Result<Vec<String>, String> {
 
     report.push("native-lite probe passed".to_string());
     Ok(report)
+}
+
+fn distill_operator_page(app: &mut LiteApp) -> Result<sextant_engine::DistilledPage, String> {
+    app.distill_active();
+    if !app.last_ok {
+        return Err(app.last_status.clone());
+    }
+    app.active_tab()
+        .and_then(|tab| tab.distilled_page.clone())
+        .ok_or_else(|| "operator distill did not attach distilled page data".to_string())
+}
+
+fn parse_operator_run(args: &[String]) -> Result<Option<OperatorRunSpec>, String> {
+    let Some(index) = args.iter().position(|arg| arg == "--operator-run") else {
+        return Ok(None);
+    };
+    let target = args
+        .get(index + 1)
+        .ok_or_else(|| "--operator-run requires a target URL or search phrase".to_string())?
+        .clone();
+    let mut steps = Vec::new();
+    let mut cursor = index + 2;
+    while cursor < args.len() {
+        match args[cursor].as_str() {
+            "--fill" => {
+                let selector = args
+                    .get(cursor + 1)
+                    .ok_or_else(|| "--fill requires a selector and value".to_string())?
+                    .clone();
+                let value = args
+                    .get(cursor + 2)
+                    .ok_or_else(|| "--fill requires a selector and value".to_string())?
+                    .clone();
+                steps.push(OperatorStep::Fill { selector, value });
+                cursor += 3;
+            }
+            "--click" => {
+                let selector = args
+                    .get(cursor + 1)
+                    .ok_or_else(|| "--click requires a selector".to_string())?
+                    .clone();
+                steps.push(OperatorStep::Click { selector });
+                cursor += 2;
+            }
+            "--submit" => {
+                let selector = args
+                    .get(cursor + 1)
+                    .ok_or_else(|| "--submit requires a selector".to_string())?
+                    .clone();
+                steps.push(OperatorStep::Submit { selector });
+                cursor += 2;
+            }
+            "--expect" => {
+                let text = args
+                    .get(cursor + 1)
+                    .ok_or_else(|| "--expect requires text".to_string())?
+                    .clone();
+                steps.push(OperatorStep::Expect { text });
+                cursor += 2;
+            }
+            other => {
+                return Err(format!(
+                    "unknown operator-run argument '{}'; expected --fill, --click, --submit, or --expect",
+                    other
+                ));
+            }
+        }
+    }
+    Ok(Some(OperatorRunSpec { target, steps }))
 }
 
 fn operator_arg_value(args: &[String], flag: &str) -> Option<String> {

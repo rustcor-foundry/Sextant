@@ -47,7 +47,7 @@ mod servo_runtime {
     const DEFAULT_VIEWPORT_HEIGHT: u32 = 720;
     const NAVIGATION_TIMEOUT: Duration = Duration::from_secs(8);
     const LOAD_SETTLE_TIMEOUT: Duration = Duration::from_millis(750);
-    const SERVICE_REPLY_TIMEOUT: Duration = Duration::from_secs(6);
+    const SERVICE_REPLY_TIMEOUT: Duration = Duration::from_secs(20);
     const EVENT_LOOP_PAUSE: Duration = Duration::from_millis(10);
 
     #[derive(Clone)]
@@ -278,9 +278,8 @@ mod servo_runtime {
                             SERVICE_REPLY_TIMEOUT.as_secs()
                         );
                         eprintln!(
-                            "[sextant-servo] request timed out, marking service failed: {message}"
+                            "[sextant-servo] request timed out; keeping service available for follow-up/fallback: {message}"
                         );
-                        self.mark_failed();
                         last_error = Some(message);
                     }
                 }
@@ -3028,12 +3027,32 @@ impl SextantEngine {
     pub fn distill_tab(&mut self, tab_id: Uuid) -> Result<DistilledPage, String> {
         #[cfg(feature = "servo-backend")]
         if let Some(tab) = self.tabs.get(&tab_id) {
-            if tab.status.active_backend == EngineBackend::Servo && tab.url.is_some() {
-                let snapshot = self.servo_service.distill_tab(tab_id)?;
-                let page = if snapshot.page.url.scheme() == "about" {
-                    fetch_distilled_page(&snapshot.page.url)?
-                } else {
-                    snapshot.page
+            if tab.status.active_backend == EngineBackend::Servo {
+                let Some(current_url) = tab.url.clone() else {
+                    return fetch_distilled_page(&Url::parse("about:blank").unwrap());
+                };
+                let page = match self.servo_service.distill_tab(tab_id) {
+                    Ok(snapshot) if snapshot.page.url.scheme() != "about" => snapshot.page,
+                    Ok(snapshot) => fetch_distilled_page(&snapshot.page.url)?,
+                    Err(error) => {
+                        let mut page = fetch_distilled_page(&current_url).map_err(|fallback| {
+                            format!(
+                                "Servo live DOM distillation failed: {}; reader fallback also failed: {}",
+                                error, fallback
+                            )
+                        })?;
+                        page.metadata.insert(
+                            "distillation_backend".to_string(),
+                            "reader-fallback-after-servo-error".to_string(),
+                        );
+                        if let Some(tab) = self.tabs.get_mut(&tab_id) {
+                            tab.status.firewall_status = Some(format!(
+                                "Servo live DOM distillation failed: {}; used reader fallback.",
+                                error
+                            ));
+                        }
+                        page
+                    }
                 };
                 self.semantic_cache.insert(page.url.clone(), page.clone());
                 if let Some(tab) = self.tabs.get_mut(&tab_id) {

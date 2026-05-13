@@ -9,8 +9,12 @@ Audit trail of completed work sessions. Newest first.
 - Added `sextant-hull-lite --operator-smoke` for deterministic native-lite automation without opening the visible event loop
 - Smoke mode validates Servo navigation, native DOM fill/click, live DOM distillation, Wake recording/search, Captain's Log writes, and Servo frame capture
 - Added `sextant-hull-lite --operator-probe <url-or-search>` to aim the same native-lite workflow at representative HTTP/HTTPS pages
+- Added `sextant-hull-lite --operator-run <url-or-search>` with `--fill`, `--click`, `--submit`, and `--expect` scripted steps
 - Confirmed `--operator-smoke` passes against a data URL with a live input/button interaction
+- Confirmed `--operator-run` can fill and click a scripted data-URL form, verify distilled content, update Wake/Log, and capture a Servo frame
 - Confirmed `--operator-probe https://example.com` passes, distills `Example Domain`, writes Wake/Log state, and captures a Servo frame
+- Found and fixed a real probe blocker on `https://www.rust-lang.org`: Servo distillation timeout no longer marks the whole service failed, and distillation can fall back to the reader path
+- Confirmed `--operator-probe https://www.rust-lang.org` now passes, distills `Rust Programming Language`, writes Wake/Log state, and captures a Servo frame
 
 ---
 

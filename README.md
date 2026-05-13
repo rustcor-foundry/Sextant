@@ -84,6 +84,7 @@ These commands exercise the native-lite product loop without opening the visible
 cd rust
 cargo run -p sextant-hull --bin sextant-hull-lite -- --operator-smoke
 cargo run -p sextant-hull --bin sextant-hull-lite -- --operator-probe https://example.com
+cargo run -p sextant-hull --bin sextant-hull-lite -- --operator-run https://example.com --expect "Example Domain"
 ```
 
 ### Legacy Xilem Hull

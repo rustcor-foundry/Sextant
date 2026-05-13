@@ -40,8 +40,8 @@ The biggest remaining gaps are now heavy browsing hardening, real-window Servo b
 | Pilot regression tests | ✅ | `cargo test -p sextant-pilot --lib` passes |
 | Native-lite reader lane | ✅ | `sextant-hull-lite --no-default-features` builds and stays responsive in a timed real launch check |
 | Native-lite heavy browsing build | ✅ | package default features wire `sextant-hull-lite` to Servo; focused Servo engine tests pass |
-| Native operator bridge | ✅ baseline | `--operator-smoke` drives Servo navigation, native DOM fill/click, distillation, Wake, Log, and frame capture; `--operator-probe <url>` probes real pages |
-| Servo live navigation | ✅ baseline / ⚠️ buggy | tests cover data URLs, live DOM mutation, history, back/forward, and cache invalidation; real-window browsing still needs manual hardening |
+| Native operator bridge | ✅ baseline | `--operator-smoke` drives Servo navigation, native DOM fill/click, distillation, Wake, Log, and frame capture; `--operator-probe <url>` probes real pages; `--operator-run` scripts selector actions and expectations |
+| Servo live navigation | ✅ baseline / ⚠️ buggy | tests cover data URLs, live DOM mutation, history, back/forward, and cache invalidation; operator probes now cover `example.com` and `rust-lang.org`; broader real-window browsing still needs hardening |
 | Servo frame viewport | ✅ baseline / ⚠️ buggy | lite shell captures `RenderedFrame` pixels from Servo and paints them into the `softbuffer` viewport |
 | Browser input forwarding | ✅ baseline / ⚠️ buggy | mouse move/click, wheel, character keys, and named keys are forwarded to the Servo WebView path |
 | Xilem/Masonry hull | ⚠️ parked | crashes on Windows during interactive use; retained as reference, not the active product lane |
@@ -56,7 +56,7 @@ The biggest remaining gaps are now heavy browsing hardening, real-window Servo b
 | Native validation checklist | ✅ | session-aware checklist, priority ordering, progress rollups, reset control, workflow transcript summary, grouped workflow activity |
 | Intent -> Pilot -> Engine -> Wake | ✅ baseline | covered by Pilot regression tests |
 | Consent gating | ✅ baseline | await/deny/authorize flow covered by tests |
-| Real page distillation | ✅ baseline | fetch + parse + semantic extraction path exists |
+| Real page distillation | ✅ baseline | fetch + parse + semantic extraction path exists; Servo live DOM distillation can fall back to reader distillation instead of killing the service |
 | Tab create/switch/close | ✅ | wired through hull async path |
 | Servo feature tests | ✅ | `cargo test -p sextant-engine --lib --features servo-backend` passes 9 tests |
 | Default tab startup | ✅ | engine starts with a blank active tab again |
