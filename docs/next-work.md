@@ -28,6 +28,16 @@ cargo run -p sextant-hull --bin sextant-hull-lite --no-default-features
 
 Watch for: event-loop crashes, Servo service timeouts, blank/empty frames, input forwarding failures, softbuffer resize/present failures, thread/async runtime issues.
 
+Native operator bridge:
+
+```bash
+cd "D:/Paul/Software Projects/Sextant/rust"
+cargo run -p sextant-hull --bin sextant-hull-lite -- --operator-smoke
+cargo run -p sextant-hull --bin sextant-hull-lite -- --operator-probe https://example.com
+```
+
+Use `--operator-smoke` for a deterministic data-URL workflow that exercises Servo navigation, native DOM fill/click, live DOM distillation, Wake recording/search, Captain's Log writes, and frame capture. Use `--operator-probe <url-or-search>` to aim the same native-lite path at representative HTTP/HTTPS pages before doing slower manual click-through.
+
 ### 1. Stabilize Heavy Browsing In The Owned Shell (~1-2 days)
 
 The active product lane is the first-party `sextant-hull-lite` shell. It uses `winit` for window/input and direct `softbuffer` drawing while reusing the engine, Wake, and Captain's Log crates. With default features, it is already wired back toward heavy browsing through Servo:
@@ -41,7 +51,7 @@ The active product lane is the first-party `sextant-hull-lite` shell. It uses `w
 
 Next work is not starting from scratch. It is to make that path reliable:
 
-1. run the default-feature lite shell against representative HTTP/HTTPS pages
+1. run `--operator-probe` against representative HTTP/HTTPS pages, then confirm the same pages in the visible lite shell
 2. capture the exact failure modes: blank frame, stale frame, timeout, bad resize, input not reaching forms, navigation state drift, or reader fallback being triggered incorrectly
 3. fix the highest-frequency failure first in `sextant-engine` or `sextant-hull/src/lite.rs`
 4. keep `--no-default-features` working as the fast reader/fallback lane
@@ -104,10 +114,10 @@ Basic Rust workspace CI is already in place on Gitea. The next CI pass should ad
 
 | Blocker | Affects | Notes |
 |---------|---------|-------|
-| Interactive native launch validation is still manual | Items 0-3 | We can compile/test automatically, but full click-through still needs operator exercise |
+| Interactive native launch validation still needs a human pass | Items 0-3 | `--operator-smoke` and `--operator-probe` now cover native-lite automation before full click-through |
 | Xilem/Masonry hull crashes interactively on Windows | Legacy hull | Parked as reference while the first-party shell becomes the active lane |
 | Real cloud/local provider validation depends on credentials/services | Item 3 | Behavior is partly environment-dependent |
-| Servo runtime behavior still needs real-window exercise | Items 1 and 5 | Automated tests cover controlled service paths, but user-facing heavy browsing still needs manual validation and bug fixing |
+| Servo runtime behavior still needs broader real-window exercise | Items 1 and 5 | Engine tests and operator probes cover controlled and basic HTTP/HTTPS paths; representative interactive sites still need validation |
 | Local `wsky-distiller` dependency | Build onboarding | `sextant-engine` currently depends on `../../../wsky-distiller/distill`, so this checkout is expected beside Sextant |
 
 ---

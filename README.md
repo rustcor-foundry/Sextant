@@ -76,6 +76,16 @@ cd rust
 cargo run -p sextant-hull --bin sextant-hull-lite --no-default-features
 ```
 
+### Rust Native-Lite Operator Bridge
+
+These commands exercise the native-lite product loop without opening the visible event loop. Use them before manual click-through when hardening heavy browsing.
+
+```bash
+cd rust
+cargo run -p sextant-hull --bin sextant-hull-lite -- --operator-smoke
+cargo run -p sextant-hull --bin sextant-hull-lite -- --operator-probe https://example.com
+```
+
 ### Legacy Xilem Hull
 
 ```bash

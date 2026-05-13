@@ -40,6 +40,7 @@ The biggest remaining gaps are now heavy browsing hardening, real-window Servo b
 | Pilot regression tests | ✅ | `cargo test -p sextant-pilot --lib` passes |
 | Native-lite reader lane | ✅ | `sextant-hull-lite --no-default-features` builds and stays responsive in a timed real launch check |
 | Native-lite heavy browsing build | ✅ | package default features wire `sextant-hull-lite` to Servo; focused Servo engine tests pass |
+| Native operator bridge | ✅ baseline | `--operator-smoke` drives Servo navigation, native DOM fill/click, distillation, Wake, Log, and frame capture; `--operator-probe <url>` probes real pages |
 | Servo live navigation | ✅ baseline / ⚠️ buggy | tests cover data URLs, live DOM mutation, history, back/forward, and cache invalidation; real-window browsing still needs manual hardening |
 | Servo frame viewport | ✅ baseline / ⚠️ buggy | lite shell captures `RenderedFrame` pixels from Servo and paints them into the `softbuffer` viewport |
 | Browser input forwarding | ✅ baseline / ⚠️ buggy | mouse move/click, wheel, character keys, and named keys are forwarded to the Servo WebView path |
@@ -114,6 +115,7 @@ The active native-lite hull is intentionally plain, but it now has real browser-
 - direct controls for GO, NEW TAB, BACK, FORWARD, RELOAD, CLOSE TAB, DISTILL, and WAKE search
 - Servo viewport frame painting when built with default features
 - browser viewport mouse, wheel, character-key, and named-key forwarding into the engine
+- native operator bridge commands for automated smoke/probe runs before manual click-through
 - reader-mode distilled page display when a live frame is not available
 - window-title status updates for quick smoke validation
 - no Xilem, Masonry, Vello widget tree, or toolkit lifecycle dependency on the critical path

@@ -4,6 +4,16 @@ Audit trail of completed work sessions. Newest first.
 
 ---
 
+## 2026-05-13 — Native Operator Bridge
+
+- Added `sextant-hull-lite --operator-smoke` for deterministic native-lite automation without opening the visible event loop
+- Smoke mode validates Servo navigation, native DOM fill/click, live DOM distillation, Wake recording/search, Captain's Log writes, and Servo frame capture
+- Added `sextant-hull-lite --operator-probe <url-or-search>` to aim the same native-lite workflow at representative HTTP/HTTPS pages
+- Confirmed `--operator-smoke` passes against a data URL with a live input/button interaction
+- Confirmed `--operator-probe https://example.com` passes, distills `Example Domain`, writes Wake/Log state, and captures a Servo frame
+
+---
+
 ## 2026-05-13 — Heavy Browsing Reality Check
 
 - Verified the code still contains the Servo-backed heavy browsing path in `sextant-engine` and `sextant-hull-lite`

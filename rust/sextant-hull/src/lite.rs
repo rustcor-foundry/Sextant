@@ -5,6 +5,7 @@ use sextant_engine::{
 use sextant_log::{CaptainsLog, LogEntry, LogStatus};
 use sextant_wake::{DigitalWake, WakeEntry};
 use softbuffer::{Context, Surface};
+use std::env;
 use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -125,7 +126,10 @@ struct LiteApp {
 
 impl LiteApp {
     fn new() -> Result<Self, String> {
-        let data_dir = app_data_dir().join("lite");
+        Self::new_with_data_dir(app_data_dir().join("lite"))
+    }
+
+    fn new_with_data_dir(data_dir: PathBuf) -> Result<Self, String> {
         std::fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
         let mut app = Self {
             engine: SextantEngine::new(),
@@ -802,6 +806,37 @@ fn app_data_dir() -> PathBuf {
 fn main() {
     tracing_subscriber::fmt::init();
 
+    let args: Vec<String> = env::args().collect();
+    if let Some(target) = operator_arg_value(&args, "--operator-probe") {
+        match run_operator_probe(&target) {
+            Ok(report) => {
+                for line in report {
+                    println!("[operator-probe] {line}");
+                }
+                std::process::exit(0);
+            }
+            Err(error) => {
+                eprintln!("[operator-probe] failed: {error}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if args.iter().any(|arg| arg == "--operator-smoke") {
+        match run_operator_smoke() {
+            Ok(report) => {
+                for line in report {
+                    println!("[operator-smoke] {line}");
+                }
+                std::process::exit(0);
+            }
+            Err(error) => {
+                eprintln!("[operator-smoke] failed: {error}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     let event_loop = EventLoop::new().expect("event loop should initialize");
     let window = Arc::new(
         WindowBuilder::new()
@@ -882,6 +917,206 @@ fn main() {
             _ => {}
         })
         .expect("event loop should run");
+}
+
+fn run_operator_smoke() -> Result<Vec<String>, String> {
+    let mut report = Vec::new();
+    report.push("starting native-lite operator bridge smoke".to_string());
+
+    let data_dir = env::temp_dir().join(format!("sextant-lite-operator-smoke-{}", Uuid::new_v4()));
+    let mut app = LiteApp::new_with_data_dir(data_dir.clone())?;
+    app.layout(PhysicalSize::new(1180, 760));
+    report.push(format!("isolated data dir: {}", data_dir.display()));
+
+    let sentinel = "native-agent-bridge-online";
+    let url = Url::parse(&format!(
+        "data:text/html,{}",
+        "<!DOCTYPE html>\
+<title>Native Operator Smoke</title>\
+<main>\
+<h1>Native Operator Smoke</h1>\
+<input id='q' value='empty'>\
+<button id='go' onclick=\"document.getElementById('out').textContent=document.getElementById('q').value\">Go</button>\
+<p id='out'>waiting</p>\
+</main>"
+    ))
+    .map_err(|error| format!("operator smoke data URL did not parse: {}", error))?;
+
+    app.navigate_to(url);
+    if !app.last_ok {
+        return Err(app.last_status);
+    }
+    report.push(app.last_status.clone());
+
+    let fill = app
+        .engine
+        .fill_selector_current_page("#q", sentinel)
+        .map_err(|error| format!("native fill interaction failed: {}", error))?;
+    if !fill.ok || fill.value != sentinel {
+        return Err(format!(
+            "native fill interaction returned unexpected result: {:?}",
+            fill
+        ));
+    }
+    app.record_log("operator smoke fill #q", LogStatus::Success)?;
+    report.push(format!("filled {} with {}", fill.selector, fill.value));
+
+    let click = app
+        .engine
+        .click_selector_current_page("#go")
+        .map_err(|error| format!("native click interaction failed: {}", error))?;
+    if !click.ok {
+        return Err(format!(
+            "native click interaction returned unexpected result: {:?}",
+            click
+        ));
+    }
+    app.record_log("operator smoke click #go", LogStatus::Success)?;
+    report.push(format!("clicked {} tag {}", click.selector, click.tag));
+
+    app.distill_active();
+    if !app.last_ok {
+        return Err(app.last_status);
+    }
+    let page = app
+        .active_tab()
+        .and_then(|tab| tab.distilled_page.as_ref())
+        .ok_or_else(|| "distill did not attach a page to the active tab".to_string())?;
+    if !page.content.contains(sentinel) {
+        return Err(format!(
+            "distilled content did not include sentinel '{}': {}",
+            sentinel, page.content
+        ));
+    }
+    report.push(format!("distilled '{}' and found sentinel", page.title));
+
+    if app.wake_results.is_empty() {
+        return Err("Wake search returned no result after distillation".to_string());
+    }
+    report.push(format!(
+        "Wake search returned {} result(s)",
+        app.wake_results.len()
+    ));
+
+    app.refresh_logs();
+    if app.recent_logs.len() < 3 {
+        return Err(format!(
+            "Captain's Log returned only {} recent entries after smoke workflow",
+            app.recent_logs.len()
+        ));
+    }
+    report.push(format!(
+        "Captain's Log returned {} recent entries",
+        app.recent_logs.len()
+    ));
+
+    app.refresh_frame();
+    let frame = app
+        .latest_frame
+        .as_ref()
+        .ok_or_else(|| "Servo frame capture did not return a frame".to_string())?;
+    if frame.width == 0 || frame.height == 0 || frame.pixels.is_empty() {
+        return Err(format!(
+            "Servo frame capture returned an empty frame: {}x{} pixels={}",
+            frame.width,
+            frame.height,
+            frame.pixels.len()
+        ));
+    }
+    report.push(format!(
+        "captured Servo frame {}x{} ({} pixels)",
+        frame.width,
+        frame.height,
+        frame.pixels.len()
+    ));
+
+    report.push("native-lite operator bridge smoke passed".to_string());
+    Ok(report)
+}
+
+fn run_operator_probe(target: &str) -> Result<Vec<String>, String> {
+    let mut report = Vec::new();
+    report.push(format!("starting native-lite probe for {}", target));
+
+    let data_dir = env::temp_dir().join(format!("sextant-lite-operator-probe-{}", Uuid::new_v4()));
+    let mut app = LiteApp::new_with_data_dir(data_dir.clone())?;
+    app.layout(PhysicalSize::new(1180, 760));
+    report.push(format!("isolated data dir: {}", data_dir.display()));
+
+    let url = parse_navigation_target(target)?;
+    app.navigate_to(url.clone());
+    if !app.last_ok {
+        return Err(app.last_status);
+    }
+    report.push(app.last_status.clone());
+
+    app.distill_active();
+    if !app.last_ok {
+        return Err(app.last_status);
+    }
+
+    let tab = app
+        .active_tab()
+        .ok_or_else(|| "probe finished without an active tab".to_string())?;
+    let page = tab
+        .distilled_page
+        .as_ref()
+        .ok_or_else(|| "probe did not attach distilled page data".to_string())?;
+    let counts = semantic_counts(page);
+    report.push(format!(
+        "distilled '{}' from {} ({} chars, h={} links={} inputs={} images={} text={})",
+        page.title,
+        page.url,
+        page.content.chars().count(),
+        counts.headings,
+        counts.links,
+        counts.inputs,
+        counts.images,
+        counts.text
+    ));
+
+    if app.wake_results.is_empty() {
+        return Err("probe Wake search returned no result after distillation".to_string());
+    }
+    report.push(format!(
+        "Wake search returned {} result(s)",
+        app.wake_results.len()
+    ));
+
+    app.refresh_logs();
+    report.push(format!(
+        "Captain's Log returned {} recent entries",
+        app.recent_logs.len()
+    ));
+
+    app.refresh_frame();
+    let frame = app
+        .latest_frame
+        .as_ref()
+        .ok_or_else(|| "probe did not capture a Servo frame".to_string())?;
+    if frame.width == 0 || frame.height == 0 || frame.pixels.is_empty() {
+        return Err(format!(
+            "probe captured an empty Servo frame: {}x{} pixels={}",
+            frame.width,
+            frame.height,
+            frame.pixels.len()
+        ));
+    }
+    report.push(format!(
+        "captured Servo frame {}x{} ({} pixels)",
+        frame.width,
+        frame.height,
+        frame.pixels.len()
+    ));
+
+    report.push("native-lite probe passed".to_string());
+    Ok(report)
+}
+
+fn operator_arg_value(args: &[String], flag: &str) -> Option<String> {
+    args.windows(2)
+        .find(|pair| pair[0] == flag)
+        .map(|pair| pair[1].clone())
 }
 
 fn parse_navigation_target(input: &str) -> Result<Url, String> {
