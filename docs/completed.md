@@ -4,6 +4,16 @@ Audit trail of completed work sessions. Newest first.
 
 ---
 
+## 2026-05-13 — Stability And Polish Pass
+
+- Reworked the visible `sextant-hull-lite` startup path so event-loop, window, Softbuffer, and app initialization failures report clean `[sextant-lite] failed: ...` errors instead of panicking
+- Reconnected the Xilem full-shell Wake/Audit and Validation panels so the parked reference hull keeps its richer diagnostic surface when `SEXTANT_FULL_SHELL` is enabled
+- Marked parked provider-setting mutators as intentionally retained until the native editor surface uses them
+- Confirmed `cargo check --workspace --manifest-path rust/Cargo.toml` passes with only the known `xml5ever v0.16.2` future-incompatibility notice
+- Confirmed focused native-lite checking and direct binary operator runs still pass for `--operator-smoke`, data-URL `--operator-run`, data-URL `--operator-probe`, and `https://example.com --expect "Example Domain"`
+
+---
+
 ## 2026-05-13 — Native Operator Bridge
 
 - Added `sextant-hull-lite --operator-smoke` for deterministic native-lite automation without opening the visible event loop

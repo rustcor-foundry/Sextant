@@ -1041,46 +1041,23 @@ pub fn app_logic_native(state: &mut SextantState) -> BoxedMasonryView<SextantSta
         ))
     };
 
-    let compact_wake_summary = flex((
-        section_title("WAKE / AUDIT"),
-        muted_text(format!(
-            "WAKE results {}  recent memories {}  audit rows {}",
-            state.wake_search_results.len(),
-            state.recent_memory.len(),
-            state.audit_trail.len()
-        )),
-        flex((
-            button("SEARCH WAKE", |state: &mut SextantState| {
-                if state.wake_search_query.trim().is_empty() {
-                    state.wake_search_query = "digital wake".to_string();
-                }
-                state.set_command_summary("Running Wake search.", false);
-                state.queue_async_command(AppCommand::SearchWake(state.wake_search_query.clone()));
-            }),
-            button("CONSOLIDATE WAKE", |state: &mut SextantState| {
-                state.set_command_summary("Consolidating Wake entries.", false);
-                state.queue_async_command(AppCommand::ConsolidateWake);
-            }),
-        ))
-        .direction(Axis::Horizontal),
-        muted_text(state.latest_audit_status_line()),
-    ));
-
-    let compact_validation_summary = flex((
-        section_title("VALIDATION"),
-        label(state.validation_summary_line()).color(validation_summary_color),
-        label(state.validation_focus_line()).color(validation_focus_color),
-        label(state.validation_progress_line()).color(validation_progress_color),
-        muted_text(state.validation_workflow_rollup_line()),
-        button("RESET VALIDATION", |state: &mut SextantState| {
-            state.reset_validation_session();
-            state.set_command_summary(
-                "Validation session reset. Checklist coverage cleared.",
-                false,
-            );
-            state.add_log("Validation session reset. Coverage markers cleared for a fresh pass.");
-        }),
-    ));
+    let wake_panel = wake_panel_view(
+        state.wake_search_query.clone(),
+        wake_views,
+        audit_views,
+        wake_log_views,
+    );
+    let validation_panel = validation_panel_view(
+        state.validation_summary_line(),
+        validation_summary_color,
+        state.validation_focus_line(),
+        validation_focus_color,
+        state.validation_progress_line(),
+        validation_progress_color,
+        state.validation_workflow_rollup_line(),
+        state.remaining_validation_checks(),
+        validation_item_views,
+    );
 
     let system_panel = system_log_panel_view(&state.startup_alerts, log_views);
 
@@ -1095,8 +1072,8 @@ pub fn app_logic_native(state: &mut SextantState) -> BoxedMasonryView<SextantSta
         operator_toggles,
         provider_panel,
         mesh_panel,
-        compact_wake_summary,
-        compact_validation_summary,
+        wake_panel,
+        validation_panel,
         system_panel,
     )));
 }

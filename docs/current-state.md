@@ -36,6 +36,7 @@ The biggest remaining gaps are now heavy browsing hardening, real-window Servo b
 | Capability | State | Notes |
 |------------|-------|-------|
 | Rust workspace compile | ✅ | `cargo check` passes |
+| Workspace warning budget | ✅ | local crate warnings are clear in the latest workspace check; the remaining notice is the known `xml5ever v0.16.2` future-incompatibility warning |
 | Rust workspace tests | ✅ | `cargo test --workspace` passes |
 | Pilot regression tests | ✅ | `cargo test -p sextant-pilot --lib` passes |
 | Native-lite reader lane | ✅ | `sextant-hull-lite --no-default-features` builds and stays responsive in a timed real launch check |
@@ -99,6 +100,7 @@ The old Xilem hull now tells the truth more clearly than earlier passes, but it 
 - provider settings panel is implemented in the native hull
 - mesh toggle now opens an explicit native placeholder instead of hiding a deferred panel
 - empty Wake/tab states now explain what to do next instead of rendering as blank areas
+- full-shell Wake/Audit and Validation panels are wired back into the parked Xilem reference path for richer diagnostics under `SEXTANT_FULL_SHELL`
 - validation checklist now shows remaining steps, recent successful checks, and per-workflow coverage
 - consent, provider, tab, Wake, and control workflows now track session-aware coverage instead of relying only on visible state
 - `RESET VALIDATION` clears checklist coverage for a fresh click-through pass without resetting real runtime state
@@ -119,6 +121,7 @@ The active native-lite hull is intentionally plain, but it now has real browser-
 - native operator bridge commands for automated smoke/probe runs before manual click-through
 - reader-mode distilled page display when a live frame is not available
 - window-title status updates for quick smoke validation
+- visible native-lite startup failures now report clean `[sextant-lite] failed: ...` messages instead of panicking during window/event-loop setup
 - no Xilem, Masonry, Vello widget tree, or toolkit lifecycle dependency on the critical path
 
 ## Known Gaps

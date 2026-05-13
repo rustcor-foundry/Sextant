@@ -835,6 +835,7 @@ impl SextantState {
         );
     }
 
+    #[allow(dead_code)]
     pub fn set_gemini_key(&mut self, value: String) {
         if self.gemini_key != value {
             self.gemini_key = value;
@@ -842,6 +843,7 @@ impl SextantState {
         }
     }
 
+    #[allow(dead_code)]
     pub fn set_openai_key(&mut self, value: String) {
         if self.openai_key != value {
             self.openai_key = value;
@@ -849,6 +851,7 @@ impl SextantState {
         }
     }
 
+    #[allow(dead_code)]
     pub fn set_anthropic_key(&mut self, value: String) {
         if self.anthropic_key != value {
             self.anthropic_key = value;
@@ -856,6 +859,7 @@ impl SextantState {
         }
     }
 
+    #[allow(dead_code)]
     pub fn set_local_endpoint(&mut self, value: String) {
         if self.local_endpoint != value {
             self.local_endpoint = value;
@@ -863,6 +867,7 @@ impl SextantState {
         }
     }
 
+    #[allow(dead_code)]
     pub fn set_local_model(&mut self, value: String) {
         if self.local_model != value {
             self.local_model = value;

@@ -869,19 +869,29 @@ fn main() {
         }
     }
 
-    let event_loop = EventLoop::new().expect("event loop should initialize");
+    if let Err(error) = run_visible_app() {
+        eprintln!("[sextant-lite] failed: {error}");
+        std::process::exit(1);
+    }
+}
+
+fn run_visible_app() -> Result<(), String> {
+    let event_loop =
+        EventLoop::new().map_err(|error| format!("event loop initialization failed: {error}"))?;
     let window = Arc::new(
         WindowBuilder::new()
             .with_title("Sextant Lite")
             .with_inner_size(PhysicalSize::new(1180, 760))
             .build(&event_loop)
-            .expect("window should build"),
+            .map_err(|error| format!("window creation failed: {error}"))?,
     );
 
-    let context = Context::new(window.clone()).expect("softbuffer context should initialize");
-    let mut surface =
-        Surface::new(&context, window.clone()).expect("softbuffer surface should initialize");
-    let mut app = LiteApp::new().expect("lite app should initialize");
+    let context = Context::new(window.clone())
+        .map_err(|error| format!("softbuffer context initialization failed: {error}"))?;
+    let mut surface = Surface::new(&context, window.clone())
+        .map_err(|error| format!("softbuffer surface initialization failed: {error}"))?;
+    let mut app =
+        LiteApp::new().map_err(|error| format!("lite app initialization failed: {error}"))?;
     app.layout(window.inner_size());
     app.update_title(&window);
 
@@ -948,7 +958,7 @@ fn main() {
             }
             _ => {}
         })
-        .expect("event loop should run");
+        .map_err(|error| format!("event loop failed: {error}"))
 }
 
 fn run_operator_smoke() -> Result<Vec<String>, String> {
