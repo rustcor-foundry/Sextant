@@ -4,6 +4,49 @@ Audit trail of completed work sessions. Newest first.
 
 ---
 
+## 2026-05-13 — Heavy Browsing Reality Check
+
+- Verified the code still contains the Servo-backed heavy browsing path in `sextant-engine` and `sextant-hull-lite`
+- Confirmed `cargo test -p sextant-engine --lib --features servo-backend` passes 9 Servo-focused tests
+- Confirmed the lite shell has address input, tab controls, browser/Wake/Log views, Servo frame painting, and viewport input forwarding
+- Updated active docs so the default-feature `sextant-hull-lite` lane is documented as the heavy browsing path and `--no-default-features` is documented as the reader/fallback lane
+- Captured that real-window Servo browsing is still buggy and needs manual hardening rather than being treated as future/unstarted work
+
+---
+
+## 2026-05-01 — Native-Lite Shell Pivot
+
+- ✅ Added `sextant-hull-lite`, a first-party `winit` + `softbuffer` shell that avoids the crashing Xilem/Masonry widget lifecycle
+- ✅ Wired the first native-lite smoke actions into `SextantEngine`, Digital Wake, and Captain's Log
+- ✅ Made the hull's Servo backend an explicit feature so the lite shell can build with `--no-default-features`
+- ✅ Confirmed `cargo check -p sextant-hull --bin sextant-hull-lite --no-default-features` passes
+- ✅ Confirmed `cargo build -p sextant-hull --bin sextant-hull-lite --no-default-features` passes
+- ✅ Launched `sextant-hull-lite.exe` and verified it stayed responsive in a timed Windows smoke run
+
+---
+
+## 2026-05-01 — Bottom-Up Stability Pass
+
+- ✅ Hardened Captain's Log row loading so corrupt persisted UUID/timestamp/status data returns an error instead of panicking
+- ✅ Added bio, privacy, firewall, bridge, sync, inference, Wake, and engine regression coverage around low-level failure modes
+- ✅ Made Neural Bridge perception tolerate poisoned privacy locks by falling back to standard privacy
+- ✅ Fixed standalone `sextant-inference` builds by enabling `url/serde` in that crate directly
+- ✅ Made Vault import tolerant of exported identities without persisted secret-key material
+- ✅ Fixed `perceive_all_tabs` so failed tab distillation cannot attach another tab's page to the wrong tab
+- ✅ Confirmed `cargo check --workspace` and `cargo test --workspace` pass after the lower-stack sweep
+
+---
+
+## 2026-05-01 — Core Browser Guardrail Pass
+
+- ✅ Re-exposed native hull intent, provider, Wake, audit, mesh placeholder, and validation surfaces after the Servo/stability-mode narrowing
+- ✅ Restored default blank-tab startup semantics in `SextantEngine`
+- ✅ Made newly opened tabs become active so navigation and distillation target the intended tab
+- ✅ Normalized Servo blank-page distillation to match the stable `Blank Page` engine semantics
+- ✅ Confirmed `cargo check --workspace`, `cargo test --workspace`, focused Pilot/Engine tests, and a timed hull binary launch all pass
+
+---
+
 ## 2026-04-19 — Validation Transcript And Activity Summary Pass
 
 - ✅ Added fresh-session audit validation so Captain's Log coverage only completes after a new post-reset audit entry

@@ -1,5 +1,7 @@
 # Product Roadmap — Sextant to Ship
 
+Status note as of 2026-05-13: this roadmap is strategic background, not the active execution guide. The active code has already pulled Servo forward into the default-feature `sextant-hull-lite` heavy browsing lane. The caution below about Servo risk still matters, but [current-state.md](current-state.md) and [next-work.md](next-work.md) now supersede the older "defer Servo to Phase 3" sequencing.
+
 **Thesis:** The AI browser category is real (Arc/Dia, Perplexity Comet, ChatGPT Atlas, Brave Leo, Opera Aria). All of them are cloud-dependent. None are sovereign. That gap is the wedge.
 
 **Competitive anchor:** Brave captured ~80M monthly actives with a Chromium rewrap and a privacy narrative. Sextant is a deeper thesis — agentic + local-first + cryptographic identity — in a moment when users are actively looking for alternatives to cloud-AI defaults.
@@ -48,11 +50,11 @@
 
 **Recommended:** Use `wry` (Tauri's webview wrapper) or `webview2-com` directly for Phase 1. Real pages render immediately, form input works, video plays. Keep the `sextant-engine` distillation layer as a post-processor on the rendered DOM.
 
-Ship Servo integration in Phase 3 when the product has users and the investment is justified by a specific need (e.g., parallel layout for 100+ tabs). Until then, Servo is a differentiator we tell, not a feature users feel.
+The active code has already explored the Servo route earlier than this roadmap originally recommended. Treat that work as a serious prototype: keep hardening it while also staying honest that a WebView2/wry fallback or replacement may still be the pragmatic MVP answer if real-window Servo browsing remains too fragile.
 
 ### What gets cut from current scope
 
-- Servo integration (deferred to Phase 3)
+- Servo as the only MVP rendering plan. It is active now, but should still compete against a pragmatic WebView2/wry fallback if hardening stalls.
 - P2P mesh (deferred to Phase 2)
 - Cross-device sync (deferred to Phase 2)
 - Multimodal bridge (deferred to Phase 2)
@@ -114,7 +116,7 @@ Ship Servo integration in Phase 3 when the product has users and the investment 
 
 ### Engineering investments
 
-- Servo integration for tab-heavy power users (genuine parallelism story)
+- Servo hardening or replacement decision for tab-heavy power users (genuine parallelism story if Servo survives real-window validation)
 - Mobile — iOS (hard, WebKit-only) and Android (easier via Chromium)
 - Real P2P mesh (libp2p) for true cross-network persona handoff
 - Post-quantum as a real feature — sign every session, verify on peer reconnect
@@ -132,7 +134,7 @@ Ship Servo integration in Phase 3 when the product has users and the investment 
 
 1. **Funding path** — Bootstrapped? Open source + grants (Mozilla, NLnet, Protocol Labs)? VC (risky given the "sovereign" narrative)?
 2. **Team size for Phase 1** — Solo is possible to MVP. Beta needs 2-4. Scale needs 10+.
-3. **Rendering engine commitment** — Are we willing to drop the Servo thesis for shippability? (Recommendation: yes, for now.)
+3. **Rendering engine commitment** — Servo is active in `sextant-hull-lite`; are we willing to keep hardening it, or drop back to WebView2/wry for shippability if real-window validation stays rough?
 4. **Mobile story** — Critical for capturing Brave-scale share. iOS/Android is where attention lives. Not Phase 1, but the answer matters for positioning.
 5. **Licensing** — MIT/Apache (maximum adoption) vs AGPL (prevent cloud rewrap)? Brave used MPL.
 6. **Agent/Pilot trust model** — Who can ship a Pilot? Signed by us only? Community-signed? Web-of-trust? This is the OWASP top 10 of the AI era.
@@ -143,6 +145,6 @@ Ship Servo integration in Phase 3 when the product has users and the investment 
 
 1. **Session A (this week)** — Get `cargo run` launching the hull. First end-to-end intent loop with cloud Gemini. Working demo video, even if rough.
 2. **Session B** — Bundle llama.cpp binary and auto-launch it. First fully local intent loop. This is the "it actually works offline" moment.
-3. **Session C** — Replace simulated engine with `wry` webview. Real page rendering, distillation on real DOM. This is the "it's a real browser" moment.
+3. **Session C** — Decide the rendering path based on current evidence: harden the Servo-heavy browsing lane if the bugs are tractable, or spike WebView2/wry if Servo keeps blocking a demoable browser.
 
 After those three sessions, Sextant is demoable and the Phase 1 scope becomes obvious.

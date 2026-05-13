@@ -25,12 +25,13 @@ Use that repository as the canonical shared source of truth.
 ### Native Product Path
 
 - [rust/Cargo.toml](../rust/Cargo.toml) — Rust workspace root
-- [rust/sextant-hull/src/main.rs](../rust/sextant-hull/src/main.rs) — native app startup and composition root
+- [rust/sextant-hull/src/lite.rs](../rust/sextant-hull/src/lite.rs) — active native-lite shell, direct drawing, address input, browser/Wake/Log views, Servo frame display, and viewport input forwarding
+- [rust/sextant-hull/src/main.rs](../rust/sextant-hull/src/main.rs) — parked Xilem app startup and composition root
 - [rust/sextant-hull/src/app_core.rs](../rust/sextant-hull/src/app_core.rs) — toolkit-agnostic command/event runtime
-- [rust/sextant-hull/src/views.rs](../rust/sextant-hull/src/views.rs) — hull UI surface
-- [rust/sextant-hull/src/state.rs](../rust/sextant-hull/src/state.rs) — live hull state
+- [rust/sextant-hull/src/views.rs](../rust/sextant-hull/src/views.rs) — parked Xilem hull UI surface and validation reference
+- [rust/sextant-hull/src/state.rs](../rust/sextant-hull/src/state.rs) — parked Xilem live hull state and validation reference
 - [rust/sextant-pilot/src/lib.rs](../rust/sextant-pilot/src/lib.rs) — intent planning, consent, execution
-- [rust/sextant-engine/src/lib.rs](../rust/sextant-engine/src/lib.rs) — tab state, fetch/distill, renderer backend surface
+- [rust/sextant-engine/src/lib.rs](../rust/sextant-engine/src/lib.rs) — tab state, fetch/distill, Servo service, live navigation, frame capture, input forwarding, and reader fallback
 - [rust/sextant-wake/src/lib.rs](../rust/sextant-wake/src/lib.rs) — Digital Wake search/record/consolidation
 - [rust/sextant-vault/src/lib.rs](../rust/sextant-vault/src/lib.rs) — personas, identities, secrets, consent signing
 - [rust/sextant-log/src/lib.rs](../rust/sextant-log/src/lib.rs) — Captain's Log persistence
@@ -50,6 +51,7 @@ Make changes in the Rust workspace.
 This includes:
 
 - hull UX
+- native-lite heavy browsing behavior
 - command flow
 - Pilot logic
 - engine behavior

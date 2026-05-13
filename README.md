@@ -27,9 +27,10 @@ If you only read five docs, read these in order:
 
 | Layer | Technology | Current State |
 |-------|------------|---------------|
-| Native UI shell | Rust + Xilem 0.1.0 | Working hull, real async command bridge |
+| Native UI shell | Rust + `winit` + `softbuffer` | Active `sextant-hull-lite` shell with direct drawing, address input, tabs, Wake, Log, and Servo frame display |
+| Legacy native hull | Rust + Xilem 0.1.0 | Parked reference shell; Windows interactive use exposed toolkit access violations |
 | Pilot orchestration | `sextant-pilot` | Real intent flow, consent gating, regression coverage |
-| Engine | `sextant-engine` | Real fetch/distill path, simulated renderer backends |
+| Engine | `sextant-engine` | Real fetch/distill path plus Servo-backed live navigation, frame capture, input forwarding, history, and live DOM distillation |
 | Memory | `sextant-wake` | Persistent SQLite Wake with FTS + embeddings |
 | Security root | `sextant-vault` | Persona, identity, secrets, consent signing scaffold |
 | Audit trail | `sextant-log` | Persistent Captain's Log in SQLite |
@@ -40,7 +41,8 @@ If you only read five docs, read these in order:
 
 ### Native Product Path
 
-- [rust/sextant-hull](rust/sextant-hull) — native Xilem hull
+- [rust/sextant-hull/src/lite.rs](rust/sextant-hull/src/lite.rs) — active native-lite shell
+- [rust/sextant-hull](rust/sextant-hull) — native hull package; Xilem shell remains as parked reference code
 - [rust/sextant-pilot](rust/sextant-pilot) — intent reasoning and orchestration
 - [rust/sextant-engine](rust/sextant-engine) — fetch, distill, and rendering backend surface
 - [rust/sextant-vault](rust/sextant-vault) — vault, personas, identities, secrets
@@ -55,20 +57,33 @@ If you only read five docs, read these in order:
 
 ## Build And Run
 
-### Rust Native Hull
+### Rust Native-Lite Heavy Browsing Lane
+
+This is the active lane for getting back to real browsing. It uses the hull package defaults, which enable the Servo backend.
 
 ```bash
 cd rust
 cargo check
-cargo run -p sextant-hull
+cargo run -p sextant-hull --bin sextant-hull-lite
 ```
 
-Optional Servo feature:
+### Rust Native-Lite Reader/Fallback Lane
+
+This builds without the Xilem shell and without Servo. It is useful for quick smoke checks and fallback reader-mode work, but it is not the heavy browsing path.
 
 ```bash
 cd rust
-cargo run -p sextant-hull --features sextant-engine/servo-backend
+cargo run -p sextant-hull --bin sextant-hull-lite --no-default-features
 ```
+
+### Legacy Xilem Hull
+
+```bash
+cd rust
+cargo run -p sextant-hull --bin sextant-hull
+```
+
+The Xilem/Masonry hull is retained for reference and async-command work, but it is not the current interactive product lane on Windows.
 
 ### TypeScript Simulator
 

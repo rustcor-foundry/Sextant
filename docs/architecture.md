@@ -21,9 +21,9 @@ The system is built around a clean layered split:
 
 | Crate | Role |
 |-------|------|
-| `sextant-hull` | Xilem UI shell — tabs, intent bar, viewport, captain's log |
+| `sextant-hull` | Native UI shell package. Active lane is `sextant-hull-lite` (`winit` + `softbuffer`); Xilem shell is parked reference code |
 | `sextant-pilot` | Agentic orchestration — intent reasoning, navigation, consent gating |
-| `sextant-engine` | Page distillation engine — Servo rendering (optional), semantic extraction |
+| `sextant-engine` | Browser engine surface — optional Servo live navigation/frame capture/input, reader fallback, and semantic extraction |
 | `sextant-vault` | Citadel Vault — BIP-39 HD keys, Ed25519/ML-DSA identity, AES-256-GCM encryption |
 | `sextant-wake` | Digital Wake — SQLite FTS5 + vector memory store, temporal decay, consolidation |
 | `sextant-inference` | Multi-backend LLM client — llama.cpp, OpenAI, Anthropic, Gemini |
@@ -76,7 +76,9 @@ sextant-engine
 
 The TypeScript layer (`src/`) is a React 19 + Vite + Tailwind + shadcn simulator. It was the original AI Studio prototype and provides an interactive preview. It integrates Gemini via API key and has a `webLLMService.ts` stub for WebGPU local inference. It is **not** the production target — the Rust hull is.
 
-The hull should be developed under the rules in [development-guardrails.md](development-guardrails.md), especially the Xilem layout guardrails: keep tuple-based view groups small, extract sub-view functions early, and avoid growing one large inline native view tree.
+The active Rust UI is `sextant-hull-lite`, a first-party shell that owns its event loop and pixel drawing through `winit` and `softbuffer`. In default-feature builds it uses `sextant-engine`'s Servo path for heavy browsing: WebView sessions, live navigation, frame capture, viewport resize, mouse/wheel/key forwarding, and live DOM distillation. In `--no-default-features` builds it stays in a lighter reader/fallback mode without Servo.
+
+The older Xilem/Masonry hull remains in the package as reference code for the async command/event architecture and validation ideas, but it is not the current Windows interactive product lane.
 
 ---
 
@@ -84,7 +86,7 @@ The hull should be developed under the rules in [development-guardrails.md](deve
 
 **Personas as trust boundary**: Every memory record, identity, and audit entry is scoped to a `persona_id`. Personas are cryptographic identities, not just UI names.
 
-**Servo is optional**: The `sextant-engine` crate has a `servo-backend` feature flag. Without it, the engine uses a simulated distiller. This avoids the `libclang`/`bindgen` requirement at development time.
+**Servo is optional but active for heavy browsing**: The `sextant-engine` crate has a `servo-backend` feature flag, and the hull package enables it by default. Without it, the lite shell keeps a fetch/distill reader path for fast checks and fallback work. With it, the engine runs a Servo service thread and exposes live navigation, history, frame capture, input forwarding, and live DOM distillation. This path exists and has focused tests, but real-window browsing is still buggy enough to need hardening.
 
 **Captain's Key consent**: Pilot cannot execute destructive or sensitive actions without a cryptographic signature from the vault. This is the `AwaitingConsent` state in `PilotStatus`.
 
