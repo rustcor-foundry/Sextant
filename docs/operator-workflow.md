@@ -92,6 +92,8 @@ cargo run -p sextant-hull --bin sextant-browser -- --operator-timeout 45 --opera
 cargo run -p sextant-hull --bin sextant-browser -- --operator-timeout 45 --intent-run "intent: open https://example.com and distill" --expect "Example Domain"
 cargo run -p sextant-hull --bin sextant-browser -- --window-smoke https://example.com --window-smoke-timeout 15
 cargo run -p sextant-hull --bin sextant-browser -- --window-smoke "intent: open https://example.com and distill" --window-smoke-timeout 20
+cargo run -p sextant-hull --bin sextant-browser -- --start-showcase --window-smoke --window-smoke-timeout 30
+cargo run -p sextant-hull --bin sextant-browser -- --demo
 cargo run -p sextant-hull --bin sextant-browser -- --start "intent: open https://example.com and distill"
 ```
 
@@ -112,6 +114,8 @@ The visible browser also has a `SHOWCASE` control in the main toolbar. Use it du
 `--window-smoke [url-search-or-intent] --window-smoke-timeout <seconds>` opens the actual visible shell, optionally navigates or runs a native intent, draws once, reports whether a Servo frame was captured, and exits. Use it when validating the user-facing browser window rather than the operator bridge.
 
 `--start "<url-search-or-intent>"` launches the visible browser, runs that URL/search/intent, and leaves the window open for demo or manual testing.
+
+`--demo` is the shortest visible launch path. It runs the launch showcase, opens the proof panel, and leaves the browser window open. `--start-showcase` does the same seeding and can be combined with `--window-smoke` for bounded visible verification.
 
 ### Full Workspace Guardrail
 

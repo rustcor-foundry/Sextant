@@ -310,6 +310,10 @@ fn tools() -> Value {
                         "type": "string",
                         "description": "Optional URL or search phrase to open before the visible shell draw check."
                     },
+                    "showcase": {
+                        "type": "boolean",
+                        "description": "When true, run the launch showcase workflow before the visible shell draw check."
+                    },
                     "timeout_seconds": window_timeout_property(),
                 },
                 "required": [],
@@ -723,7 +727,15 @@ fn run_browser_operator_tool(
 
 fn run_browser_window_smoke_tool(arguments: Value) -> Result<Value, String> {
     let timeout_seconds = window_smoke_timeout(&arguments);
-    let mut full_args = vec!["--window-smoke".to_string()];
+    let mut full_args = Vec::new();
+    if arguments
+        .get("showcase")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        full_args.push("--start-showcase".to_string());
+    }
+    full_args.push("--window-smoke".to_string());
     if let Some(target) = required_string(&arguments, "target") {
         full_args.push(target);
     }
@@ -763,7 +775,7 @@ fn run_browser_window_smoke_tool(arguments: Value) -> Result<Value, String> {
         json!({ "arguments": arguments }),
     );
 
-    let report = tagged_report_lines(&stdout, "[window-smoke]");
+    let report = window_report_lines(&stdout);
     let structured = json!({
         "success": success,
         "exitCode": exit_code,
@@ -808,11 +820,11 @@ fn operator_report_lines(stdout: &str) -> Vec<String> {
         .collect()
 }
 
-fn tagged_report_lines(stdout: &str, prefix: &str) -> Vec<String> {
+fn window_report_lines(stdout: &str) -> Vec<String> {
     stdout
         .lines()
         .map(str::trim)
-        .filter(|line| line.starts_with(prefix))
+        .filter(|line| line.starts_with("[window-smoke]") || line.starts_with("[window-start]"))
         .map(str::to_string)
         .collect()
 }
@@ -914,6 +926,16 @@ enum BrowserRunner {
 
 impl BrowserRunner {
     fn locate() -> Result<Self, String> {
+        let prefer_installed_binary = env::var("SEXTANT_MCP_USE_INSTALLED_BROWSER")
+            .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+            .unwrap_or(false);
+
+        if !prefer_installed_binary {
+            if let Some(workspace) = find_rust_workspace() {
+                return Ok(Self::Cargo { workspace });
+            }
+        }
+
         if let Ok(exe) = env::current_exe() {
             if let Some(parent) = exe.parent() {
                 let name = if cfg!(windows) {
@@ -1141,10 +1163,14 @@ mod tests {
 
     #[test]
     fn extracts_window_smoke_lines() {
-        let output = "noise\n[window-smoke] visible shell draw passed\n[operator-run] ignored";
+        let output =
+            "noise\n[window-start] running launch showcase\n[window-smoke] visible shell draw passed\n[operator-run] ignored";
         assert_eq!(
-            tagged_report_lines(output, "[window-smoke]"),
-            vec!["[window-smoke] visible shell draw passed"]
+            window_report_lines(output),
+            vec![
+                "[window-start] running launch showcase",
+                "[window-smoke] visible shell draw passed"
+            ]
         );
     }
 

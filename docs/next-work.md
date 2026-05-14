@@ -40,6 +40,8 @@ cargo run -p sextant-hull --bin sextant-browser -- --operator-timeout 45 --opera
 cargo run -p sextant-hull --bin sextant-browser -- --operator-timeout 45 --intent-run "intent: open https://example.com and distill" --expect "Example Domain"
 cargo run -p sextant-hull --bin sextant-browser -- --window-smoke https://example.com --window-smoke-timeout 15
 cargo run -p sextant-hull --bin sextant-browser -- --window-smoke "intent: open https://example.com and distill" --window-smoke-timeout 20
+cargo run -p sextant-hull --bin sextant-browser -- --start-showcase --window-smoke --window-smoke-timeout 30
+cargo run -p sextant-hull --bin sextant-browser -- --demo
 cargo run -p sextant-hull --bin sextant-browser -- --start "intent: open https://example.com and distill"
 ```
 
@@ -51,7 +53,7 @@ Use `--intent-run "<intent>" --expect "<text>"` to exercise the native Intent Ba
 
 Operator runs default to a 120-second internal timeout and accept `--operator-timeout <seconds>` for harder probes. A timeout exits with code `124`.
 
-Use `--window-smoke [url-search-or-intent] --window-smoke-timeout <seconds>` for a bounded user-facing launch/draw check. It creates the real window, initializes Softbuffer and browser app state, optionally navigates or runs an intent, draws once, reports any Servo frame, and exits. Use `--start "<url-search-or-intent>"` for a visible demo launch that remains open.
+Use `--window-smoke [url-search-or-intent] --window-smoke-timeout <seconds>` for a bounded user-facing launch/draw check. It creates the real window, initializes Softbuffer and browser app state, optionally navigates or runs an intent, draws once, reports any Servo frame, and exits. Use `--start "<url-search-or-intent>"` for a visible launch that remains open, and `--demo` for the shortest showcase launch that remains open.
 
 MCP advertising layer:
 
@@ -115,6 +117,8 @@ Recent progress: the active shell now has a first native Intent Bar loop. Normal
 Recent progress: the browser now has a launch showcase path. `--showcase-run` proves the product loop across Intent Bar, Servo, Wake, Captain's Log, tab creation, native form interaction, and frame capture. The visible shell also accepts `--start "<url-search-or-intent>"`, and `--window-smoke` can now run an intent before drawing.
 
 Recent progress: the visible browser toolbar now includes a `SHOWCASE` control that runs the same launch-demo workflow in-window.
+
+Recent progress: `sextant-browser --demo` now opens the visible browser directly into the launch showcase proof state. `--start-showcase` can be combined with `--window-smoke` for a bounded visible check of that same path.
 
 ### 2. Full In-Window Workflow Validation (~1-2 hours)
 

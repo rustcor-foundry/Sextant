@@ -94,7 +94,7 @@ For a visible demo start that remains open:
 
 ```bash
 cd rust
-cargo run -p sextant-hull --bin sextant-browser -- --start "intent: open https://example.com and distill"
+cargo run -p sextant-hull --bin sextant-browser -- --demo
 ```
 
 ### Legacy Xilem Hull

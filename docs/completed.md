@@ -8,7 +8,10 @@ Audit trail of completed work sessions. Newest first.
 
 - Added `sextant-browser --showcase-run` as a bounded launch-demo proof across Intent Bar, Servo navigation, live DOM distillation, Wake, Captain's Log, tab creation, native form fill/click, validation progress, and frame capture
 - Added a visible `SHOWCASE` toolbar control that runs the same launch-demo workflow in-window and shows passed-step evidence in the Validation tab
+- Added `sextant-browser --demo` for one-command visible launch into the showcase proof state
+- Added `--start-showcase` for visible launch/showcase seeding, including bounded `--start-showcase --window-smoke` checks
 - Added visible browser launch seeding with `--start "<url-search-or-intent>"`
+- Updated MCP browser command resolution to prefer the current Cargo workspace during development, avoiding stale sibling binaries for demo checks
 - Updated `--window-smoke` so it can run URL/search targets or native Intent Bar commands before drawing and exiting
 - Exposed the showcase proof through MCP as `browser_showcase_run`
 - Confirmed `--showcase-run` passes and `--window-smoke "intent: open https://example.com and distill"` captures a Servo frame

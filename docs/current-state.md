@@ -135,6 +135,7 @@ The active native browser hull is intentionally plain, but it now has real brows
 - native operator bridge commands for automated smoke/probe runs before manual click-through
 - bounded `--window-smoke` mode for visible shell launch/draw checks before manual browsing
 - visible launch seeding with `--start "<url-search-or-intent>"` for demo/manual sessions
+- shortest visible demo launch with `--demo`, plus bounded showcase draw checks with `--start-showcase --window-smoke`
 - launch showcase mode with `--showcase-run`
 - native operator runs have an internal 120-second timeout by default and exit `124` on timeout
 - status bar shows native browser validation progress during manual work, and `RESET CHECKS` starts a fresh coverage pass without restarting

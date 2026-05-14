@@ -1286,8 +1286,11 @@ fn main() {
         }
     };
     let startup_input = operator_arg_value(&args, "--start");
+    let start_showcase = args
+        .iter()
+        .any(|arg| arg == "--start-showcase" || arg == "--demo");
 
-    if let Err(error) = run_visible_app(window_smoke, startup_input) {
+    if let Err(error) = run_visible_app(window_smoke, startup_input, start_showcase) {
         eprintln!("[sextant-browser] failed: {error}");
         std::process::exit(1);
     }
@@ -1336,6 +1339,7 @@ where
 fn run_visible_app(
     window_smoke: Option<WindowSmokeSpec>,
     startup_input: Option<String>,
+    start_showcase: bool,
 ) -> Result<(), String> {
     let event_loop =
         EventLoop::new().map_err(|error| format!("event loop initialization failed: {error}"))?;
@@ -1354,6 +1358,15 @@ fn run_visible_app(
     let mut app =
         BrowserApp::new().map_err(|error| format!("browser app initialization failed: {error}"))?;
     app.layout(window.inner_size());
+
+    if start_showcase {
+        println!("[window-start] running launch showcase");
+        app.run_showcase_visible();
+        if !app.last_ok {
+            return Err(format!("window showcase start failed: {}", app.last_status));
+        }
+        println!("[window-start] {}", app.last_status);
+    }
 
     if let Some(input) = startup_input.as_ref() {
         println!("[window-start] opening {}", input);
