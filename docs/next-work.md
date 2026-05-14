@@ -114,6 +114,8 @@ Recent progress: the active shell now has a first native Intent Bar loop. Normal
 
 Recent progress: the browser now has a launch showcase path. `--showcase-run` proves the product loop across Intent Bar, Servo, Wake, Captain's Log, tab creation, native form interaction, and frame capture. The visible shell also accepts `--start "<url-search-or-intent>"`, and `--window-smoke` can now run an intent before drawing.
 
+Recent progress: the visible browser toolbar now includes a `SHOWCASE` control that runs the same launch-demo workflow in-window.
+
 ### 2. Full In-Window Workflow Validation (~1-2 hours)
 
 The old Xilem validation checklist is reference material. Rebuild the same workflow coverage in the native browser shell around its actual controls and browser viewport, then run a real click-through pass that exercises the app end to end in the window and fixes anything that still only works in tests or partial runtime paths.

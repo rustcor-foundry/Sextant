@@ -70,6 +70,7 @@ impl Rect {
 #[derive(Clone, Copy)]
 enum Action {
     Navigate,
+    RunShowcase,
     NewTab,
     Back,
     Forward,
@@ -334,6 +335,16 @@ impl BrowserApp {
                 rect: Rect {
                     x: margin,
                     y: 64,
+                    w: 92,
+                    h: button_h,
+                },
+                label: "SHOWCASE",
+                action: Action::RunShowcase,
+            },
+            ButtonRegion {
+                rect: Rect {
+                    x: margin + 92 + gap,
+                    y: 64,
                     w: 82,
                     h: button_h,
                 },
@@ -342,7 +353,7 @@ impl BrowserApp {
             },
             ButtonRegion {
                 rect: Rect {
-                    x: margin + 82 + gap,
+                    x: margin + 174 + gap * 2,
                     y: 64,
                     w: 66,
                     h: button_h,
@@ -352,7 +363,7 @@ impl BrowserApp {
             },
             ButtonRegion {
                 rect: Rect {
-                    x: margin + 148 + gap * 2,
+                    x: margin + 240 + gap * 3,
                     y: 64,
                     w: 82,
                     h: button_h,
@@ -362,7 +373,7 @@ impl BrowserApp {
             },
             ButtonRegion {
                 rect: Rect {
-                    x: margin + 230 + gap * 3,
+                    x: margin + 322 + gap * 4,
                     y: 64,
                     w: 76,
                     h: button_h,
@@ -372,7 +383,7 @@ impl BrowserApp {
             },
             ButtonRegion {
                 rect: Rect {
-                    x: margin + 306 + gap * 4,
+                    x: margin + 398 + gap * 5,
                     y: 64,
                     w: 88,
                     h: button_h,
@@ -382,7 +393,7 @@ impl BrowserApp {
             },
         ];
         let reset_rect = Rect {
-            x: margin + 394 + gap * 5,
+            x: margin + 486 + gap * 6,
             y: 64,
             w: 112,
             h: button_h,
@@ -633,6 +644,7 @@ impl BrowserApp {
     fn run_action(&mut self, action: Action) {
         match action {
             Action::Navigate => self.navigate_input(),
+            Action::RunShowcase => self.run_showcase_visible(),
             Action::NewTab => self.new_tab(),
             Action::Back => self.back(),
             Action::Forward => self.forward(),
@@ -649,6 +661,38 @@ impl BrowserApp {
         self.validation = ValidationState::default();
         self.last_status = "Validation session reset. Runtime state is unchanged.".to_string();
         self.last_ok = true;
+    }
+
+    fn run_showcase_visible(&mut self) {
+        self.last_status = "Running launch showcase workflow.".to_string();
+        self.last_ok = true;
+        match run_showcase_workflow(self) {
+            Ok(report) => {
+                self.last_status =
+                    "Showcase complete: Intent, Wake, Log, interaction, and Servo frame are ready."
+                        .to_string();
+                self.pilot_status = "SHOWCASE READY".to_string();
+                self.pilot_result = report
+                    .last()
+                    .cloned()
+                    .unwrap_or_else(|| "Sextant launch showcase run passed".to_string());
+                self.pilot_plan = report
+                    .into_iter()
+                    .filter(|line| !line.starts_with("isolated data dir"))
+                    .take(4)
+                    .collect();
+                self.last_ok = true;
+                self.main_view = MainView::Browser;
+                self.refresh_logs();
+            }
+            Err(error) => {
+                self.last_status = format!("Showcase failed: {}", error);
+                self.pilot_status = "FAILED".to_string();
+                self.pilot_result = error;
+                self.last_ok = false;
+                self.validation.error_seen = true;
+            }
+        }
     }
 
     fn navigate_input(&mut self) {
@@ -1075,6 +1119,7 @@ impl BrowserApp {
     fn action_enabled(&self, action: Action) -> bool {
         match action {
             Action::Navigate => !self.address_input.trim().is_empty(),
+            Action::RunShowcase => true,
             Action::NewTab => true,
             Action::Back => self
                 .active_tab()
@@ -1588,7 +1633,12 @@ fn run_showcase_script() -> Result<Vec<String>, String> {
     let mut app = BrowserApp::new_with_data_dir(data_dir.clone())?;
     app.layout(PhysicalSize::new(1180, 760));
     report.push(format!("isolated data dir: {}", data_dir.display()));
+    report.extend(run_showcase_workflow(&mut app)?);
+    Ok(report)
+}
 
+fn run_showcase_workflow(app: &mut BrowserApp) -> Result<Vec<String>, String> {
+    let mut report = Vec::new();
     let intent = "intent: open https://example.com and distill";
     app.run_native_intent(intent);
     if !app.last_ok {
@@ -1666,7 +1716,7 @@ fn run_showcase_script() -> Result<Vec<String>, String> {
     app.record_log("showcase click #go", LogStatus::Success)?;
     report.push(format!("clicked {} tag {}", click.selector, click.tag));
 
-    let page = distill_operator_page(&mut app)?;
+    let page = distill_operator_page(app)?;
     if !operator_page_search_text(&page).contains(sentinel) {
         return Err(format!(
             "showcase distilled page did not include sentinel '{}'",
@@ -3678,6 +3728,7 @@ fn draw_button(
 fn disabled_reason(action: Action) -> &'static str {
     match action {
         Action::Navigate => "Enter an address, search phrase, or intent first.",
+        Action::RunShowcase => "Showcase is always available.",
         Action::NewTab => "New tab is always available.",
         Action::Back => "Back is unavailable for this tab/backend.",
         Action::Forward => "Forward is unavailable for this tab/backend.",

@@ -7,6 +7,7 @@ Audit trail of completed work sessions. Newest first.
 ## 2026-05-14 — Launch Showcase Path
 
 - Added `sextant-browser --showcase-run` as a bounded launch-demo proof across Intent Bar, Servo navigation, live DOM distillation, Wake, Captain's Log, tab creation, native form fill/click, validation progress, and frame capture
+- Added a visible `SHOWCASE` toolbar control that runs the same launch-demo workflow in-window
 - Added visible browser launch seeding with `--start "<url-search-or-intent>"`
 - Updated `--window-smoke` so it can run URL/search targets or native Intent Bar commands before drawing and exiting
 - Exposed the showcase proof through MCP as `browser_showcase_run`
