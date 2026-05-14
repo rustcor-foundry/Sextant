@@ -14,6 +14,7 @@ Audit trail of completed work sessions. Newest first.
 - Updated MCP browser command resolution to prefer the current Cargo workspace during development, avoiding stale sibling binaries for demo checks
 - Added `sextant-mcp --launch-preflight --timeout-seconds 60` and MCP `browser_launch_preflight` for the launch-critical pre-demo sequence
 - Confirmed launch preflight passes operator smoke, Intent Bar, showcase, and visible showcase smoke checks
+- Made launch preflight print a short human summary by default, with `--json` available for structured reports
 - Updated `--window-smoke` so it can run URL/search targets or native Intent Bar commands before drawing and exiting
 - Exposed the showcase proof through MCP as `browser_showcase_run`
 - Confirmed `--showcase-run` passes and `--window-smoke "intent: open https://example.com and distill"` captures a Servo frame

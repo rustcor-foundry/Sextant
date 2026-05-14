@@ -103,7 +103,7 @@ cargo run -p sextant-hull --bin sextant-browser -- --start "intent: open https:/
 
 `--showcase-run` runs the current launch-demo proof in one bounded command: Intent Bar, Servo navigation, Wake, Captain's Log, native form interaction, tab creation, and frame capture.
 
-`sextant-mcp --launch-preflight` runs the launch-critical pre-demo sequence: operator smoke, Intent Bar run, showcase run, and visible showcase smoke. Use it before showing the product live.
+`sextant-mcp --launch-preflight` runs the launch-critical pre-demo sequence: operator smoke, Intent Bar run, showcase run, and visible showcase smoke. Use it before showing the product live. It prints a short pass/fail summary by default; add `--json` for the full structured report.
 
 The visible browser also has a `SHOWCASE` control in the main toolbar. Use it during manual demo prep to seed the app into the same proof state without leaving the window; it switches to the Validation tab and shows the recent passed showcase steps.
 

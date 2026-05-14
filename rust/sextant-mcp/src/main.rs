@@ -48,10 +48,21 @@ fn run() -> Result<(), String> {
             "timeout_seconds": timeout_seconds,
             "visible_timeout_seconds": 30,
         }));
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&result).map_err(|error| error.to_string())?
-        );
+        if args.iter().any(|arg| arg == "--json") {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&result).map_err(|error| error.to_string())?
+            );
+        } else {
+            println!("{}", tool_text(&result));
+        }
+        if result
+            .get("isError")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            std::process::exit(1);
+        }
         return Ok(());
     }
 
@@ -620,6 +631,17 @@ fn tool_error(message: &str) -> Value {
         }],
         "isError": true,
     })
+}
+
+fn tool_text(result: &Value) -> String {
+    result
+        .get("content")
+        .and_then(Value::as_array)
+        .and_then(|items| items.first())
+        .and_then(|item| item.get("text"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string()
 }
 
 fn required_string(arguments: &Value, key: &str) -> Option<String> {
@@ -1413,5 +1435,14 @@ mod tests {
         assert!(text.contains("Sextant launch preflight failed"));
         assert!(text.contains("PASS: operator smoke"));
         assert!(text.contains("FAIL: visible showcase smoke"));
+    }
+
+    #[test]
+    fn extracts_tool_text_for_cli_output() {
+        let text = tool_text(&json!({
+            "content": [{"type": "text", "text": "short summary"}],
+            "structuredContent": {"success": true}
+        }));
+        assert_eq!(text, "short summary");
     }
 }

@@ -71,6 +71,8 @@ Use the CLI preflight before live demo work:
 cargo run -p sextant-mcp -- --launch-preflight --timeout-seconds 60
 ```
 
+Add `--json` when a script needs the full structured check report.
+
 ## Next Integration Step
 
 This MCP layer currently delegates browser work to the native operator binary. The next deeper integration should extract the browser session/operator runtime from `sextant-hull/src/browser.rs` into reusable Rust code so the visible browser and MCP server can share a long-lived session path.
