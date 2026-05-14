@@ -99,7 +99,7 @@ cargo run -p sextant-hull --bin sextant-browser -- --start "intent: open https:/
 
 `--showcase-run` runs the current launch-demo proof in one bounded command: Intent Bar, Servo navigation, Wake, Captain's Log, native form interaction, tab creation, and frame capture.
 
-The visible browser also has a `SHOWCASE` control in the main toolbar. Use it during manual demo prep to seed the app into the same proof state without leaving the window.
+The visible browser also has a `SHOWCASE` control in the main toolbar. Use it during manual demo prep to seed the app into the same proof state without leaving the window; it switches to the Validation tab and shows the recent passed showcase steps.
 
 `--operator-probe <url-or-search>` runs the same native browser navigation/distill/Wake/frame path against a target page. Use it before manual click-through when hardening heavy browsing.
 

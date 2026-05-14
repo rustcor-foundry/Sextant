@@ -166,6 +166,7 @@ struct BrowserApp {
     pilot_status: String,
     pilot_plan: Vec<String>,
     pilot_result: String,
+    showcase_report: Vec<String>,
     cursor: Option<(f64, f64)>,
     focus: FocusTarget,
     address_rect: Rect,
@@ -207,6 +208,7 @@ impl BrowserApp {
             pilot_status: "IDLE".to_string(),
             pilot_plan: vec!["Awaiting URL, search, or native intent.".to_string()],
             pilot_result: "No active intent yet.".to_string(),
+            showcase_report: Vec::new(),
             cursor: None,
             focus: FocusTarget::Address,
             address_rect: Rect {
@@ -677,18 +679,21 @@ impl BrowserApp {
                     .cloned()
                     .unwrap_or_else(|| "Sextant launch showcase run passed".to_string());
                 self.pilot_plan = report
-                    .into_iter()
+                    .iter()
+                    .cloned()
                     .filter(|line| !line.starts_with("isolated data dir"))
                     .take(4)
                     .collect();
+                self.showcase_report = report;
                 self.last_ok = true;
-                self.main_view = MainView::Browser;
+                self.main_view = MainView::Validation;
                 self.refresh_logs();
             }
             Err(error) => {
                 self.last_status = format!("Showcase failed: {}", error);
                 self.pilot_status = "FAILED".to_string();
                 self.pilot_result = error;
+                self.showcase_report = vec![self.last_status.clone()];
                 self.last_ok = false;
                 self.validation.error_seen = true;
             }
@@ -3278,15 +3283,76 @@ fn draw_validation_panel(buffer: &mut [u32], width: u32, height: u32, app: &Brow
         height,
         44,
         panel.y + 70,
-        "THIS VIEW TRACKS THE CURRENT WINDOW SESSION, NOT ONLY OPERATOR AUTOMATION.",
+        if app.showcase_report.is_empty() {
+            "THIS VIEW TRACKS THE CURRENT WINDOW SESSION, NOT ONLY OPERATOR AUTOMATION."
+        } else {
+            "SHOWCASE PROOF IS ACTIVE. RECENT PASSED STEPS ARE LISTED BELOW."
+        },
         TEXT_DIM,
         1,
     );
 
+    let mut row_start = panel.y + 112;
+    if !app.showcase_report.is_empty() {
+        let report_rect = Rect {
+            x: 44,
+            y: panel.y + 98,
+            w: panel.w.saturating_sub(88),
+            h: 138,
+        };
+        fill_rect(buffer, width, height, report_rect, PANEL_DARK);
+        stroke_rect(buffer, width, height, report_rect, BORDER);
+        draw_text(
+            buffer,
+            width,
+            height,
+            report_rect.x + 14,
+            report_rect.y + 12,
+            "LAUNCH SHOWCASE",
+            TEXT,
+            1,
+        );
+        for (index, line) in app
+            .showcase_report
+            .iter()
+            .filter(|line| !line.starts_with("isolated data dir"))
+            .take(6)
+            .enumerate()
+        {
+            let y = report_rect.y + 36 + index as u32 * 16;
+            fill_rect(
+                buffer,
+                width,
+                height,
+                Rect {
+                    x: report_rect.x + 14,
+                    y: y + 2,
+                    w: 6,
+                    h: 6,
+                },
+                STATUS_OK,
+            );
+            draw_text(
+                buffer,
+                width,
+                height,
+                report_rect.x + 28,
+                y,
+                &truncate(
+                    line,
+                    ((report_rect.w.saturating_sub(44)) / char_advance(1)) as usize,
+                ),
+                TEXT_DIM,
+                1,
+            );
+        }
+        row_start = report_rect.y + report_rect.h + 24;
+    }
+
     let max_detail_chars = ((panel.w.saturating_sub(260)) / char_advance(1)) as usize;
-    let max_rows = panel.h.saturating_sub(116) / 38;
+    let max_rows = panel.y.saturating_add(panel.h).saturating_sub(row_start) / 38;
     for (index, row) in rows.iter().take(max_rows as usize).enumerate() {
-        let y = panel.y + 112 + index as u32 * 38;
+        let y = row_start + index as u32 * 38;
         let color = validation_status_color(row.status);
         fill_rect(
             buffer,

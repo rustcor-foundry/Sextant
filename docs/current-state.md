@@ -127,7 +127,7 @@ The active native browser hull is intentionally plain, but it now has real brows
 - browser, Wake, and Captain's Log tabs
 - native browser `VALIDATION` tab for session-aware manual click-through coverage
 - direct controls for RUN, NEW TAB, BACK, FORWARD, RELOAD, CLOSE TAB, DISTILL, and WAKE search
-- SHOWCASE control that seeds the visible app into the launch-demo proof state
+- SHOWCASE control that seeds the visible app into the launch-demo proof state and opens the Validation tab with passed-step evidence
 - Intent/URL entry that preserves normal browsing while allowing explicit native intent runs to plan, navigate, distill, and write Wake/Log state
 - Context Vault rail with current Pilot status, intent, plan summary, and result text
 - Servo viewport frame painting when built with default features
