@@ -83,9 +83,18 @@ These commands exercise the native browser product loop without opening the visi
 ```bash
 cd rust
 cargo run -p sextant-hull --bin sextant-browser -- --operator-smoke
+cargo run -p sextant-hull --bin sextant-browser -- --showcase-run
 cargo run -p sextant-hull --bin sextant-browser -- --operator-probe https://example.com
 cargo run -p sextant-hull --bin sextant-browser -- --operator-run https://example.com --expect "Example Domain"
 cargo run -p sextant-hull --bin sextant-browser -- --intent-run "intent: open https://example.com and distill" --expect "Example Domain"
+cargo run -p sextant-hull --bin sextant-browser -- --window-smoke "intent: open https://example.com and distill" --window-smoke-timeout 20
+```
+
+For a visible demo start that remains open:
+
+```bash
+cd rust
+cargo run -p sextant-hull --bin sextant-browser -- --start "intent: open https://example.com and distill"
 ```
 
 ### Legacy Xilem Hull

@@ -25,6 +25,7 @@ Follow [next-work.md](next-work.md) as the active execution guide unless the tea
    - `cargo test -p sextant-pilot --lib`
    - `cargo test -p sextant-engine --lib`
    - `cargo run -p sextant-hull --bin sextant-browser -- --operator-smoke`
+   - `cargo run -p sextant-hull --bin sextant-browser -- --showcase-run`
    - `cargo run -p sextant-hull --bin sextant-browser -- --operator-probe https://example.com`
    - `cargo run -p sextant-hull --bin sextant-browser -- --operator-run https://example.com --expect "Example Domain"`
    - `cargo run -p sextant-hull --bin sextant-browser -- --intent-run "intent: open https://example.com and distill" --expect "Example Domain"`
@@ -84,14 +85,19 @@ These modes write breadcrumbs to `xilem-diagnostics.log` under the Sextant app d
 ```bash
 cd rust
 cargo run -p sextant-hull --bin sextant-browser -- --operator-smoke
+cargo run -p sextant-hull --bin sextant-browser -- --showcase-run
 cargo run -p sextant-hull --bin sextant-browser -- --operator-probe https://example.com
 cargo run -p sextant-hull --bin sextant-browser -- --operator-run https://example.com --expect "Example Domain"
 cargo run -p sextant-hull --bin sextant-browser -- --operator-timeout 45 --operator-run https://example.com --expect "Example Domain"
 cargo run -p sextant-hull --bin sextant-browser -- --operator-timeout 45 --intent-run "intent: open https://example.com and distill" --expect "Example Domain"
 cargo run -p sextant-hull --bin sextant-browser -- --window-smoke https://example.com --window-smoke-timeout 15
+cargo run -p sextant-hull --bin sextant-browser -- --window-smoke "intent: open https://example.com and distill" --window-smoke-timeout 20
+cargo run -p sextant-hull --bin sextant-browser -- --start "intent: open https://example.com and distill"
 ```
 
 `--operator-smoke` runs a deterministic native browser workflow without opening the visible event loop. It validates Servo navigation, native DOM fill/click, live DOM distillation, Wake, Captain's Log, and frame capture.
+
+`--showcase-run` runs the current launch-demo proof in one bounded command: Intent Bar, Servo navigation, Wake, Captain's Log, native form interaction, tab creation, and frame capture.
 
 `--operator-probe <url-or-search>` runs the same native browser navigation/distill/Wake/frame path against a target page. Use it before manual click-through when hardening heavy browsing.
 
@@ -101,7 +107,9 @@ cargo run -p sextant-hull --bin sextant-browser -- --window-smoke https://exampl
 
 `--operator-timeout <seconds>` applies to smoke, probe, and scripted runs. The default is 120 seconds; timeout exits use code `124` so stalled hard-site probes are visible to scripts instead of relying on an outer shell kill.
 
-`--window-smoke [url-or-search] --window-smoke-timeout <seconds>` opens the actual visible shell, optionally navigates to a target, draws once, reports whether a Servo frame was captured, and exits. Use it when validating the user-facing browser window rather than the operator bridge.
+`--window-smoke [url-search-or-intent] --window-smoke-timeout <seconds>` opens the actual visible shell, optionally navigates or runs a native intent, draws once, reports whether a Servo frame was captured, and exits. Use it when validating the user-facing browser window rather than the operator bridge.
+
+`--start "<url-search-or-intent>"` launches the visible browser, runs that URL/search/intent, and leaves the window open for demo or manual testing.
 
 ### Full Workspace Guardrail
 

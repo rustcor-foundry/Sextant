@@ -47,6 +47,7 @@ The biggest remaining gaps are now heavy browsing hardening, real-window Servo b
 | Native browser heavy browsing build | ✅ | package default features wire `sextant-browser` to Servo; focused Servo engine tests pass |
 | Native operator bridge | ✅ baseline | `--operator-smoke` drives Servo navigation, native DOM fill/click, distillation, Wake, Log, and frame capture; `--operator-probe <url>` probes real pages; `--operator-run` scripts selector actions and expectations; `--operator-timeout <seconds>` bounds stalled runs |
 | Native intent runner | ✅ baseline | `--intent-run "intent: open https://example.com and distill" --expect "Example Domain"` exercises the Intent Bar loop headlessly through Servo navigation, live DOM distillation, Wake, Captain's Log, and frame capture |
+| Launch showcase runner | ✅ baseline | `--showcase-run` proves Intent Bar, Servo navigation, live DOM distillation, Wake, Captain's Log, tab creation, native form interaction, validation progress, and frame capture in one bounded command |
 | MCP browser advertising layer | ✅ baseline | `sextant-mcp` exposes local stdio MCP tools/resources for browser capabilities, bounded operator smoke/probe/run, and recent Captain's Log reads |
 | Xilem/Vello diagnostic ladder | ✅ baseline | parked `sextant-hull` now has bounded `--xilem-smoke` modes for minimal, safe, interactive-smoke, and full shells; all four survived five-second first-paint checks on Windows |
 | Servo live navigation | ✅ baseline / ⚠️ buggy | tests cover data URLs, live DOM mutation, history, back/forward, and cache invalidation; operator probes now cover `example.com`, Google search, `rust-lang.org`, MDN, Wikipedia, docs.rs, GitHub, `neverssl`, and `httpbin`; broader real-window browsing still needs hardening |
@@ -132,6 +133,8 @@ The active native browser hull is intentionally plain, but it now has real brows
 - browser viewport mouse, wheel, character-key, and named-key forwarding into the engine
 - native operator bridge commands for automated smoke/probe runs before manual click-through
 - bounded `--window-smoke` mode for visible shell launch/draw checks before manual browsing
+- visible launch seeding with `--start "<url-search-or-intent>"` for demo/manual sessions
+- launch showcase mode with `--showcase-run`
 - native operator runs have an internal 120-second timeout by default and exit `124` on timeout
 - status bar shows native browser validation progress during manual work, and `RESET CHECKS` starts a fresh coverage pass without restarting
 - reader-mode distilled page display when a live frame is not available

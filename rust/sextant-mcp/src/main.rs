@@ -126,6 +126,12 @@ fn handle_tool_call(id: Value, params: Option<Value>) -> Value {
             vec!["--operator-smoke".to_string()],
             json!({ "arguments": arguments }),
         ),
+        "browser_showcase_run" => run_browser_operator_tool(
+            "browser_showcase_run",
+            operator_timeout(&arguments),
+            vec!["--showcase-run".to_string()],
+            json!({ "arguments": arguments }),
+        ),
         "browser_window_smoke" => run_browser_window_smoke_tool(arguments),
         "browser_intent_run" => {
             let Some(intent) = required_string(&arguments, "intent") else {
@@ -285,6 +291,12 @@ fn tools() -> Value {
             "name": "browser_operator_smoke",
             "title": "Browser Operator Smoke",
             "description": "Run the deterministic native browser operator smoke check through sextant-browser.",
+            "inputSchema": timeout_schema(),
+        },
+        {
+            "name": "browser_showcase_run",
+            "title": "Browser Showcase Run",
+            "description": "Run the launch-demo browser proof: Intent Bar, Servo navigation, Wake, Log, native form interaction, and frame capture.",
             "inputSchema": timeout_schema(),
         },
         {
@@ -460,6 +472,7 @@ fn resource_text(uri: &str) -> Option<String> {
                 "- Default engine: Servo-backed native browser lane",
                 "- Fallback lane: `sextant-browser --no-default-features`",
                 "- Automation: bounded native operator smoke/probe/run modes",
+                "- Showcase: bounded `--showcase-run` proof for launch demos",
                 "- Intent automation: bounded `--intent-run` mode for native Intent Bar workflows",
                 "- Visible shell checks: bounded `--window-smoke` launch/draw/navigation mode",
                 "- Persistence: Digital Wake and Captain's Log under the browser data directory",
@@ -472,6 +485,7 @@ fn resource_text(uri: &str) -> Option<String> {
                 "# Native Operator Workflow",
                 "",
                 "Use `browser_operator_smoke` first when validating the bridge itself.",
+                "Use `browser_showcase_run` for a launch-demo proof across Intent, Servo, Wake, Log, interaction, and frame capture.",
                 "Use `browser_intent_run` for Intent Bar workflows such as opening and distilling a page.",
                 "Use `browser_operator_probe` for page-level navigation and distillation checks.",
                 "Use `browser_operator_run` for ordered selector scripts:",
@@ -497,6 +511,7 @@ fn resource_text(uri: &str) -> Option<String> {
                 "",
                 "- Discovery is handled by `browser_capabilities` and static resources.",
                 "- Real browsing is routed through `sextant-browser` operator mode.",
+                "- Launch showcase checks are routed through `sextant-browser --showcase-run`.",
                 "- Intent work is routed through `sextant-browser --intent-run`.",
                 "- Visible shell validation is routed through `sextant-browser --window-smoke`.",
                 "- Operator tools are bounded by `timeout_seconds` and return captured stdout/stderr.",
@@ -518,6 +533,7 @@ fn browser_capabilities() -> Value {
             "fallbackEngine": "reader/fetch/distill build via --no-default-features",
             "operatorBridge": {
                 "smoke": true,
+                "showcaseRun": true,
                 "intentRun": true,
                 "probe": true,
                 "run": ["fill", "click", "submit", "expect"],
@@ -535,6 +551,7 @@ fn browser_capabilities() -> Value {
             "tools": [
                 "browser_capabilities",
                 "browser_operator_smoke",
+                "browser_showcase_run",
                 "browser_window_smoke",
                 "browser_intent_run",
                 "browser_operator_probe",
@@ -782,7 +799,11 @@ fn operator_report_lines(stdout: &str) -> Vec<String> {
     stdout
         .lines()
         .map(str::trim)
-        .filter(|line| line.starts_with("[operator-") || line.starts_with("[intent-run]"))
+        .filter(|line| {
+            line.starts_with("[operator-")
+                || line.starts_with("[intent-run]")
+                || line.starts_with("[showcase-run]")
+        })
         .map(str::to_string)
         .collect()
 }
@@ -1031,6 +1052,7 @@ mod tests {
         assert!(names.contains(&"browser_capabilities"));
         assert!(names.contains(&"browser_intent_run"));
         assert!(names.contains(&"browser_operator_run"));
+        assert!(names.contains(&"browser_showcase_run"));
         assert!(names.contains(&"browser_window_smoke"));
     }
 
@@ -1129,12 +1151,13 @@ mod tests {
     #[test]
     fn extracts_intent_run_lines_with_operator_reports() {
         let output =
-            "noise\n[intent-run] native intent run passed\n[operator-run] scripted run passed";
+            "noise\n[intent-run] native intent run passed\n[operator-run] scripted run passed\n[showcase-run] Sextant launch showcase run passed";
         assert_eq!(
             operator_report_lines(output),
             vec![
                 "[intent-run] native intent run passed",
-                "[operator-run] scripted run passed"
+                "[operator-run] scripted run passed",
+                "[showcase-run] Sextant launch showcase run passed"
             ]
         );
     }

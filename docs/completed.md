@@ -4,6 +4,16 @@ Audit trail of completed work sessions. Newest first.
 
 ---
 
+## 2026-05-14 — Launch Showcase Path
+
+- Added `sextant-browser --showcase-run` as a bounded launch-demo proof across Intent Bar, Servo navigation, live DOM distillation, Wake, Captain's Log, tab creation, native form fill/click, validation progress, and frame capture
+- Added visible browser launch seeding with `--start "<url-search-or-intent>"`
+- Updated `--window-smoke` so it can run URL/search targets or native Intent Bar commands before drawing and exiting
+- Exposed the showcase proof through MCP as `browser_showcase_run`
+- Confirmed `--showcase-run` passes and `--window-smoke "intent: open https://example.com and distill"` captures a Servo frame
+
+---
+
 ## 2026-05-14 — Xilem Smoke Ladder And MCP Intent Tool
 
 - Added bounded parked-Xilem launch modes: `--xilem-smoke minimal|safe|interactive-smoke|full --xilem-timeout <seconds>`

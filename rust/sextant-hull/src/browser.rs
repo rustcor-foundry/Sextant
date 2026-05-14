@@ -1217,6 +1217,10 @@ fn main() {
         run_operator_mode("operator-smoke", operator_timeout, run_operator_smoke);
     }
 
+    if args.iter().any(|arg| arg == "--showcase-run") {
+        run_operator_mode("showcase-run", operator_timeout, run_showcase_script);
+    }
+
     if let Some(intent) = operator_arg_value(&args, "--intent-run") {
         let expect = operator_arg_value(&args, "--expect");
         run_operator_mode("intent-run", operator_timeout, move || {
@@ -1231,8 +1235,9 @@ fn main() {
             std::process::exit(2);
         }
     };
+    let startup_input = operator_arg_value(&args, "--start");
 
-    if let Err(error) = run_visible_app(window_smoke) {
+    if let Err(error) = run_visible_app(window_smoke, startup_input) {
         eprintln!("[sextant-browser] failed: {error}");
         std::process::exit(1);
     }
@@ -1278,7 +1283,10 @@ where
     }
 }
 
-fn run_visible_app(window_smoke: Option<WindowSmokeSpec>) -> Result<(), String> {
+fn run_visible_app(
+    window_smoke: Option<WindowSmokeSpec>,
+    startup_input: Option<String>,
+) -> Result<(), String> {
     let event_loop =
         EventLoop::new().map_err(|error| format!("event loop initialization failed: {error}"))?;
     let window = Arc::new(
@@ -1297,19 +1305,18 @@ fn run_visible_app(window_smoke: Option<WindowSmokeSpec>) -> Result<(), String> 
         BrowserApp::new().map_err(|error| format!("browser app initialization failed: {error}"))?;
     app.layout(window.inner_size());
 
+    if let Some(input) = startup_input.as_ref() {
+        println!("[window-start] opening {}", input);
+        submit_start_input(&mut app, input)?;
+        println!("[window-start] {}", app.last_status);
+    }
+
     if let Some(smoke) = window_smoke.as_ref() {
         println!("[window-smoke] starting visible browser shell smoke");
         if let Some(target) = smoke.target.as_ref() {
-            let url = parse_navigation_target(target)?;
-            println!("[window-smoke] navigating to {}", url);
-            app.navigate_to(url);
-            if !app.last_ok {
-                return Err(format!(
-                    "window smoke navigation failed: {}",
-                    app.last_status
-                ));
-            }
-            app.refresh_frame();
+            println!("[window-smoke] opening {}", target);
+            submit_start_input(&mut app, target)
+                .map_err(|error| format!("window smoke open failed: {error}"))?;
         }
     }
 
@@ -1442,6 +1449,21 @@ fn run_visible_app(window_smoke: Option<WindowSmokeSpec>) -> Result<(), String> 
     Ok(())
 }
 
+fn submit_start_input(app: &mut BrowserApp, input: &str) -> Result<(), String> {
+    app.address_input = input.to_string();
+    if native_intent_body(input).is_some() {
+        app.run_native_intent(input);
+    } else {
+        let url = parse_navigation_target(input)?;
+        app.navigate_to(url);
+    }
+    if !app.last_ok {
+        return Err(app.last_status.clone());
+    }
+    app.refresh_frame();
+    Ok(())
+}
+
 fn run_operator_smoke() -> Result<Vec<String>, String> {
     let mut report = Vec::new();
     report.push("starting native-browser operator bridge smoke".to_string());
@@ -1555,6 +1577,153 @@ fn run_operator_smoke() -> Result<Vec<String>, String> {
     ));
 
     report.push("native-browser operator bridge smoke passed".to_string());
+    Ok(report)
+}
+
+fn run_showcase_script() -> Result<Vec<String>, String> {
+    let mut report = Vec::new();
+    report.push("starting Sextant launch showcase run".to_string());
+
+    let data_dir = env::temp_dir().join(format!("sextant-browser-showcase-{}", Uuid::new_v4()));
+    let mut app = BrowserApp::new_with_data_dir(data_dir.clone())?;
+    app.layout(PhysicalSize::new(1180, 760));
+    report.push(format!("isolated data dir: {}", data_dir.display()));
+
+    let intent = "intent: open https://example.com and distill";
+    app.run_native_intent(intent);
+    if !app.last_ok {
+        return Err(format!("showcase intent failed: {}", app.last_status));
+    }
+    report.push(format!("intent status: {}", app.pilot_status));
+    report.push(format!("intent result: {}", app.pilot_result));
+
+    let page = app
+        .active_tab()
+        .and_then(|tab| tab.distilled_page.clone())
+        .ok_or_else(|| "showcase intent did not attach distilled page data".to_string())?;
+    if !operator_page_search_text(&page).contains("Example Domain") {
+        return Err("showcase intent page did not contain Example Domain".to_string());
+    }
+    let counts = semantic_counts(&page);
+    report.push(format!(
+        "intent distilled '{}' via {} (h={} links={} text={})",
+        page.title,
+        distillation_label(&page),
+        counts.headings,
+        counts.links,
+        counts.text
+    ));
+
+    app.new_tab();
+    if !app.last_ok {
+        return Err(format!("showcase new tab failed: {}", app.last_status));
+    }
+    report.push(app.last_status.clone());
+
+    let sentinel = "native pilot showcase";
+    let url = Url::parse(&format!(
+        "data:text/html,{}",
+        "<!DOCTYPE html>\
+<title>Sextant Showcase</title>\
+<main>\
+<h1>Sextant Showcase</h1>\
+<p>Intent Bar, Wake, and native operator bridge are online.</p>\
+<input id='q' value='empty'>\
+<button id='go' onclick=\"document.getElementById('out').textContent=document.getElementById('q').value\">Go</button>\
+<p id='out'>waiting</p>\
+</main>"
+    ))
+    .map_err(|error| format!("showcase data URL did not parse: {}", error))?;
+    app.navigate_to(url);
+    if !app.last_ok {
+        return Err(format!("showcase data page failed: {}", app.last_status));
+    }
+    report.push(app.last_status.clone());
+
+    let fill = app
+        .engine
+        .fill_selector_current_page("#q", sentinel)
+        .map_err(|error| format!("showcase fill failed: {}", error))?;
+    if !fill.ok || fill.value != sentinel {
+        return Err(format!(
+            "showcase fill returned unexpected result: {:?}",
+            fill
+        ));
+    }
+    app.record_log("showcase fill #q", LogStatus::Success)?;
+    report.push(format!("filled {} with {}", fill.selector, fill.value));
+
+    let click = app
+        .engine
+        .click_selector_current_page("#go")
+        .map_err(|error| format!("showcase click failed: {}", error))?;
+    if !click.ok {
+        return Err(format!(
+            "showcase click returned unexpected result: {:?}",
+            click
+        ));
+    }
+    app.record_log("showcase click #go", LogStatus::Success)?;
+    report.push(format!("clicked {} tag {}", click.selector, click.tag));
+
+    let page = distill_operator_page(&mut app)?;
+    if !operator_page_search_text(&page).contains(sentinel) {
+        return Err(format!(
+            "showcase distilled page did not include sentinel '{}'",
+            sentinel
+        ));
+    }
+    report.push(format!(
+        "interactive page distilled '{}' with sentinel",
+        page.title
+    ));
+
+    if app.wake_results.is_empty() {
+        return Err("showcase Wake search returned no result".to_string());
+    }
+    report.push(format!(
+        "Wake search returned {} result(s)",
+        app.wake_results.len()
+    ));
+
+    app.refresh_logs();
+    if app.recent_logs.len() < 5 {
+        return Err(format!(
+            "showcase Captain's Log returned only {} recent entries",
+            app.recent_logs.len()
+        ));
+    }
+    report.push(format!(
+        "Captain's Log returned {} recent entries",
+        app.recent_logs.len()
+    ));
+
+    app.refresh_frame();
+    let frame = app
+        .latest_frame
+        .as_ref()
+        .ok_or_else(|| "showcase did not capture a Servo frame".to_string())?;
+    if frame.width == 0 || frame.height == 0 || frame.pixels.is_empty() {
+        return Err(format!(
+            "showcase captured an empty Servo frame: {}x{} pixels={}",
+            frame.width,
+            frame.height,
+            frame.pixels.len()
+        ));
+    }
+    report.push(format!(
+        "captured Servo frame {}x{} ({} pixels)",
+        frame.width,
+        frame.height,
+        frame.pixels.len()
+    ));
+
+    report.push(format!(
+        "validation checks passed {}/{}",
+        app.validation_pass_count(),
+        app.validation_rows().len()
+    ));
+    report.push("Sextant launch showcase run passed".to_string());
     Ok(report)
 }
 
