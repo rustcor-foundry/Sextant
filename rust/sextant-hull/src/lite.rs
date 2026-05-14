@@ -8,7 +8,8 @@ use softbuffer::{Context, Surface};
 use std::env;
 use std::num::NonZeroU32;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
+use std::thread;
 use std::time::{Duration, Instant};
 use url::Url;
 use uuid::Uuid;
@@ -46,6 +47,7 @@ const GLYPH_GAP: u32 = 2;
 const FRAME_REFRESH_IDLE: Duration = Duration::from_millis(500);
 const FRAME_REFRESH_DIRTY: Duration = Duration::from_millis(180);
 const FRAME_WARMUP_BUDGET: u8 = 18;
+const OPERATOR_DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[derive(Clone, Copy)]
 struct Rect {
@@ -819,19 +821,18 @@ fn main() {
     tracing_subscriber::fmt::init();
 
     let args: Vec<String> = env::args().collect();
+    let operator_timeout = match parse_operator_timeout(&args) {
+        Ok(timeout) => timeout,
+        Err(error) => {
+            eprintln!("[operator] failed to parse arguments: {error}");
+            std::process::exit(2);
+        }
+    };
+
     match parse_operator_run(&args) {
-        Ok(Some(spec)) => match run_operator_script(spec) {
-            Ok(report) => {
-                for line in report {
-                    println!("[operator-run] {line}");
-                }
-                std::process::exit(0);
-            }
-            Err(error) => {
-                eprintln!("[operator-run] failed: {error}");
-                std::process::exit(1);
-            }
-        },
+        Ok(Some(spec)) => run_operator_mode("operator-run", operator_timeout, move || {
+            run_operator_script(spec)
+        }),
         Ok(None) => {}
         Err(error) => {
             eprintln!("[operator-run] failed to parse arguments: {error}");
@@ -840,38 +841,58 @@ fn main() {
     }
 
     if let Some(target) = operator_arg_value(&args, "--operator-probe") {
-        match run_operator_probe(&target) {
-            Ok(report) => {
-                for line in report {
-                    println!("[operator-probe] {line}");
-                }
-                std::process::exit(0);
-            }
-            Err(error) => {
-                eprintln!("[operator-probe] failed: {error}");
-                std::process::exit(1);
-            }
-        }
+        run_operator_mode("operator-probe", operator_timeout, move || {
+            run_operator_probe(&target)
+        });
     }
 
     if args.iter().any(|arg| arg == "--operator-smoke") {
-        match run_operator_smoke() {
-            Ok(report) => {
-                for line in report {
-                    println!("[operator-smoke] {line}");
-                }
-                std::process::exit(0);
-            }
-            Err(error) => {
-                eprintln!("[operator-smoke] failed: {error}");
-                std::process::exit(1);
-            }
-        }
+        run_operator_mode("operator-smoke", operator_timeout, run_operator_smoke);
     }
 
     if let Err(error) = run_visible_app() {
         eprintln!("[sextant-lite] failed: {error}");
         std::process::exit(1);
+    }
+}
+
+fn run_operator_mode<F>(label: &'static str, timeout: Duration, run: F) -> !
+where
+    F: FnOnce() -> Result<Vec<String>, String> + Send + 'static,
+{
+    let (result_tx, result_rx) = mpsc::channel();
+    if let Err(error) = thread::Builder::new()
+        .name(format!("sextant-lite-{}", label))
+        .spawn(move || {
+            let _ = result_tx.send(run());
+        })
+    {
+        eprintln!("[{label}] failed to start worker: {error}");
+        std::process::exit(1);
+    }
+
+    match result_rx.recv_timeout(timeout) {
+        Ok(Ok(report)) => {
+            for line in report {
+                println!("[{label}] {line}");
+            }
+            std::process::exit(0);
+        }
+        Ok(Err(error)) => {
+            eprintln!("[{label}] failed: {error}");
+            std::process::exit(1);
+        }
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            eprintln!(
+                "[{label}] timed out after {}s; terminating native-lite operator run",
+                timeout.as_secs()
+            );
+            std::process::exit(124);
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            eprintln!("[{label}] worker exited before reporting a result");
+            std::process::exit(1);
+        }
     }
 }
 
@@ -1389,15 +1410,33 @@ fn parse_operator_run(args: &[String]) -> Result<Option<OperatorRunSpec>, String
                 steps.push(OperatorStep::Expect { text });
                 cursor += 2;
             }
+            "--operator-timeout" => {
+                args.get(cursor + 1)
+                    .ok_or_else(|| "--operator-timeout requires seconds".to_string())?;
+                cursor += 2;
+            }
             other => {
                 return Err(format!(
-                    "unknown operator-run argument '{}'; expected --fill, --click, --submit, or --expect",
+                    "unknown operator-run argument '{}'; expected --fill, --click, --submit, --expect, or --operator-timeout",
                     other
                 ));
             }
         }
     }
     Ok(Some(OperatorRunSpec { target, steps }))
+}
+
+fn parse_operator_timeout(args: &[String]) -> Result<Duration, String> {
+    let Some(value) = operator_arg_value(args, "--operator-timeout") else {
+        return Ok(OPERATOR_DEFAULT_TIMEOUT);
+    };
+    let seconds = value.parse::<u64>().map_err(|error| {
+        format!("--operator-timeout expects a positive whole number of seconds: {error}")
+    })?;
+    if seconds == 0 {
+        return Err("--operator-timeout must be greater than zero".to_string());
+    }
+    Ok(Duration::from_secs(seconds))
 }
 
 fn operator_arg_value(args: &[String], flag: &str) -> Option<String> {

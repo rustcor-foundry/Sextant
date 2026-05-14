@@ -69,6 +69,7 @@ cd rust
 cargo run -p sextant-hull --bin sextant-hull-lite -- --operator-smoke
 cargo run -p sextant-hull --bin sextant-hull-lite -- --operator-probe https://example.com
 cargo run -p sextant-hull --bin sextant-hull-lite -- --operator-run https://example.com --expect "Example Domain"
+cargo run -p sextant-hull --bin sextant-hull-lite -- --operator-timeout 45 --operator-run https://example.com --expect "Example Domain"
 ```
 
 `--operator-smoke` runs a deterministic native-lite workflow without opening the visible event loop. It validates Servo navigation, native DOM fill/click, live DOM distillation, Wake, Captain's Log, and frame capture.
@@ -76,6 +77,8 @@ cargo run -p sextant-hull --bin sextant-hull-lite -- --operator-run https://exam
 `--operator-probe <url-or-search>` runs the same native-lite navigation/distill/Wake/frame path against a target page. Use it before manual click-through when hardening heavy browsing.
 
 `--operator-run <url-or-search>` adds a tiny scripted layer for native browser interaction. Supported steps are `--fill <selector> <value>`, `--click <selector>`, `--submit <selector>`, and `--expect <text>`.
+
+`--operator-timeout <seconds>` applies to smoke, probe, and scripted runs. The default is 120 seconds; timeout exits use code `124` so stalled hard-site probes are visible to scripts instead of relying on an outer shell kill.
 
 ### Full Workspace Guardrail
 

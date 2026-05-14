@@ -4,6 +4,16 @@ Audit trail of completed work sessions. Newest first.
 
 ---
 
+## 2026-05-14 — Operator Timeout Guard
+
+- Added a shared bounded worker for native-lite `--operator-smoke`, `--operator-probe`, and `--operator-run`
+- Added `--operator-timeout <seconds>` with a 120-second default and timeout exit code `124`
+- Confirmed bounded operator smoke and scripted data-URL runs pass with `--operator-timeout 30`
+- Confirmed invalid timeout values exit cleanly with code `2`
+- Confirmed a deliberately stalled script exits with code `124` instead of hanging indefinitely
+
+---
+
 ## 2026-05-13 — Stability And Polish Pass
 
 - Reworked the visible `sextant-hull-lite` startup path so event-loop, window, Softbuffer, and app initialization failures report clean `[sextant-lite] failed: ...` errors instead of panicking

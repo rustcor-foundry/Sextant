@@ -35,9 +35,12 @@ cd "D:/Paul/Software Projects/Sextant/rust"
 cargo run -p sextant-hull --bin sextant-hull-lite -- --operator-smoke
 cargo run -p sextant-hull --bin sextant-hull-lite -- --operator-probe https://example.com
 cargo run -p sextant-hull --bin sextant-hull-lite -- --operator-run https://example.com --expect "Example Domain"
+cargo run -p sextant-hull --bin sextant-hull-lite -- --operator-timeout 45 --operator-run https://example.com --expect "Example Domain"
 ```
 
 Use `--operator-smoke` for a deterministic data-URL workflow that exercises Servo navigation, native DOM fill/click, live DOM distillation, Wake recording/search, Captain's Log writes, and frame capture. Use `--operator-probe <url-or-search>` to aim the same native-lite path at representative HTTP/HTTPS pages before doing slower manual click-through. Use `--operator-run <url-or-search>` with `--fill`, `--click`, `--submit`, and `--expect` steps when a blocker requires a repeatable form or interaction script.
+
+Operator runs default to a 120-second internal timeout and accept `--operator-timeout <seconds>` for harder probes. A timeout exits with code `124`.
 
 ### 1. Stabilize Heavy Browsing In The Owned Shell (~1-2 days)
 
@@ -65,6 +68,8 @@ Recent progress: `https://httpbin.org/forms/post` exposed that filled form value
 Recent progress: `https://example.com --click "a"` exposed that click-driven navigation could leave the engine tab pointed at the old page. Native interactions now return the current Servo URL and update tab state before later distillation.
 
 Recent progress: harder documentation/repository pages exposed semantic quality gaps. Live DOM and reader distillation now emit text nodes for paragraphs/lists/code-like content, operator probes report the distillation source, and weak live DOM snapshots can fall back to a stronger reader result.
+
+Recent progress: operator smoke/probe/run modes now have an internal timeout guard, so stalled hard-site checks fail with exit code `124` instead of hanging until an outer process kills Cargo or the shell.
 
 ### 2. Full In-Window Workflow Validation (~1-2 hours)
 

@@ -41,7 +41,7 @@ The biggest remaining gaps are now heavy browsing hardening, real-window Servo b
 | Pilot regression tests | ✅ | `cargo test -p sextant-pilot --lib` passes |
 | Native-lite reader lane | ✅ | `sextant-hull-lite --no-default-features` builds and stays responsive in a timed real launch check |
 | Native-lite heavy browsing build | ✅ | package default features wire `sextant-hull-lite` to Servo; focused Servo engine tests pass |
-| Native operator bridge | ✅ baseline | `--operator-smoke` drives Servo navigation, native DOM fill/click, distillation, Wake, Log, and frame capture; `--operator-probe <url>` probes real pages; `--operator-run` scripts selector actions and expectations |
+| Native operator bridge | ✅ baseline | `--operator-smoke` drives Servo navigation, native DOM fill/click, distillation, Wake, Log, and frame capture; `--operator-probe <url>` probes real pages; `--operator-run` scripts selector actions and expectations; `--operator-timeout <seconds>` bounds stalled runs |
 | Servo live navigation | ✅ baseline / ⚠️ buggy | tests cover data URLs, live DOM mutation, history, back/forward, and cache invalidation; operator probes now cover `example.com`, `rust-lang.org`, MDN, Wikipedia, docs.rs, GitHub, `neverssl`, and `httpbin`; broader real-window browsing still needs hardening |
 | Servo frame viewport | ✅ baseline / ⚠️ buggy | lite shell captures `RenderedFrame` pixels from Servo and paints them into the `softbuffer` viewport |
 | Browser input forwarding | ✅ baseline / ⚠️ buggy | mouse move/click, wheel, character keys, and named keys are forwarded to the Servo WebView path; scripted selector fill/click works on data URLs and `httpbin` form inputs |
@@ -119,6 +119,7 @@ The active native-lite hull is intentionally plain, but it now has real browser-
 - Servo viewport frame painting when built with default features
 - browser viewport mouse, wheel, character-key, and named-key forwarding into the engine
 - native operator bridge commands for automated smoke/probe runs before manual click-through
+- native operator runs have an internal 120-second timeout by default and exit `124` on timeout
 - reader-mode distilled page display when a live frame is not available
 - window-title status updates for quick smoke validation
 - visible native-lite startup failures now report clean `[sextant-lite] failed: ...` messages instead of panicking during window/event-loop setup
