@@ -49,6 +49,7 @@ The biggest remaining gaps are now heavy browsing hardening, real-window Servo b
 | Servo frame viewport | ✅ baseline / ⚠️ buggy | browser shell captures `RenderedFrame` pixels from Servo and paints them into the `softbuffer` viewport |
 | Browser input forwarding | ✅ baseline / ⚠️ buggy | mouse move/click, wheel, character keys, and named keys are forwarded to the Servo WebView path; scripted selector fill/click works on data URLs, Google search, and `httpbin` form inputs |
 | Native browser validation surface | ✅ baseline | owned shell now has a `VALIDATION` tab, reset control, and status-bar progress for session-aware manual click-through coverage |
+| Visible browser smoke check | ✅ baseline | `--window-smoke [target] --window-smoke-timeout <seconds>` launches the real user-facing shell, draws once, optionally navigates, reports frame capture, and exits |
 | Xilem/Masonry hull | ⚠️ parked | crashes on Windows during interactive use; retained as reference, not the active product lane |
 | Lower-stack guardrails | ✅ | bio, privacy, firewall, bridge, sync, log, inference, Wake, and engine edge cases now have focused coverage |
 | Hull modular structure | ✅ | `app_core`, `state`, `views`, `poller`, `util`, `deferred` split in place |
@@ -124,6 +125,7 @@ The active native browser hull is intentionally plain, but it now has real brows
 - Servo viewport frame painting when built with default features
 - browser viewport mouse, wheel, character-key, and named-key forwarding into the engine
 - native operator bridge commands for automated smoke/probe runs before manual click-through
+- bounded `--window-smoke` mode for visible shell launch/draw checks before manual browsing
 - native operator runs have an internal 120-second timeout by default and exit `124` on timeout
 - status bar shows native browser validation progress during manual work, and `RESET CHECKS` starts a fresh coverage pass without restarting
 - reader-mode distilled page display when a live frame is not available

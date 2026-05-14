@@ -4,6 +4,17 @@ Audit trail of completed work sessions. Newest first.
 
 ---
 
+## 2026-05-14 — MCP And Visible Shell Hardening
+
+- Hardened `sextant-mcp` initialization and compatibility responses with stable protocol reporting, `ping`, empty prompt lists, and structured launch failures
+- Added `--window-smoke [target] --window-smoke-timeout <seconds>` to `sextant-browser` for bounded visible shell launch/draw/navigation validation
+- Exposed the visible shell check through MCP as `browser_window_smoke`
+- Confirmed MCP `browser_operator_run` passes against `https://example.com`
+- Confirmed `--window-smoke` passes for chrome-only startup, default-feature Servo navigation to `https://example.com`, and reader/fallback navigation to `https://example.com`
+- Confirmed MCP `browser_window_smoke` passes against the default Servo binary and reports a captured frame
+
+---
+
 ## 2026-05-14 — Local MCP Browser Layer
 
 - Added `sextant-mcp`, a local stdio MCP server for Codex/Claude integration

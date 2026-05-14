@@ -81,15 +81,10 @@ fn handle_message(message: Value) -> Option<Value> {
 
     match method {
         "initialize" => id.map(|id| {
-            let requested = message
-                .get("params")
-                .and_then(|params| params.get("protocolVersion"))
-                .and_then(Value::as_str)
-                .unwrap_or(PROTOCOL_VERSION);
             response(
                 id,
                 json!({
-                    "protocolVersion": requested,
+                    "protocolVersion": PROTOCOL_VERSION,
                     "capabilities": server_capabilities(),
                     "serverInfo": server_info(),
                     "instructions": "Sextant exposes local browser automation through the native sextant-browser operator bridge. Start with browser_capabilities, then use browser_operator_probe or browser_operator_run for bounded real browsing checks.",
@@ -97,11 +92,13 @@ fn handle_message(message: Value) -> Option<Value> {
             )
         }),
         "notifications/initialized" => None,
+        "ping" => id.map(|id| response(id, json!({}))),
         "tools/list" => id.map(|id| response(id, json!({ "tools": tools() }))),
         "tools/call" => id.map(|id| handle_tool_call(id, message.get("params").cloned())),
         "resources/list" => id.map(|id| response(id, json!({ "resources": resources() }))),
         "resources/read" => id.map(|id| handle_resource_read(id, message.get("params").cloned())),
         "resources/templates/list" => id.map(|id| response(id, json!({ "resourceTemplates": [] }))),
+        "prompts/list" => id.map(|id| response(id, json!({ "prompts": [] }))),
         _ => id.map(|id| error_response(id, -32601, &format!("Method not found: {method}"))),
     }
 }
@@ -129,6 +126,7 @@ fn handle_tool_call(id: Value, params: Option<Value>) -> Value {
             vec!["--operator-smoke".to_string()],
             json!({ "arguments": arguments }),
         ),
+        "browser_window_smoke" => run_browser_window_smoke_tool(arguments),
         "browser_operator_probe" => {
             let Some(target) = required_string(&arguments, "target") else {
                 let _ = record_audit(
@@ -267,6 +265,22 @@ fn tools() -> Value {
             "inputSchema": timeout_schema(),
         },
         {
+            "name": "browser_window_smoke",
+            "title": "Browser Window Smoke",
+            "description": "Launch the visible sextant-browser shell, optionally navigate to a target, draw once, and exit.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": "Optional URL or search phrase to open before the visible shell draw check."
+                    },
+                    "timeout_seconds": window_timeout_property(),
+                },
+                "required": [],
+            },
+        },
+        {
             "name": "browser_operator_probe",
             "title": "Browser Operator Probe",
             "description": "Navigate the native browser to a URL or search phrase, distill the page, and report operator results.",
@@ -358,6 +372,15 @@ fn timeout_property() -> Value {
     })
 }
 
+fn window_timeout_property() -> Value {
+    json!({
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 120,
+        "description": "Visible browser smoke timeout in seconds. Defaults to 15."
+    })
+}
+
 fn resources() -> Value {
     json!([
         {
@@ -394,6 +417,7 @@ fn resource_text(uri: &str) -> Option<String> {
                 "- Default engine: Servo-backed native browser lane",
                 "- Fallback lane: `sextant-browser --no-default-features`",
                 "- Automation: bounded native operator smoke/probe/run modes",
+                "- Visible shell checks: bounded `--window-smoke` launch/draw/navigation mode",
                 "- Persistence: Digital Wake and Captain's Log under the browser data directory",
                 "- Current MCP posture: local stdio server, no network listener, tool calls audited to Captain's Log when the data store is available",
             ]
@@ -406,6 +430,7 @@ fn resource_text(uri: &str) -> Option<String> {
                 "Use `browser_operator_smoke` first when validating the bridge itself.",
                 "Use `browser_operator_probe` for page-level navigation and distillation checks.",
                 "Use `browser_operator_run` for ordered selector scripts:",
+                "Use `browser_window_smoke` when validating the actual visible shell startup/draw path.",
                 "",
                 "```json",
                 r#"{"target":"https://www.google.com","steps":[{"action":"fill","selector":"textarea[name=q]","value":"Sextant native browser test"},{"action":"submit","selector":"form"},{"action":"expect","text":"Sextant native browser test"}]}"#,
@@ -421,6 +446,7 @@ fn resource_text(uri: &str) -> Option<String> {
                 "",
                 "- Discovery is handled by `browser_capabilities` and static resources.",
                 "- Real browsing is routed through `sextant-browser` operator mode.",
+                "- Visible shell validation is routed through `sextant-browser --window-smoke`.",
                 "- Operator tools are bounded by `timeout_seconds` and return captured stdout/stderr.",
                 "- Tool calls are recorded with the `sextant-mcp-stdio` signature when Captain's Log is writable.",
                 "- Long-lived shared browser sessions are intentionally deferred until the browser runtime is extracted into reusable session code.",
@@ -443,6 +469,11 @@ fn browser_capabilities() -> Value {
                 "probe": true,
                 "run": ["fill", "click", "submit", "expect"],
                 "timeoutSecondsDefault": 120,
+            },
+            "visibleShellSmoke": {
+                "launchAndDraw": true,
+                "targetedNavigation": true,
+                "timeoutSecondsDefault": 15,
             }
         },
         "mcp": {
@@ -451,6 +482,7 @@ fn browser_capabilities() -> Value {
             "tools": [
                 "browser_capabilities",
                 "browser_operator_smoke",
+                "browser_window_smoke",
                 "browser_operator_probe",
                 "browser_operator_run",
                 "captains_log_recent"
@@ -493,12 +525,20 @@ fn required_string(arguments: &Value, key: &str) -> Option<String> {
 }
 
 fn operator_timeout(arguments: &Value) -> u64 {
+    timeout_seconds(arguments, 120, 600)
+}
+
+fn window_smoke_timeout(arguments: &Value) -> u64 {
+    timeout_seconds(arguments, 15, 120)
+}
+
+fn timeout_seconds(arguments: &Value, default: u64, max: u64) -> u64 {
     arguments
         .get("timeout_seconds")
         .and_then(Value::as_u64)
         .filter(|seconds| *seconds > 0)
-        .unwrap_or(120)
-        .min(600)
+        .unwrap_or(default)
+        .min(max)
 }
 
 fn operator_run_args(arguments: &Value, target: String) -> Result<Vec<String>, String> {
@@ -561,7 +601,13 @@ fn run_browser_operator_tool(
     ];
     full_args.extend(operator_args);
 
-    let output = run_browser_command(&full_args)?;
+    let output = match run_browser_command(&full_args) {
+        Ok(output) => output,
+        Err(error) => {
+            let _ = record_audit(intent, LogStatus::Failure(error.clone()), plan);
+            return Ok(tool_command_launch_error(&full_args, &error));
+        }
+    };
     let stdout = strip_ansi(&String::from_utf8_lossy(&output.stdout))
         .trim()
         .to_string();
@@ -604,16 +650,121 @@ fn run_browser_operator_tool(
     Ok(result)
 }
 
+fn run_browser_window_smoke_tool(arguments: Value) -> Result<Value, String> {
+    let timeout_seconds = window_smoke_timeout(&arguments);
+    let mut full_args = vec!["--window-smoke".to_string()];
+    if let Some(target) = required_string(&arguments, "target") {
+        full_args.push(target);
+    }
+    full_args.extend([
+        "--window-smoke-timeout".to_string(),
+        timeout_seconds.to_string(),
+    ]);
+
+    let output = match run_browser_command(&full_args) {
+        Ok(output) => output,
+        Err(error) => {
+            let _ = record_audit(
+                "browser_window_smoke",
+                LogStatus::Failure(error.clone()),
+                json!({ "arguments": arguments }),
+            );
+            return Ok(tool_command_launch_error(&full_args, &error));
+        }
+    };
+
+    let stdout = strip_ansi(&String::from_utf8_lossy(&output.stdout))
+        .trim()
+        .to_string();
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr))
+        .trim()
+        .to_string();
+    let exit_code = output.status.code();
+    let success = output.status.success();
+    let status = if success {
+        LogStatus::Success
+    } else {
+        LogStatus::Failure(format!("exit code {:?}", exit_code))
+    };
+    let _ = record_audit(
+        "browser_window_smoke",
+        status,
+        json!({ "arguments": arguments }),
+    );
+
+    let report = tagged_report_lines(&stdout, "[window-smoke]");
+    let structured = json!({
+        "success": success,
+        "exitCode": exit_code,
+        "stdout": stdout,
+        "stderr": stderr,
+        "windowSmokeReport": report,
+        "command": {
+            "binary": "sextant-browser",
+            "args": full_args,
+        }
+    });
+
+    let text = command_result_text(
+        success,
+        exit_code,
+        structured.get("windowSmokeReport"),
+        "sextant-browser visible smoke",
+    );
+    let mut result = json!({
+        "content": [{
+            "type": "text",
+            "text": text,
+        }],
+        "structuredContent": structured,
+    });
+    if !success {
+        result["isError"] = Value::Bool(true);
+    }
+    Ok(result)
+}
+
 fn operator_report_lines(stdout: &str) -> Vec<String> {
+    tagged_report_lines(stdout, "[operator-")
+}
+
+fn tagged_report_lines(stdout: &str, prefix: &str) -> Vec<String> {
     stdout
         .lines()
         .map(str::trim)
-        .filter(|line| line.starts_with("[operator-"))
+        .filter(|line| line.starts_with(prefix))
         .map(str::to_string)
         .collect()
 }
 
+fn tool_command_launch_error(args: &[String], error: &str) -> Value {
+    json!({
+        "content": [{
+            "type": "text",
+            "text": format!("failed to launch sextant-browser command: {error}"),
+        }],
+        "isError": true,
+        "structuredContent": {
+            "success": false,
+            "error": error,
+            "command": {
+                "binary": "sextant-browser",
+                "args": args,
+            }
+        },
+    })
+}
+
 fn operator_result_text(success: bool, exit_code: Option<i32>, report: Option<&Value>) -> String {
+    command_result_text(success, exit_code, report, "sextant-browser")
+}
+
+fn command_result_text(
+    success: bool,
+    exit_code: Option<i32>,
+    report: Option<&Value>,
+    label: &str,
+) -> String {
     let lines = report
         .and_then(Value::as_array)
         .map(|items| {
@@ -626,7 +777,7 @@ fn operator_result_text(success: bool, exit_code: Option<i32>, report: Option<&V
         .unwrap_or_default();
 
     if lines.is_empty() {
-        return format!("sextant-browser exited with code {exit_code:?}; success={success}");
+        return format!("{label} exited with code {exit_code:?}; success={success}");
     }
 
     lines.join("\n")
@@ -820,6 +971,7 @@ mod tests {
 
         assert!(names.contains(&"browser_capabilities"));
         assert!(names.contains(&"browser_operator_run"));
+        assert!(names.contains(&"browser_window_smoke"));
     }
 
     #[test]
@@ -863,5 +1015,51 @@ mod tests {
     fn strips_ansi_from_operator_output() {
         let raw = "\u{1b}[2m2026\u{1b}[0m WARN\n[operator-smoke] passed";
         assert_eq!(strip_ansi(raw), "2026 WARN\n[operator-smoke] passed");
+    }
+
+    #[test]
+    fn responds_to_empty_capability_lists_and_ping() {
+        let ping = handle_message(json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "ping"
+        }))
+        .unwrap();
+        assert_eq!(ping["result"], json!({}));
+
+        let prompts = handle_message(json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "prompts/list"
+        }))
+        .unwrap();
+        assert_eq!(prompts["result"]["prompts"], json!([]));
+    }
+
+    #[test]
+    fn launch_errors_include_structured_command() {
+        let result = tool_command_launch_error(
+            &[
+                "--operator-timeout".to_string(),
+                "90".to_string(),
+                "--operator-smoke".to_string(),
+            ],
+            "missing binary",
+        );
+
+        assert_eq!(result["isError"], Value::Bool(true));
+        assert_eq!(
+            result["structuredContent"]["command"]["binary"],
+            Value::String("sextant-browser".to_string())
+        );
+    }
+
+    #[test]
+    fn extracts_window_smoke_lines() {
+        let output = "noise\n[window-smoke] visible shell draw passed\n[operator-run] ignored";
+        assert_eq!(
+            tagged_report_lines(output, "[window-smoke]"),
+            vec!["[window-smoke] visible shell draw passed"]
+        );
     }
 }

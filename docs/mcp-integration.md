@@ -15,6 +15,7 @@ The first layer is intentionally truthful and narrow:
 
 - `browser_capabilities` reports the current native browser, operator bridge, tools, and resources.
 - `browser_operator_smoke` runs the deterministic `sextant-browser --operator-smoke` check.
+- `browser_window_smoke` launches the visible `sextant-browser` shell, optionally navigates to a target, draws once, and exits.
 - `browser_operator_probe` opens a URL or search phrase, distills it, and reports the native operator output.
 - `browser_operator_run` executes ordered `fill`, `click`, `submit`, and `expect` selector steps through the native browser operator bridge.
 - `captains_log_recent` reads recent Captain's Log entries for the browser persona.
@@ -46,6 +47,8 @@ cargo test -p sextant-mcp
 ```
 
 When testing against a real MCP client, initialize first, then call `tools/list`. For quick manual protocol checks, send one JSON-RPC message per line.
+
+Use `browser_window_smoke` when the question is "does the actual user-facing window launch and draw?" Use `browser_operator_*` tools when the question is "can the native browser automation path navigate, interact, distill, and record state?"
 
 ## Next Integration Step
 

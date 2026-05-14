@@ -27,6 +27,7 @@ Follow [next-work.md](next-work.md) as the active execution guide unless the tea
    - `cargo run -p sextant-hull --bin sextant-browser -- --operator-smoke`
    - `cargo run -p sextant-hull --bin sextant-browser -- --operator-probe https://example.com`
    - `cargo run -p sextant-hull --bin sextant-browser -- --operator-run https://example.com --expect "Example Domain"`
+   - `cargo run -p sextant-hull --bin sextant-browser -- --window-smoke https://example.com --window-smoke-timeout 15`
    - `cargo run -p sextant-hull --bin sextant-browser`
 6. Update docs if the current state, workflow, or recovery story changed.
 7. Commit in coherent units and push to the canonical Gitea remote.
@@ -70,6 +71,7 @@ cargo run -p sextant-hull --bin sextant-browser -- --operator-smoke
 cargo run -p sextant-hull --bin sextant-browser -- --operator-probe https://example.com
 cargo run -p sextant-hull --bin sextant-browser -- --operator-run https://example.com --expect "Example Domain"
 cargo run -p sextant-hull --bin sextant-browser -- --operator-timeout 45 --operator-run https://example.com --expect "Example Domain"
+cargo run -p sextant-hull --bin sextant-browser -- --window-smoke https://example.com --window-smoke-timeout 15
 ```
 
 `--operator-smoke` runs a deterministic native browser workflow without opening the visible event loop. It validates Servo navigation, native DOM fill/click, live DOM distillation, Wake, Captain's Log, and frame capture.
@@ -79,6 +81,8 @@ cargo run -p sextant-hull --bin sextant-browser -- --operator-timeout 45 --opera
 `--operator-run <url-or-search>` adds a tiny scripted layer for native browser interaction. Supported steps are `--fill <selector> <value>`, `--click <selector>`, `--submit <selector>`, and `--expect <text>`.
 
 `--operator-timeout <seconds>` applies to smoke, probe, and scripted runs. The default is 120 seconds; timeout exits use code `124` so stalled hard-site probes are visible to scripts instead of relying on an outer shell kill.
+
+`--window-smoke [url-or-search] --window-smoke-timeout <seconds>` opens the actual visible shell, optionally navigates to a target, draws once, reports whether a Servo frame was captured, and exits. Use it when validating the user-facing browser window rather than the operator bridge.
 
 ### Full Workspace Guardrail
 

@@ -36,11 +36,14 @@ cargo run -p sextant-hull --bin sextant-browser -- --operator-smoke
 cargo run -p sextant-hull --bin sextant-browser -- --operator-probe https://example.com
 cargo run -p sextant-hull --bin sextant-browser -- --operator-run https://example.com --expect "Example Domain"
 cargo run -p sextant-hull --bin sextant-browser -- --operator-timeout 45 --operator-run https://example.com --expect "Example Domain"
+cargo run -p sextant-hull --bin sextant-browser -- --window-smoke https://example.com --window-smoke-timeout 15
 ```
 
 Use `--operator-smoke` for a deterministic data-URL workflow that exercises Servo navigation, native DOM fill/click, live DOM distillation, Wake recording/search, Captain's Log writes, and frame capture. Use `--operator-probe <url-or-search>` to aim the same native browser path at representative HTTP/HTTPS pages before doing slower manual click-through. Use `--operator-run <url-or-search>` with `--fill`, `--click`, `--submit`, and `--expect` steps when a blocker requires a repeatable form or interaction script.
 
 Operator runs default to a 120-second internal timeout and accept `--operator-timeout <seconds>` for harder probes. A timeout exits with code `124`.
+
+Use `--window-smoke [url-or-search] --window-smoke-timeout <seconds>` for a bounded user-facing launch/draw check. It creates the real window, initializes Softbuffer and browser app state, optionally navigates to a target, draws once, reports any Servo frame, and exits.
 
 MCP advertising layer:
 
@@ -51,7 +54,7 @@ cargo run -p sextant-mcp -- --list-tools
 cargo check -p sextant-mcp
 ```
 
-The MCP server is a local stdio bridge for Codex/Claude. It exposes truthful browser capability resources plus bounded operator tools that delegate to `sextant-browser`.
+The MCP server is a local stdio bridge for Codex/Claude. It exposes truthful browser capability resources plus bounded operator tools and `browser_window_smoke`, all delegated to `sextant-browser`.
 
 ### 1. Stabilize Heavy Browsing In The Owned Shell (~1-2 days)
 

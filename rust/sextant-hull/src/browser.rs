@@ -8,7 +8,7 @@ use softbuffer::{Context, Surface};
 use std::env;
 use std::num::NonZeroU32;
 use std::path::PathBuf;
-use std::sync::{mpsc, Arc};
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 use url::Url;
@@ -48,6 +48,7 @@ const FRAME_REFRESH_IDLE: Duration = Duration::from_millis(500);
 const FRAME_REFRESH_DIRTY: Duration = Duration::from_millis(180);
 const FRAME_WARMUP_BUDGET: u8 = 18;
 const OPERATOR_DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
+const WINDOW_SMOKE_DEFAULT_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Clone, Copy)]
 struct Rect {
@@ -130,6 +131,11 @@ enum OperatorStep {
 struct OperatorRunSpec {
     target: String,
     steps: Vec<OperatorStep>,
+}
+
+struct WindowSmokeSpec {
+    target: Option<String>,
+    timeout: Duration,
 }
 
 struct ButtonRegion {
@@ -1098,7 +1104,15 @@ fn main() {
         run_operator_mode("operator-smoke", operator_timeout, run_operator_smoke);
     }
 
-    if let Err(error) = run_visible_app() {
+    let window_smoke = match parse_window_smoke(&args) {
+        Ok(spec) => spec,
+        Err(error) => {
+            eprintln!("[window-smoke] failed to parse arguments: {error}");
+            std::process::exit(2);
+        }
+    };
+
+    if let Err(error) = run_visible_app(window_smoke) {
         eprintln!("[sextant-browser] failed: {error}");
         std::process::exit(1);
     }
@@ -1144,7 +1158,7 @@ where
     }
 }
 
-fn run_visible_app() -> Result<(), String> {
+fn run_visible_app(window_smoke: Option<WindowSmokeSpec>) -> Result<(), String> {
     let event_loop =
         EventLoop::new().map_err(|error| format!("event loop initialization failed: {error}"))?;
     let window = Arc::new(
@@ -1162,7 +1176,32 @@ fn run_visible_app() -> Result<(), String> {
     let mut app =
         BrowserApp::new().map_err(|error| format!("browser app initialization failed: {error}"))?;
     app.layout(window.inner_size());
+
+    if let Some(smoke) = window_smoke.as_ref() {
+        println!("[window-smoke] starting visible browser shell smoke");
+        if let Some(target) = smoke.target.as_ref() {
+            let url = parse_navigation_target(target)?;
+            println!("[window-smoke] navigating to {}", url);
+            app.navigate_to(url);
+            if !app.last_ok {
+                return Err(format!(
+                    "window smoke navigation failed: {}",
+                    app.last_status
+                ));
+            }
+            app.refresh_frame();
+        }
+    }
+
     app.update_title(&window);
+    window.request_redraw();
+
+    let smoke_mode = window_smoke.is_some();
+    let smoke_deadline = window_smoke
+        .as_ref()
+        .map(|spec| Instant::now() + spec.timeout);
+    let smoke_error = Arc::new(Mutex::new(None::<String>));
+    let smoke_error_for_loop = smoke_error.clone();
 
     event_loop
         .run(move |event, elwt| match event {
@@ -1201,14 +1240,47 @@ fn run_visible_app() -> Result<(), String> {
                         window.request_redraw();
                     }
                 }
-                WindowEvent::RedrawRequested => {
-                    if let Err(error) = draw(&window, &mut surface, &app) {
-                        window.set_title(&format!("Sextant Browser - draw failed: {}", error));
+                WindowEvent::RedrawRequested => match draw(&window, &mut surface, &app) {
+                    Ok(()) => {
+                        if smoke_mode {
+                            println!("[window-smoke] visible shell draw passed");
+                            if let Some(frame) = app.latest_frame.as_ref() {
+                                println!(
+                                    "[window-smoke] latest Servo frame {}x{} ({} pixels)",
+                                    frame.width,
+                                    frame.height,
+                                    frame.pixels.len()
+                                );
+                            }
+                            elwt.exit();
+                        }
                     }
-                }
+                    Err(error) => {
+                        window.set_title(&format!("Sextant Browser - draw failed: {}", error));
+                        if smoke_mode {
+                            eprintln!("[window-smoke] draw failed: {error}");
+                            if let Ok(mut smoke_error) = smoke_error_for_loop.lock() {
+                                *smoke_error = Some(error.to_string());
+                            }
+                            elwt.exit();
+                        }
+                    }
+                },
                 _ => {}
             },
             Event::AboutToWait => {
+                if let Some(deadline) = smoke_deadline {
+                    if Instant::now() >= deadline {
+                        let error = "visible shell smoke timed out before first successful draw";
+                        eprintln!("[window-smoke] {error}");
+                        if let Ok(mut smoke_error) = smoke_error_for_loop.lock() {
+                            *smoke_error = Some(error.to_string());
+                        }
+                        elwt.exit();
+                        return;
+                    }
+                }
+
                 if app.maybe_refresh_frame() {
                     window.request_redraw();
                 }
@@ -1220,14 +1292,34 @@ fn run_visible_app() -> Result<(), String> {
                     } else {
                         FRAME_REFRESH_IDLE
                     };
-                    elwt.set_control_flow(ControlFlow::WaitUntil(Instant::now() + delay));
+                    let mut wake_at = Instant::now() + delay;
+                    if let Some(deadline) = smoke_deadline {
+                        if deadline < wake_at {
+                            wake_at = deadline;
+                        }
+                    }
+                    elwt.set_control_flow(ControlFlow::WaitUntil(wake_at));
                 } else {
-                    elwt.set_control_flow(ControlFlow::Wait);
+                    if let Some(deadline) = smoke_deadline {
+                        let pulse = Instant::now() + Duration::from_millis(100);
+                        let wake_at = if pulse < deadline { pulse } else { deadline };
+                        elwt.set_control_flow(ControlFlow::WaitUntil(wake_at));
+                    } else {
+                        elwt.set_control_flow(ControlFlow::Wait);
+                    }
                 }
             }
             _ => {}
         })
-        .map_err(|error| format!("event loop failed: {error}"))
+        .map_err(|error| format!("event loop failed: {error}"))?;
+
+    if let Ok(mut smoke_error) = smoke_error.lock() {
+        if let Some(error) = smoke_error.take() {
+            return Err(error);
+        }
+    }
+
+    Ok(())
 }
 
 fn run_operator_smoke() -> Result<Vec<String>, String> {
@@ -1681,14 +1773,30 @@ fn parse_operator_run(args: &[String]) -> Result<Option<OperatorRunSpec>, String
 }
 
 fn parse_operator_timeout(args: &[String]) -> Result<Duration, String> {
-    let Some(value) = operator_arg_value(args, "--operator-timeout") else {
-        return Ok(OPERATOR_DEFAULT_TIMEOUT);
+    parse_duration_arg(args, "--operator-timeout", OPERATOR_DEFAULT_TIMEOUT)
+}
+
+fn parse_window_smoke(args: &[String]) -> Result<Option<WindowSmokeSpec>, String> {
+    let Some(index) = args.iter().position(|arg| arg == "--window-smoke") else {
+        return Ok(None);
     };
-    let seconds = value.parse::<u64>().map_err(|error| {
-        format!("--operator-timeout expects a positive whole number of seconds: {error}")
-    })?;
+    let target = args
+        .get(index + 1)
+        .filter(|value| !value.starts_with("--"))
+        .cloned();
+    let timeout = parse_duration_arg(args, "--window-smoke-timeout", WINDOW_SMOKE_DEFAULT_TIMEOUT)?;
+    Ok(Some(WindowSmokeSpec { target, timeout }))
+}
+
+fn parse_duration_arg(args: &[String], flag: &str, default: Duration) -> Result<Duration, String> {
+    let Some(value) = operator_arg_value(args, flag) else {
+        return Ok(default);
+    };
+    let seconds = value
+        .parse::<u64>()
+        .map_err(|error| format!("{flag} expects a positive whole number of seconds: {error}"))?;
     if seconds == 0 {
-        return Err("--operator-timeout must be greater than zero".to_string());
+        return Err(format!("{flag} must be greater than zero"));
     }
     Ok(Duration::from_secs(seconds))
 }
