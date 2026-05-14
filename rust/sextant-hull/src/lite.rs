@@ -1599,6 +1599,10 @@ fn operator_page_search_text(page: &sextant_engine::DistilledPage) -> String {
         page.url.to_string(),
         page.content.clone(),
     ];
+    for (key, value) in page.url.query_pairs() {
+        values.push(key.into_owned());
+        values.push(value.into_owned());
+    }
     for node in &page.semantic_map {
         values.push(node.text.clone());
         values.push(node.selector.clone());

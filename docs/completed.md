@@ -4,6 +4,15 @@ Audit trail of completed work sessions. Newest first.
 
 ---
 
+## 2026-05-14 — Google Search Browser Test
+
+- Ran a real native-lite Google flow: loaded `https://www.google.com`, filled `textarea[name=q]`, submitted the form, and reached a Google Search results URL for `Sextant native browser test`
+- Hardened operator expectations to include decoded URL query pairs, so scripted checks can verify search/navigation state even when a site does not echo the query as plain page text
+- Confirmed the Google scripted run distills, updates Wake and Captain's Log, captures a Servo frame, and passes `--expect "Sextant native browser test"`
+- Confirmed the reader/fallback lite build still checks after the shared expectation matcher change
+
+---
+
 ## 2026-05-14 — Native-Lite Validation Surface
 
 - Added a first-party `VALIDATION` tab to `sextant-hull-lite`

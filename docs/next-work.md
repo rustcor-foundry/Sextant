@@ -71,6 +71,8 @@ Recent progress: harder documentation/repository pages exposed semantic quality 
 
 Recent progress: operator smoke/probe/run modes now have an internal timeout guard, so stalled hard-site checks fail with exit code `124` instead of hanging until an outer process kills Cargo or the shell.
 
+Recent progress: a real Google search flow now passes through the native operator bridge. The run loads `https://www.google.com`, fills `textarea[name=q]`, submits `form`, verifies the decoded `q` query value, distills, updates Wake/Log, and captures a Servo frame.
+
 ### 2. Full In-Window Workflow Validation (~1-2 hours)
 
 The old Xilem validation checklist is reference material. Rebuild the same workflow coverage in the native-lite shell around its actual controls and browser viewport, then run a real click-through pass that exercises the app end to end in the window and fixes anything that still only works in tests or partial runtime paths.
