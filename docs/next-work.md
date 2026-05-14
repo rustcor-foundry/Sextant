@@ -42,6 +42,17 @@ Use `--operator-smoke` for a deterministic data-URL workflow that exercises Serv
 
 Operator runs default to a 120-second internal timeout and accept `--operator-timeout <seconds>` for harder probes. A timeout exits with code `124`.
 
+MCP advertising layer:
+
+```bash
+cd "D:/Paul/Software Projects/Sextant/rust"
+cargo run -p sextant-mcp -- --self-test
+cargo run -p sextant-mcp -- --list-tools
+cargo check -p sextant-mcp
+```
+
+The MCP server is a local stdio bridge for Codex/Claude. It exposes truthful browser capability resources plus bounded operator tools that delegate to `sextant-browser`.
+
 ### 1. Stabilize Heavy Browsing In The Owned Shell (~1-2 days)
 
 The active product lane is the first-party `sextant-browser` shell. It uses `winit` for window/input and direct `softbuffer` drawing while reusing the engine, Wake, and Captain's Log crates. With default features, it is already wired back toward heavy browsing through Servo:

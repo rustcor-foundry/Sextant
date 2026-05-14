@@ -4,6 +4,18 @@ Audit trail of completed work sessions. Newest first.
 
 ---
 
+## 2026-05-14 — Local MCP Browser Layer
+
+- Added `sextant-mcp`, a local stdio MCP server for Codex/Claude integration
+- Implemented MCP `initialize`, `tools/list`, `tools/call`, `resources/list`, `resources/read`, and empty `resources/templates/list` handling over newline-delimited JSON-RPC
+- Exposed truthful browser tools for capability discovery, native operator smoke/probe/run, and recent Captain's Log reads
+- Added static `sextant://browser/...` resources that describe current browser capabilities, operator workflow, and MCP tool scope
+- Routed operator tools through the canonical `sextant-browser` binary when available, with a Cargo fallback for development
+- Audited MCP tool calls to Captain's Log with the `sextant-mcp-stdio` signature
+- Confirmed MCP initialize/tool/resource round trips, native operator smoke through MCP, and `captains_log_recent` reads pass
+
+---
+
 ## 2026-05-14 — Native Browser Naming
 
 - Added `sextant-browser` as the canonical binary for the owned `winit` + `softbuffer` Servo browser shell

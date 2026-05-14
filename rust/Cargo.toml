@@ -15,6 +15,7 @@ members = [
     "sextant-mesh",
     "sextant-privacy",
     "sextant-airgap",
+    "sextant-mcp",
 ]
 resolver = "2"
 

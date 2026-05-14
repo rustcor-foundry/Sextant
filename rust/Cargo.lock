@@ -9657,6 +9657,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "sextant-mcp"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "dirs",
+ "serde_json",
+ "sextant-log",
+ "uuid",
+]
+
+[[package]]
 name = "sextant-mesh"
 version = "0.1.0"
 dependencies = [

@@ -7,6 +7,7 @@ This index is the navigation entry point for the Sextant documentation set.
 - [architecture](architecture.md)
 - [next-work](next-work.md)
 - [operator-workflow](operator-workflow.md)
+- [mcp-integration](mcp-integration.md)
 - [source-map](source-map.md)
 
 ## Root Documents
@@ -14,6 +15,7 @@ This index is the navigation entry point for the Sextant documentation set.
 - [completed](completed.md)
 - [current-state](current-state.md)
 - [development-guardrails](development-guardrails.md)
+- [mcp-integration](mcp-integration.md)
 - [next-work](next-work.md)
 - [operator-workflow](operator-workflow.md)
 - [product-roadmap](product-roadmap.md)

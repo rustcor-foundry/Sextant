@@ -33,6 +33,7 @@ Use that repository as the canonical shared source of truth.
 - [rust/sextant-hull/src/state.rs](../rust/sextant-hull/src/state.rs) — parked Xilem live hull state and validation reference
 - [rust/sextant-pilot/src/lib.rs](../rust/sextant-pilot/src/lib.rs) — intent planning, consent, execution
 - [rust/sextant-engine/src/lib.rs](../rust/sextant-engine/src/lib.rs) — tab state, fetch/distill, Servo service, live navigation, frame capture, input forwarding, and reader fallback
+- [rust/sextant-mcp/src/main.rs](../rust/sextant-mcp/src/main.rs) — local stdio MCP server advertising native browser tools/resources for Codex and Claude
 - [rust/sextant-wake/src/lib.rs](../rust/sextant-wake/src/lib.rs) — Digital Wake search/record/consolidation
 - [rust/sextant-vault/src/lib.rs](../rust/sextant-vault/src/lib.rs) — personas, identities, secrets, consent signing
 - [rust/sextant-log/src/lib.rs](../rust/sextant-log/src/lib.rs) — Captain's Log persistence

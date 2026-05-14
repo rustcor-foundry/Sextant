@@ -1,0 +1,16 @@
+[package]
+name = "sextant-mcp"
+version = "0.1.0"
+edition = "2021"
+description = "Local MCP server advertising Sextant Browser capabilities"
+
+[[bin]]
+name = "sextant-mcp"
+path = "src/main.rs"
+
+[dependencies]
+chrono = { version = "0.4", features = ["serde"] }
+dirs = "5"
+serde_json = "1.0"
+sextant-log = { path = "../sextant-log" }
+uuid = { version = "1.3", features = ["v4", "serde"] }
