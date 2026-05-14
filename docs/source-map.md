@@ -25,7 +25,8 @@ Use that repository as the canonical shared source of truth.
 ### Native Product Path
 
 - [rust/Cargo.toml](../rust/Cargo.toml) — Rust workspace root
-- [rust/sextant-hull/src/lite.rs](../rust/sextant-hull/src/lite.rs) — active native-lite shell, direct drawing, address input, browser/Wake/Log views, Servo frame display, and viewport input forwarding
+- [rust/sextant-hull/src/browser.rs](../rust/sextant-hull/src/browser.rs) — active native browser shell, direct drawing, address input, browser/Wake/Log views, Servo frame display, and viewport input forwarding
+- [rust/sextant-hull/src/lite.rs](../rust/sextant-hull/src/lite.rs) — compatibility wrapper for the old `sextant-hull-lite` bin alias
 - [rust/sextant-hull/src/main.rs](../rust/sextant-hull/src/main.rs) — parked Xilem app startup and composition root
 - [rust/sextant-hull/src/app_core.rs](../rust/sextant-hull/src/app_core.rs) — toolkit-agnostic command/event runtime
 - [rust/sextant-hull/src/views.rs](../rust/sextant-hull/src/views.rs) — parked Xilem hull UI surface and validation reference
@@ -51,7 +52,7 @@ Make changes in the Rust workspace.
 This includes:
 
 - hull UX
-- native-lite heavy browsing behavior
+- native browser heavy browsing behavior
 - command flow
 - Pilot logic
 - engine behavior

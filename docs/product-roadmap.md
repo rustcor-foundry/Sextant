@@ -1,6 +1,6 @@
 # Product Roadmap — Sextant to Ship
 
-Status note as of 2026-05-13: this roadmap is strategic background, not the active execution guide. The active code has already pulled Servo forward into the default-feature `sextant-hull-lite` heavy browsing lane. The caution below about Servo risk still matters, but [current-state.md](current-state.md) and [next-work.md](next-work.md) now supersede the older "defer Servo to Phase 3" sequencing.
+Status note as of 2026-05-14: this roadmap is strategic background, not the active execution guide. The active code has already pulled Servo forward into the default-feature `sextant-browser` heavy browsing lane. The caution below about Servo risk still matters, but [current-state.md](current-state.md) and [next-work.md](next-work.md) now supersede the older "defer Servo to Phase 3" sequencing.
 
 **Thesis:** The AI browser category is real (Arc/Dia, Perplexity Comet, ChatGPT Atlas, Brave Leo, Opera Aria). All of them are cloud-dependent. None are sovereign. That gap is the wedge.
 
@@ -134,7 +134,7 @@ The active code has already explored the Servo route earlier than this roadmap o
 
 1. **Funding path** — Bootstrapped? Open source + grants (Mozilla, NLnet, Protocol Labs)? VC (risky given the "sovereign" narrative)?
 2. **Team size for Phase 1** — Solo is possible to MVP. Beta needs 2-4. Scale needs 10+.
-3. **Rendering engine commitment** — Servo is active in `sextant-hull-lite`; are we willing to keep hardening it, or drop back to WebView2/wry for shippability if real-window validation stays rough?
+3. **Rendering engine commitment** — Servo is active in `sextant-browser`; are we willing to keep hardening it, or drop back to WebView2/wry for shippability if real-window validation stays rough?
 4. **Mobile story** — Critical for capturing Brave-scale share. iOS/Android is where attention lives. Not Phase 1, but the answer matters for positioning.
 5. **Licensing** — MIT/Apache (maximum adoption) vs AGPL (prevent cloud rewrap)? Brave used MPL.
 6. **Agent/Pilot trust model** — Who can ship a Pilot? Signed by us only? Community-signed? Web-of-trust? This is the OWASP top 10 of the AI era.

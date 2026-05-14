@@ -24,10 +24,10 @@ Follow [next-work.md](next-work.md) as the active execution guide unless the tea
    - `cargo check -p sextant-hull`
    - `cargo test -p sextant-pilot --lib`
    - `cargo test -p sextant-engine --lib`
-   - `cargo run -p sextant-hull --bin sextant-hull-lite -- --operator-smoke`
-   - `cargo run -p sextant-hull --bin sextant-hull-lite -- --operator-probe https://example.com`
-   - `cargo run -p sextant-hull --bin sextant-hull-lite -- --operator-run https://example.com --expect "Example Domain"`
-   - `cargo run -p sextant-hull --bin sextant-hull-lite`
+   - `cargo run -p sextant-hull --bin sextant-browser -- --operator-smoke`
+   - `cargo run -p sextant-hull --bin sextant-browser -- --operator-probe https://example.com`
+   - `cargo run -p sextant-hull --bin sextant-browser -- --operator-run https://example.com --expect "Example Domain"`
+   - `cargo run -p sextant-hull --bin sextant-browser`
 6. Update docs if the current state, workflow, or recovery story changed.
 7. Commit in coherent units and push to the canonical Gitea remote.
 8. Watch CI on Gitea and treat failures as part of the task, not a separate later chore.
@@ -59,22 +59,22 @@ cargo test -p sextant-engine --lib
 
 ```bash
 cd rust
-cargo run -p sextant-hull --bin sextant-hull-lite
+cargo run -p sextant-hull --bin sextant-browser
 ```
 
 ### Native Operator Bridge
 
 ```bash
 cd rust
-cargo run -p sextant-hull --bin sextant-hull-lite -- --operator-smoke
-cargo run -p sextant-hull --bin sextant-hull-lite -- --operator-probe https://example.com
-cargo run -p sextant-hull --bin sextant-hull-lite -- --operator-run https://example.com --expect "Example Domain"
-cargo run -p sextant-hull --bin sextant-hull-lite -- --operator-timeout 45 --operator-run https://example.com --expect "Example Domain"
+cargo run -p sextant-hull --bin sextant-browser -- --operator-smoke
+cargo run -p sextant-hull --bin sextant-browser -- --operator-probe https://example.com
+cargo run -p sextant-hull --bin sextant-browser -- --operator-run https://example.com --expect "Example Domain"
+cargo run -p sextant-hull --bin sextant-browser -- --operator-timeout 45 --operator-run https://example.com --expect "Example Domain"
 ```
 
-`--operator-smoke` runs a deterministic native-lite workflow without opening the visible event loop. It validates Servo navigation, native DOM fill/click, live DOM distillation, Wake, Captain's Log, and frame capture.
+`--operator-smoke` runs a deterministic native browser workflow without opening the visible event loop. It validates Servo navigation, native DOM fill/click, live DOM distillation, Wake, Captain's Log, and frame capture.
 
-`--operator-probe <url-or-search>` runs the same native-lite navigation/distill/Wake/frame path against a target page. Use it before manual click-through when hardening heavy browsing.
+`--operator-probe <url-or-search>` runs the same native browser navigation/distill/Wake/frame path against a target page. Use it before manual click-through when hardening heavy browsing.
 
 `--operator-run <url-or-search>` adds a tiny scripted layer for native browser interaction. Supported steps are `--fill <selector> <value>`, `--click <selector>`, `--submit <selector>`, and `--expect <text>`.
 

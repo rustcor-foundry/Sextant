@@ -34,6 +34,12 @@ path = "src/main.rs"
 required-features = ["xilem-shell"]
 
 [[bin]]
+name = "sextant-browser"
+path = "src/browser.rs"
+
+# Compatibility alias for older scripts while the native browser lane finishes
+# moving off the old "lite" name.
+[[bin]]
 name = "sextant-hull-lite"
 path = "src/lite.rs"
 

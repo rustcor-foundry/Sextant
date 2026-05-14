@@ -8,22 +8,22 @@ Active priority stack. See [completed.md](completed.md) for session history.
 
 ## Priority Stack
 
-### 0. Keep The Native-Lite Lanes Healthy (immediate, ~15 min per pass)
+### 0. Keep The Native Browser Lanes Healthy (immediate, ~15 min per pass)
 
-`cargo check --workspace`, `cargo test --workspace`, the focused Pilot/Engine regression suites, the Servo-feature engine suite, and timed native-lite launches should stay green whenever hull/runtime changes land.
+`cargo check --workspace`, `cargo test --workspace`, the focused Pilot/Engine regression suites, the Servo-feature engine suite, and timed native browser launches should stay green whenever hull/runtime changes land.
 
 Heavy browsing lane:
 
 ```bash
 cd "D:/Paul/Software Projects/Sextant/rust"
-cargo run -p sextant-hull --bin sextant-hull-lite
+cargo run -p sextant-hull --bin sextant-browser
 ```
 
 Reader/fallback lane:
 
 ```bash
 cd "D:/Paul/Software Projects/Sextant/rust"
-cargo run -p sextant-hull --bin sextant-hull-lite --no-default-features
+cargo run -p sextant-hull --bin sextant-browser --no-default-features
 ```
 
 Watch for: event-loop crashes, Servo service timeouts, blank/empty frames, input forwarding failures, softbuffer resize/present failures, thread/async runtime issues.
@@ -32,32 +32,34 @@ Native operator bridge:
 
 ```bash
 cd "D:/Paul/Software Projects/Sextant/rust"
-cargo run -p sextant-hull --bin sextant-hull-lite -- --operator-smoke
-cargo run -p sextant-hull --bin sextant-hull-lite -- --operator-probe https://example.com
-cargo run -p sextant-hull --bin sextant-hull-lite -- --operator-run https://example.com --expect "Example Domain"
-cargo run -p sextant-hull --bin sextant-hull-lite -- --operator-timeout 45 --operator-run https://example.com --expect "Example Domain"
+cargo run -p sextant-hull --bin sextant-browser -- --operator-smoke
+cargo run -p sextant-hull --bin sextant-browser -- --operator-probe https://example.com
+cargo run -p sextant-hull --bin sextant-browser -- --operator-run https://example.com --expect "Example Domain"
+cargo run -p sextant-hull --bin sextant-browser -- --operator-timeout 45 --operator-run https://example.com --expect "Example Domain"
 ```
 
-Use `--operator-smoke` for a deterministic data-URL workflow that exercises Servo navigation, native DOM fill/click, live DOM distillation, Wake recording/search, Captain's Log writes, and frame capture. Use `--operator-probe <url-or-search>` to aim the same native-lite path at representative HTTP/HTTPS pages before doing slower manual click-through. Use `--operator-run <url-or-search>` with `--fill`, `--click`, `--submit`, and `--expect` steps when a blocker requires a repeatable form or interaction script.
+Use `--operator-smoke` for a deterministic data-URL workflow that exercises Servo navigation, native DOM fill/click, live DOM distillation, Wake recording/search, Captain's Log writes, and frame capture. Use `--operator-probe <url-or-search>` to aim the same native browser path at representative HTTP/HTTPS pages before doing slower manual click-through. Use `--operator-run <url-or-search>` with `--fill`, `--click`, `--submit`, and `--expect` steps when a blocker requires a repeatable form or interaction script.
 
 Operator runs default to a 120-second internal timeout and accept `--operator-timeout <seconds>` for harder probes. A timeout exits with code `124`.
 
 ### 1. Stabilize Heavy Browsing In The Owned Shell (~1-2 days)
 
-The active product lane is the first-party `sextant-hull-lite` shell. It uses `winit` for window/input and direct `softbuffer` drawing while reusing the engine, Wake, and Captain's Log crates. With default features, it is already wired back toward heavy browsing through Servo:
+The active product lane is the first-party `sextant-browser` shell. It uses `winit` for window/input and direct `softbuffer` drawing while reusing the engine, Wake, and Captain's Log crates. With default features, it is already wired back toward heavy browsing through Servo:
+
+Naming note: `sextant-browser` is canonical. `sextant-hull-lite` remains available only as a compatibility alias for older commands while we finish the transition.
 
 - Servo service thread and WebView sessions
 - live navigation, reload, back, and forward
 - frame capture into a `RenderedFrame`
-- direct pixel painting of the Servo frame into the lite viewport
+- direct pixel painting of the Servo frame into the browser viewport
 - mouse, wheel, character-key, and named-key forwarding into the browser viewport
 - live DOM distillation through JavaScript evaluation
 
 Next work is not starting from scratch. It is to make that path reliable:
 
-1. run `--operator-probe` and `--operator-run` against representative HTTP/HTTPS pages, then confirm the same pages in the visible lite shell
+1. run `--operator-probe` and `--operator-run` against representative HTTP/HTTPS pages, then confirm the same pages in the visible browser shell
 2. capture the exact failure modes: blank frame, stale frame, timeout, bad resize, input not reaching forms, navigation state drift, or reader fallback being triggered incorrectly
-3. fix the highest-frequency failure first in `sextant-engine` or `sextant-hull/src/lite.rs`
+3. fix the highest-frequency failure first in `sextant-engine` or `sextant-hull/src/browser.rs`
 4. keep `--no-default-features` working as the fast reader/fallback lane
 5. add focused regression coverage when a bug can be reduced to engine behavior
 
@@ -75,9 +77,9 @@ Recent progress: a real Google search flow now passes through the native operato
 
 ### 2. Full In-Window Workflow Validation (~1-2 hours)
 
-The old Xilem validation checklist is reference material. Rebuild the same workflow coverage in the native-lite shell around its actual controls and browser viewport, then run a real click-through pass that exercises the app end to end in the window and fixes anything that still only works in tests or partial runtime paths.
+The old Xilem validation checklist is reference material. Rebuild the same workflow coverage in the native browser shell around its actual controls and browser viewport, then run a real click-through pass that exercises the app end to end in the window and fixes anything that still only works in tests or partial runtime paths.
 
-Recent progress: `sextant-hull-lite` now has a first-party `VALIDATION` tab and status-bar progress for the current window session. It tracks navigation, frame/reader visibility, real forwarded browser input, distillation, Wake, Captain's Log, tab controls, and error surfacing. `RESET CHECKS` starts a fresh validation pass without restarting or clearing runtime state.
+Recent progress: `sextant-browser` now has a first-party `VALIDATION` tab and status-bar progress for the current window session. It tracks navigation, frame/reader visibility, real forwarded browser input, distillation, Wake, Captain's Log, tab controls, and error surfacing. `RESET CHECKS` starts a fresh validation pass without restarting or clearing runtime state.
 
 Focus checks:
 1. navigate from the address field and verify the live viewport or reader fallback updates truthfully
@@ -86,7 +88,7 @@ Focus checks:
 4. switch between Browser, Wake, and Captain's Log views
 5. create, close, reload, go back, and go forward across tabs
 6. confirm failures surface in-window instead of only through stderr or logs
-7. refine the native-lite validation checklist based on real manual pass findings
+7. refine the native browser validation checklist based on real manual pass findings
 
 ### 3. Truthful UX and Error Surfacing (~2-4 hours)
 
@@ -109,7 +111,7 @@ Provider switching and settings controls are implemented, and the hull loads env
 The hull package now exposes the `servo-backend` feature explicitly. `cargo test -p sextant-engine --lib --features servo-backend` covers Servo navigation, tab history, back/forward, live DOM distillation, data URLs, and cache invalidation. Remaining work is hardening rather than first enablement:
 1. run real-window navigation against representative HTTP/HTTPS pages
 2. improve error text for Servo service/session failures
-3. tighten frame refresh and resize behavior in `sextant-hull-lite`
+3. tighten frame refresh and resize behavior in `sextant-browser`
 4. decide whether the hull should expose a visible reader/fallback mode switch for machines that cannot run Servo cleanly
 
 ### 6. Warning and Dependency Cleanup (~1-2 hours)
@@ -132,7 +134,7 @@ Basic Rust workspace CI is already in place on Gitea. The next CI pass should ad
 
 | Blocker | Affects | Notes |
 |---------|---------|-------|
-| Interactive native launch validation still needs a human pass | Items 0-3 | `--operator-smoke` and `--operator-probe` now cover native-lite automation before full click-through |
+| Interactive native launch validation still needs a human pass | Items 0-3 | `--operator-smoke` and `--operator-probe` now cover native browser automation before full click-through |
 | Xilem/Masonry hull crashes interactively on Windows | Legacy hull | Parked as reference while the first-party shell becomes the active lane |
 | Real cloud/local provider validation depends on credentials/services | Item 3 | Behavior is partly environment-dependent |
 | Servo runtime behavior still needs broader real-window exercise | Items 1 and 5 | Engine tests and operator probes cover controlled and basic HTTP/HTTPS paths; representative interactive sites still need validation |

@@ -4,29 +4,38 @@ Audit trail of completed work sessions. Newest first.
 
 ---
 
-## 2026-05-14 — Google Search Browser Test
+## 2026-05-14 — Native Browser Naming
 
-- Ran a real native-lite Google flow: loaded `https://www.google.com`, filled `textarea[name=q]`, submitted the form, and reached a Google Search results URL for `Sextant native browser test`
-- Hardened operator expectations to include decoded URL query pairs, so scripted checks can verify search/navigation state even when a site does not echo the query as plain page text
-- Confirmed the Google scripted run distills, updates Wake and Captain's Log, captures a Servo frame, and passes `--expect "Sextant native browser test"`
-- Confirmed the reader/fallback lite build still checks after the shared expectation matcher change
+- Added `sextant-browser` as the canonical binary for the owned `winit` + `softbuffer` Servo browser shell
+- Kept `sextant-hull-lite` as a compatibility alias for older scripts while new work moves to `sextant-browser`
+- Updated the visible window title, operator status text, validation heading, log signature, and active workflow docs away from the old "lite" naming
+- Marked the reader path as a fallback build mode of `sextant-browser --no-default-features`, not the identity of the product lane
 
 ---
 
-## 2026-05-14 — Native-Lite Validation Surface
+## 2026-05-14 — Google Search Browser Test
 
-- Added a first-party `VALIDATION` tab to `sextant-hull-lite`
+- Ran a real native browser Google flow: loaded `https://www.google.com`, filled `textarea[name=q]`, submitted the form, and reached a Google Search results URL for `Sextant native browser test`
+- Hardened operator expectations to include decoded URL query pairs, so scripted checks can verify search/navigation state even when a site does not echo the query as plain page text
+- Confirmed the Google scripted run distills, updates Wake and Captain's Log, captures a Servo frame, and passes `--expect "Sextant native browser test"`
+- Confirmed the reader/fallback browser build still checks after the shared expectation matcher change
+
+---
+
+## 2026-05-14 — Native Browser Validation Surface
+
+- Added a first-party `VALIDATION` tab to `sextant-browser`
 - Added session-aware validation tracking for navigation, viewport/frame capture, real forwarded browser input, distillation, Wake results, Captain's Log rows, tab controls, and visible error surfacing
-- Added validation progress to the native-lite status bar so manual click-through coverage is visible while working
+- Added validation progress to the native browser status bar so manual click-through coverage is visible while working
 - Added `RESET CHECKS` so a fresh in-window validation pass can start without restarting the app or clearing runtime state
-- Confirmed default-feature and reader/fallback lite checks pass
+- Confirmed default-feature and reader/fallback browser checks pass
 - Confirmed `--operator-timeout 45 --operator-smoke` still passes after the validation UI changes
 
 ---
 
 ## 2026-05-14 — Operator Timeout Guard
 
-- Added a shared bounded worker for native-lite `--operator-smoke`, `--operator-probe`, and `--operator-run`
+- Added a shared bounded worker for native browser `--operator-smoke`, `--operator-probe`, and `--operator-run`
 - Added `--operator-timeout <seconds>` with a 120-second default and timeout exit code `124`
 - Confirmed bounded operator smoke and scripted data-URL runs pass with `--operator-timeout 30`
 - Confirmed invalid timeout values exit cleanly with code `2`
@@ -36,11 +45,11 @@ Audit trail of completed work sessions. Newest first.
 
 ## 2026-05-13 — Stability And Polish Pass
 
-- Reworked the visible `sextant-hull-lite` startup path so event-loop, window, Softbuffer, and app initialization failures report clean `[sextant-lite] failed: ...` errors instead of panicking
+- Reworked the visible browser startup path so event-loop, window, Softbuffer, and app initialization failures report clean `[sextant-browser] failed: ...` errors instead of panicking
 - Reconnected the Xilem full-shell Wake/Audit and Validation panels so the parked reference hull keeps its richer diagnostic surface when `SEXTANT_FULL_SHELL` is enabled
 - Marked parked provider-setting mutators as intentionally retained until the native editor surface uses them
 - Confirmed `cargo check --workspace --manifest-path rust/Cargo.toml` passes with only the known `xml5ever v0.16.2` future-incompatibility notice
-- Confirmed focused native-lite checking and direct binary operator runs still pass for `--operator-smoke`, data-URL `--operator-run`, data-URL `--operator-probe`, and `https://example.com --expect "Example Domain"`
+- Confirmed focused native browser checking and direct binary operator runs still pass for `--operator-smoke`, data-URL `--operator-run`, data-URL `--operator-probe`, and `https://example.com --expect "Example Domain"`
 
 ---
 

@@ -1,6 +1,6 @@
 # Current State
 
-Date of this snapshot: `2026-05-13`
+Date of this snapshot: `2026-05-14`
 
 ## How To Read This
 
@@ -13,12 +13,12 @@ Use this together with:
 
 ## Executive Summary
 
-Sextant has a stable core Rust foundation and an owned native-lite product path. The previous Xilem/Masonry hull remains useful as reference code, but real Windows click testing exposed native access violations in that toolkit path, so active UI work is now on the first-party `winit` + `softbuffer` shell.
+Sextant has a stable core Rust foundation and an owned native browser product path. The previous Xilem/Masonry hull remains useful as reference code, but real Windows click testing exposed native access violations in that toolkit path, so active UI work is now on the first-party `winit` + `softbuffer` shell.
 
-The code is further along than the older May 1 wording suggested. There are now two native-lite lanes:
+The code is further along than the older May 1 wording suggested. There are now two native browser lanes:
 
-- **Heavy browsing lane:** `sextant-hull-lite` with package default features, which enables Servo live navigation, Servo frame capture, browser viewport input forwarding, back/forward/reload, and live DOM distillation.
-- **Reader/fallback lane:** `sextant-hull-lite --no-default-features`, which avoids Servo/Xilem and keeps the direct shell, fetch/distill, Wake, and Captain's Log workflow available for fast smoke checks.
+- **Heavy browsing lane:** `sextant-browser` with package default features, which enables Servo live navigation, Servo frame capture, browser viewport input forwarding, back/forward/reload, and live DOM distillation.
+- **Reader/fallback lane:** `sextant-browser --no-default-features`, which avoids Servo/Xilem and keeps the direct shell, fetch/distill, Wake, and Captain's Log workflow available for fast smoke checks.
 
 The product is no longer just a compile-clean scaffold. The core crates can:
 
@@ -27,9 +27,11 @@ The product is no longer just a compile-clean scaffold. The core crates can:
 - run intent/consent regression coverage in the Pilot
 - fetch, render, distill, and map browser tab state through the engine
 
-The active `sextant-hull-lite` binary is not just a smoke window. It has a direct-drawn UI with address input, keyboard focus, hit-tested controls, browser/Wake/Log views, Wake search, Captain's Log display, tab controls, and a Servo frame viewport when built with default features.
+The active `sextant-browser` binary is not just a smoke window. It has a direct-drawn UI with address input, keyboard focus, hit-tested controls, browser/Wake/Log views, Wake search, Captain's Log display, tab controls, and a Servo frame viewport when built with default features.
 
-The biggest remaining gaps are now heavy browsing hardening, real-window Servo bug fixing, richer validation inside the lite shell, provider-path hardening, CI depth, and dependency cleanup.
+`sextant-browser` is now the canonical native product binary. The old `sextant-hull-lite` bin remains as a compatibility alias during the transition, but new docs, scripts, and validation work should use `sextant-browser`.
+
+The biggest remaining gaps are now heavy browsing hardening, real-window Servo bug fixing, richer validation inside the browser shell, provider-path hardening, CI depth, and dependency cleanup.
 
 ## What Is Working
 
@@ -39,13 +41,13 @@ The biggest remaining gaps are now heavy browsing hardening, real-window Servo b
 | Workspace warning budget | ✅ | local crate warnings are clear in the latest workspace check; the remaining notice is the known `xml5ever v0.16.2` future-incompatibility warning |
 | Rust workspace tests | ✅ | `cargo test --workspace` passes |
 | Pilot regression tests | ✅ | `cargo test -p sextant-pilot --lib` passes |
-| Native-lite reader lane | ✅ | `sextant-hull-lite --no-default-features` builds and stays responsive in a timed real launch check |
-| Native-lite heavy browsing build | ✅ | package default features wire `sextant-hull-lite` to Servo; focused Servo engine tests pass |
+| Native browser reader lane | ✅ | `sextant-browser --no-default-features` builds and stays responsive in a timed real launch check |
+| Native browser heavy browsing build | ✅ | package default features wire `sextant-browser` to Servo; focused Servo engine tests pass |
 | Native operator bridge | ✅ baseline | `--operator-smoke` drives Servo navigation, native DOM fill/click, distillation, Wake, Log, and frame capture; `--operator-probe <url>` probes real pages; `--operator-run` scripts selector actions and expectations; `--operator-timeout <seconds>` bounds stalled runs |
 | Servo live navigation | ✅ baseline / ⚠️ buggy | tests cover data URLs, live DOM mutation, history, back/forward, and cache invalidation; operator probes now cover `example.com`, Google search, `rust-lang.org`, MDN, Wikipedia, docs.rs, GitHub, `neverssl`, and `httpbin`; broader real-window browsing still needs hardening |
-| Servo frame viewport | ✅ baseline / ⚠️ buggy | lite shell captures `RenderedFrame` pixels from Servo and paints them into the `softbuffer` viewport |
+| Servo frame viewport | ✅ baseline / ⚠️ buggy | browser shell captures `RenderedFrame` pixels from Servo and paints them into the `softbuffer` viewport |
 | Browser input forwarding | ✅ baseline / ⚠️ buggy | mouse move/click, wheel, character keys, and named keys are forwarded to the Servo WebView path; scripted selector fill/click works on data URLs, Google search, and `httpbin` form inputs |
-| Native-lite validation surface | ✅ baseline | owned shell now has a `VALIDATION` tab, reset control, and status-bar progress for session-aware manual click-through coverage |
+| Native browser validation surface | ✅ baseline | owned shell now has a `VALIDATION` tab, reset control, and status-bar progress for session-aware manual click-through coverage |
 | Xilem/Masonry hull | ⚠️ parked | crashes on Windows during interactive use; retained as reference, not the active product lane |
 | Lower-stack guardrails | ✅ | bio, privacy, firewall, bridge, sync, log, inference, Wake, and engine edge cases now have focused coverage |
 | Hull modular structure | ✅ | `app_core`, `state`, `views`, `poller`, `util`, `deferred` split in place |
@@ -110,31 +112,31 @@ The old Xilem hull now tells the truth more clearly than earlier passes, but it 
 - recent validation trail now tags each success by workflow, and the panel shows latest grouped activity for provider, consent, tab, Wake, and controls
 - audit validation now requires a fresh Captain's Log entry after reset instead of counting older persisted history as current-session coverage
 
-The active native-lite hull is intentionally plain, but it now has real browser-facing pieces:
+The active native browser hull is intentionally plain, but it now has real browser-facing pieces:
 
 - owned `winit` event loop
 - direct `softbuffer` pixel rendering
 - address input and keyboard focus
 - browser, Wake, and Captain's Log tabs
-- native-lite `VALIDATION` tab for session-aware manual click-through coverage
+- native browser `VALIDATION` tab for session-aware manual click-through coverage
 - direct controls for GO, NEW TAB, BACK, FORWARD, RELOAD, CLOSE TAB, DISTILL, and WAKE search
 - Servo viewport frame painting when built with default features
 - browser viewport mouse, wheel, character-key, and named-key forwarding into the engine
 - native operator bridge commands for automated smoke/probe runs before manual click-through
 - native operator runs have an internal 120-second timeout by default and exit `124` on timeout
-- status bar shows native-lite validation progress during manual work, and `RESET CHECKS` starts a fresh coverage pass without restarting
+- status bar shows native browser validation progress during manual work, and `RESET CHECKS` starts a fresh coverage pass without restarting
 - reader-mode distilled page display when a live frame is not available
 - window-title status updates for quick smoke validation
-- visible native-lite startup failures now report clean `[sextant-lite] failed: ...` messages instead of panicking during window/event-loop setup
+- visible native browser startup failures now report clean `[sextant-browser] failed: ...` messages instead of panicking during window/event-loop setup
 - no Xilem, Masonry, Vello widget tree, or toolkit lifecycle dependency on the critical path
 
 ## Known Gaps
 
 | Gap | Priority | Notes |
 |-----|----------|-------|
-| Heavy browsing hardening | High | default-feature `sextant-hull-lite` has Servo live browsing pieces, but real-window use is still buggy |
-| Full in-window interactive workflow exercise | High | now belongs on the lite shell; the Xilem checklist is reference material |
-| Full native-lite manual validation pass | High | the first validation tab is in place; next pass should drive it through real window usage and fix any misses |
+| Heavy browsing hardening | High | default-feature `sextant-browser` has Servo live browsing pieces, but real-window use is still buggy |
+| Full in-window interactive workflow exercise | High | now belongs on the browser shell; the Xilem checklist is reference material |
+| Full native browser manual validation pass | High | the first validation tab is in place; next pass should drive it through real window usage and fix any misses |
 | Real sync identity semantics | Medium | sync simulation now round-trips, but imported identities intentionally do not restore secret-key material |
 | Remaining dependency warning | Medium | `xml5ever v0.16.2` future-incompatibility notice remains |
 | CI workflow depth | Medium | basic Rust workspace CI exists, but it is still minimal |
@@ -155,6 +157,6 @@ The next best work should keep following [next-work.md](next-work.md) and bias t
 
 1. validating and hardening the default-feature Servo heavy browsing lane
 2. fixing issues discovered during real click-through use
-3. running the native-lite validation tab through a real manual pass and refining any misses
+3. running the native browser validation tab through a real manual pass and refining any misses
 4. provider-path and inference hardening where environment-backed behavior still drifts
 5. dependency warning cleanup and CI depth
