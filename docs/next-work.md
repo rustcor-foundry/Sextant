@@ -75,7 +75,7 @@ Recent progress: operator smoke/probe/run modes now have an internal timeout gua
 
 The old Xilem validation checklist is reference material. Rebuild the same workflow coverage in the native-lite shell around its actual controls and browser viewport, then run a real click-through pass that exercises the app end to end in the window and fixes anything that still only works in tests or partial runtime paths.
 
-Recent progress: `sextant-hull-lite` now has a first-party `VALIDATION` tab and status-bar progress for the current window session. It tracks navigation, frame/reader visibility, browser viewport focus, distillation, Wake, Captain's Log, tab controls, and error surfacing.
+Recent progress: `sextant-hull-lite` now has a first-party `VALIDATION` tab and status-bar progress for the current window session. It tracks navigation, frame/reader visibility, real forwarded browser input, distillation, Wake, Captain's Log, tab controls, and error surfacing. `RESET CHECKS` starts a fresh validation pass without restarting or clearing runtime state.
 
 Focus checks:
 1. navigate from the address field and verify the live viewport or reader fallback updates truthfully
@@ -84,7 +84,7 @@ Focus checks:
 4. switch between Browser, Wake, and Captain's Log views
 5. create, close, reload, go back, and go forward across tabs
 6. confirm failures surface in-window instead of only through stderr or logs
-7. rebuild session-aware validation UI once the lite control set is stable enough
+7. refine the native-lite validation checklist based on real manual pass findings
 
 ### 3. Truthful UX and Error Surfacing (~2-4 hours)
 

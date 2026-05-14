@@ -74,6 +74,7 @@ enum Action {
     Forward,
     Reload,
     CloseTab,
+    ResetValidation,
     DistillActive,
     SearchWake,
 }
@@ -97,6 +98,7 @@ enum MainView {
 struct ValidationState {
     navigation_seen: bool,
     browser_focus_seen: bool,
+    browser_input_seen: bool,
     frame_seen: bool,
     distill_seen: bool,
     wake_seen: bool,
@@ -295,7 +297,7 @@ impl LiteApp {
         }
 
         let go_x = self.address_rect.x + self.address_rect.w + gap;
-        self.buttons = vec![
+        let mut buttons = vec![
             ButtonRegion {
                 rect: Rect {
                     x: go_x,
@@ -356,6 +358,21 @@ impl LiteApp {
                 label: "CLOSE TAB",
                 action: Action::CloseTab,
             },
+        ];
+        let reset_rect = Rect {
+            x: margin + 394 + gap * 5,
+            y: 64,
+            w: 112,
+            h: button_h,
+        };
+        if reset_rect.x + reset_rect.w + gap <= main_right.saturating_sub(210) {
+            buttons.push(ButtonRegion {
+                rect: reset_rect,
+                label: "RESET CHECKS",
+                action: Action::ResetValidation,
+            });
+        }
+        buttons.extend([
             ButtonRegion {
                 rect: Rect {
                     x: main_right.saturating_sub(210),
@@ -376,7 +393,8 @@ impl LiteApp {
                 label: "WAKE",
                 action: Action::SearchWake,
             },
-        ];
+        ]);
+        self.buttons = buttons;
     }
 
     fn click(&mut self, x: f64, y: f64) {
@@ -476,14 +494,15 @@ impl LiteApp {
         let Some((local_x, local_y)) = self.browser_point(x, y) else {
             return true;
         };
-        let _ = self
+        let moved = self
             .engine
-            .enqueue_mouse_move_current_viewport(local_x, local_y);
-        let _ = self.engine.enqueue_mouse_button_current_viewport(
-            local_x,
-            local_y,
-            state == ElementState::Pressed,
-        );
+            .enqueue_mouse_move_current_viewport(local_x, local_y)
+            .is_ok();
+        let clicked = self
+            .engine
+            .enqueue_mouse_button_current_viewport(local_x, local_y, state == ElementState::Pressed)
+            .is_ok();
+        self.validation.browser_input_seen |= moved || clicked;
         self.frame_dirty = true;
         true
     }
@@ -493,9 +512,13 @@ impl LiteApp {
             return;
         }
         if let Some((local_x, local_y)) = self.browser_point(x, y) {
-            let _ = self
+            if self
                 .engine
-                .enqueue_mouse_move_current_viewport(local_x, local_y);
+                .enqueue_mouse_move_current_viewport(local_x, local_y)
+                .is_ok()
+            {
+                self.validation.browser_input_seen = true;
+            }
         }
     }
 
@@ -503,20 +526,34 @@ impl LiteApp {
         let pressed = event.state == ElementState::Pressed;
         match &event.logical_key {
             Key::Character(value) if value.chars().all(|c| !c.is_control()) => {
-                let _ = self
+                if self
                     .engine
-                    .enqueue_key_character_current_viewport(value.to_string(), pressed);
+                    .enqueue_key_character_current_viewport(value.to_string(), pressed)
+                    .is_ok()
+                {
+                    self.validation.browser_input_seen = true;
+                }
                 self.frame_dirty = true;
             }
             Key::Named(NamedKey::Space) => {
-                let _ = self
+                if self
                     .engine
-                    .enqueue_key_character_current_viewport(" ".to_string(), pressed);
+                    .enqueue_key_character_current_viewport(" ".to_string(), pressed)
+                    .is_ok()
+                {
+                    self.validation.browser_input_seen = true;
+                }
                 self.frame_dirty = true;
             }
             Key::Named(named) => {
                 if let Some(key) = browser_key_from_winit(named) {
-                    let _ = self.engine.enqueue_key_named_current_viewport(key, pressed);
+                    if self
+                        .engine
+                        .enqueue_key_named_current_viewport(key, pressed)
+                        .is_ok()
+                    {
+                        self.validation.browser_input_seen = true;
+                    }
                     self.frame_dirty = true;
                 }
             }
@@ -556,6 +593,7 @@ impl LiteApp {
                 .wheel_current_viewport(delta_x, delta_y, pixel_mode)
                 .is_ok()
         {
+            self.validation.browser_input_seen = true;
             self.refresh_frame();
             return;
         }
@@ -578,10 +616,17 @@ impl LiteApp {
             Action::Forward => self.forward(),
             Action::Reload => self.reload(),
             Action::CloseTab => self.close_tab(),
+            Action::ResetValidation => self.reset_validation(),
             Action::DistillActive => self.distill_active(),
             Action::SearchWake => self.search_wake(),
         }
         self.refresh_logs();
+    }
+
+    fn reset_validation(&mut self) {
+        self.validation = ValidationState::default();
+        self.last_status = "Validation session reset. Runtime state is unchanged.".to_string();
+        self.last_ok = true;
     }
 
     fn navigate_input(&mut self) {
@@ -829,12 +874,20 @@ impl LiteApp {
             },
             ValidationRow {
                 label: "BROWSER INPUT",
-                status: if self.validation.browser_focus_seen {
+                status: if self.validation.browser_input_seen {
                     ValidationStatus::Pass
+                } else if self.validation.browser_focus_seen {
+                    ValidationStatus::Attention
                 } else {
                     ValidationStatus::Waiting
                 },
-                detail: "Click the live viewport and type or scroll".to_string(),
+                detail: if self.validation.browser_input_seen {
+                    "Mouse, key, or wheel input was forwarded to the viewport".to_string()
+                } else if self.validation.browser_focus_seen {
+                    "Viewport focused; type, click, or scroll to forward input".to_string()
+                } else {
+                    "Click the live viewport, then type or scroll".to_string()
+                },
             },
             ValidationRow {
                 label: "DISTILL",
@@ -914,6 +967,7 @@ impl LiteApp {
                 .unwrap_or(false),
             Action::Reload => self.active_tab().and_then(|tab| tab.url.as_ref()).is_some(),
             Action::CloseTab | Action::DistillActive => self.active_tab().is_some(),
+            Action::ResetValidation => true,
             Action::SearchWake => !self.wake_query.trim().is_empty(),
         }
     }
@@ -2882,6 +2936,7 @@ fn disabled_reason(action: Action) -> &'static str {
         Action::Forward => "Forward is unavailable for this tab/backend.",
         Action::Reload => "Active tab has no URL to reload.",
         Action::CloseTab => "No active tab to close.",
+        Action::ResetValidation => "Validation reset is always available.",
         Action::DistillActive => "Open a page before distilling.",
         Action::SearchWake => "Enter a Wake query first.",
     }

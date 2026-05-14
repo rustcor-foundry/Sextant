@@ -7,8 +7,9 @@ Audit trail of completed work sessions. Newest first.
 ## 2026-05-14 — Native-Lite Validation Surface
 
 - Added a first-party `VALIDATION` tab to `sextant-hull-lite`
-- Added session-aware validation tracking for navigation, viewport/frame capture, browser focus, distillation, Wake results, Captain's Log rows, tab controls, and visible error surfacing
+- Added session-aware validation tracking for navigation, viewport/frame capture, real forwarded browser input, distillation, Wake results, Captain's Log rows, tab controls, and visible error surfacing
 - Added validation progress to the native-lite status bar so manual click-through coverage is visible while working
+- Added `RESET CHECKS` so a fresh in-window validation pass can start without restarting the app or clearing runtime state
 - Confirmed default-feature and reader/fallback lite checks pass
 - Confirmed `--operator-timeout 45 --operator-smoke` still passes after the validation UI changes
 

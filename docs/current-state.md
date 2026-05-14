@@ -45,7 +45,7 @@ The biggest remaining gaps are now heavy browsing hardening, real-window Servo b
 | Servo live navigation | ✅ baseline / ⚠️ buggy | tests cover data URLs, live DOM mutation, history, back/forward, and cache invalidation; operator probes now cover `example.com`, `rust-lang.org`, MDN, Wikipedia, docs.rs, GitHub, `neverssl`, and `httpbin`; broader real-window browsing still needs hardening |
 | Servo frame viewport | ✅ baseline / ⚠️ buggy | lite shell captures `RenderedFrame` pixels from Servo and paints them into the `softbuffer` viewport |
 | Browser input forwarding | ✅ baseline / ⚠️ buggy | mouse move/click, wheel, character keys, and named keys are forwarded to the Servo WebView path; scripted selector fill/click works on data URLs and `httpbin` form inputs |
-| Native-lite validation surface | ✅ baseline | owned shell now has a `VALIDATION` tab and status-bar progress for session-aware manual click-through coverage |
+| Native-lite validation surface | ✅ baseline | owned shell now has a `VALIDATION` tab, reset control, and status-bar progress for session-aware manual click-through coverage |
 | Xilem/Masonry hull | ⚠️ parked | crashes on Windows during interactive use; retained as reference, not the active product lane |
 | Lower-stack guardrails | ✅ | bio, privacy, firewall, bridge, sync, log, inference, Wake, and engine edge cases now have focused coverage |
 | Hull modular structure | ✅ | `app_core`, `state`, `views`, `poller`, `util`, `deferred` split in place |
@@ -122,7 +122,7 @@ The active native-lite hull is intentionally plain, but it now has real browser-
 - browser viewport mouse, wheel, character-key, and named-key forwarding into the engine
 - native operator bridge commands for automated smoke/probe runs before manual click-through
 - native operator runs have an internal 120-second timeout by default and exit `124` on timeout
-- status bar shows native-lite validation progress during manual work
+- status bar shows native-lite validation progress during manual work, and `RESET CHECKS` starts a fresh coverage pass without restarting
 - reader-mode distilled page display when a live frame is not available
 - window-title status updates for quick smoke validation
 - visible native-lite startup failures now report clean `[sextant-lite] failed: ...` messages instead of panicking during window/event-loop setup
@@ -134,7 +134,7 @@ The active native-lite hull is intentionally plain, but it now has real browser-
 |-----|----------|-------|
 | Heavy browsing hardening | High | default-feature `sextant-hull-lite` has Servo live browsing pieces, but real-window use is still buggy |
 | Full in-window interactive workflow exercise | High | now belongs on the lite shell; the Xilem checklist is reference material |
-| Lite-shell validation rebuild | High | old Xilem checklist concepts need to be rebuilt against the lite shell's actual controls and viewport |
+| Full native-lite manual validation pass | High | the first validation tab is in place; next pass should drive it through real window usage and fix any misses |
 | Real sync identity semantics | Medium | sync simulation now round-trips, but imported identities intentionally do not restore secret-key material |
 | Remaining dependency warning | Medium | `xml5ever v0.16.2` future-incompatibility notice remains |
 | CI workflow depth | Medium | basic Rust workspace CI exists, but it is still minimal |
@@ -155,6 +155,6 @@ The next best work should keep following [next-work.md](next-work.md) and bias t
 
 1. validating and hardening the default-feature Servo heavy browsing lane
 2. fixing issues discovered during real click-through use
-3. rebuilding validation coverage around the lite shell's actual controls
+3. running the native-lite validation tab through a real manual pass and refining any misses
 4. provider-path and inference hardening where environment-backed behavior still drifts
 5. dependency warning cleanup and CI depth
