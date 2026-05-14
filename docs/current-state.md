@@ -45,6 +45,7 @@ The biggest remaining gaps are now heavy browsing hardening, real-window Servo b
 | Servo live navigation | ✅ baseline / ⚠️ buggy | tests cover data URLs, live DOM mutation, history, back/forward, and cache invalidation; operator probes now cover `example.com`, `rust-lang.org`, MDN, Wikipedia, docs.rs, GitHub, `neverssl`, and `httpbin`; broader real-window browsing still needs hardening |
 | Servo frame viewport | ✅ baseline / ⚠️ buggy | lite shell captures `RenderedFrame` pixels from Servo and paints them into the `softbuffer` viewport |
 | Browser input forwarding | ✅ baseline / ⚠️ buggy | mouse move/click, wheel, character keys, and named keys are forwarded to the Servo WebView path; scripted selector fill/click works on data URLs and `httpbin` form inputs |
+| Native-lite validation surface | ✅ baseline | owned shell now has a `VALIDATION` tab and status-bar progress for session-aware manual click-through coverage |
 | Xilem/Masonry hull | ⚠️ parked | crashes on Windows during interactive use; retained as reference, not the active product lane |
 | Lower-stack guardrails | ✅ | bio, privacy, firewall, bridge, sync, log, inference, Wake, and engine edge cases now have focused coverage |
 | Hull modular structure | ✅ | `app_core`, `state`, `views`, `poller`, `util`, `deferred` split in place |
@@ -115,11 +116,13 @@ The active native-lite hull is intentionally plain, but it now has real browser-
 - direct `softbuffer` pixel rendering
 - address input and keyboard focus
 - browser, Wake, and Captain's Log tabs
+- native-lite `VALIDATION` tab for session-aware manual click-through coverage
 - direct controls for GO, NEW TAB, BACK, FORWARD, RELOAD, CLOSE TAB, DISTILL, and WAKE search
 - Servo viewport frame painting when built with default features
 - browser viewport mouse, wheel, character-key, and named-key forwarding into the engine
 - native operator bridge commands for automated smoke/probe runs before manual click-through
 - native operator runs have an internal 120-second timeout by default and exit `124` on timeout
+- status bar shows native-lite validation progress during manual work
 - reader-mode distilled page display when a live frame is not available
 - window-title status updates for quick smoke validation
 - visible native-lite startup failures now report clean `[sextant-lite] failed: ...` messages instead of panicking during window/event-loop setup

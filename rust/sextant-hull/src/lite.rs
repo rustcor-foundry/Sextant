@@ -90,6 +90,32 @@ enum MainView {
     Browser,
     Wake,
     Log,
+    Validation,
+}
+
+#[derive(Default)]
+struct ValidationState {
+    navigation_seen: bool,
+    browser_focus_seen: bool,
+    frame_seen: bool,
+    distill_seen: bool,
+    wake_seen: bool,
+    log_seen: bool,
+    tab_control_seen: bool,
+    error_seen: bool,
+}
+
+#[derive(Clone, Copy)]
+enum ValidationStatus {
+    Pass,
+    Waiting,
+    Attention,
+}
+
+struct ValidationRow {
+    label: &'static str,
+    status: ValidationStatus,
+    detail: String,
 }
 
 enum OperatorStep {
@@ -126,6 +152,7 @@ struct LiteApp {
     browser_tab_rect: Rect,
     wake_tab_rect: Rect,
     log_tab_rect: Rect,
+    validation_tab_rect: Rect,
     browser_viewport_rect: Rect,
     buttons: Vec<ButtonRegion>,
     wake_results: Vec<WakeEntry>,
@@ -136,6 +163,7 @@ struct LiteApp {
     last_frame_refresh: Instant,
     frame_dirty: bool,
     frame_refresh_budget: u8,
+    validation: ValidationState,
 }
 
 impl LiteApp {
@@ -186,6 +214,12 @@ impl LiteApp {
                 w: 1,
                 h: 1,
             },
+            validation_tab_rect: Rect {
+                x: 0,
+                y: 0,
+                w: 1,
+                h: 1,
+            },
             browser_viewport_rect: Rect {
                 x: 0,
                 y: 0,
@@ -201,6 +235,7 @@ impl LiteApp {
             last_frame_refresh: Instant::now(),
             frame_dirty: false,
             frame_refresh_budget: 0,
+            validation: ValidationState::default(),
         };
         app.refresh_logs();
         Ok(app)
@@ -245,6 +280,12 @@ impl LiteApp {
             x: 274,
             y: CHROME_H + STRIP_H + 5,
             w: 134,
+            h: 30,
+        };
+        self.validation_tab_rect = Rect {
+            x: 418,
+            y: CHROME_H + STRIP_H + 5,
+            w: 126,
             h: 30,
         };
         let main_panel = main_panel_rect(rail_x, size.height.max(620));
@@ -359,6 +400,10 @@ impl LiteApp {
             self.main_view = MainView::Log;
             return;
         }
+        if self.validation_tab_rect.contains(x, y) {
+            self.main_view = MainView::Validation;
+            return;
+        }
 
         let Some(action) = self
             .buttons
@@ -368,12 +413,14 @@ impl LiteApp {
         else {
             self.last_status = "Click missed a control.".to_string();
             self.last_ok = false;
+            self.validation.error_seen = true;
             return;
         };
 
         if !self.action_enabled(action) {
             self.last_status = disabled_reason(action).to_string();
             self.last_ok = false;
+            self.validation.error_seen = true;
             return;
         }
 
@@ -425,6 +472,7 @@ impl LiteApp {
         self.focus = FocusTarget::Browser;
         self.last_status = "Browser viewport focused.".to_string();
         self.last_ok = true;
+        self.validation.browser_focus_seen = true;
         let Some((local_x, local_y)) = self.browser_point(x, y) else {
             return true;
         };
@@ -560,6 +608,7 @@ impl LiteApp {
             Ok(status) => {
                 self.address_input = url.to_string();
                 self.page_scroll = 0;
+                self.validation.navigation_seen = true;
                 self.begin_frame_warmup();
                 self.refresh_frame();
                 self.last_status = format!(
@@ -574,6 +623,7 @@ impl LiteApp {
             Err(error) => {
                 self.last_status = format!("Open failed: {}", error);
                 self.last_ok = false;
+                self.validation.error_seen = true;
                 let _ = self.record_log(&format!("navigate {}", url), LogStatus::Failure(error));
             }
         }
@@ -585,6 +635,7 @@ impl LiteApp {
         self.latest_frame = None;
         self.last_status = format!("Created tab {}.", short_id(id));
         self.last_ok = true;
+        self.validation.tab_control_seen = true;
         let _ = self.record_log("new tab", LogStatus::Success);
     }
 
@@ -601,11 +652,13 @@ impl LiteApp {
                 self.latest_frame = None;
                 self.last_status = format!("Closed tab {}.", short_id(tab.id));
                 self.last_ok = true;
+                self.validation.tab_control_seen = true;
                 let _ = self.record_log("close tab", LogStatus::Success);
             }
             Err(error) => {
                 self.last_status = format!("Close failed: {}", error);
                 self.last_ok = false;
+                self.validation.error_seen = true;
                 let _ = self.record_log("close tab", LogStatus::Failure(error));
             }
         }
@@ -619,11 +672,13 @@ impl LiteApp {
                 self.refresh_frame();
                 self.last_status = format!("Reloaded active tab with {}.", backend(status));
                 self.last_ok = true;
+                self.validation.tab_control_seen = true;
                 let _ = self.record_log("reload", LogStatus::Success);
             }
             Err(error) => {
                 self.last_status = format!("Reload failed: {}", error);
                 self.last_ok = false;
+                self.validation.error_seen = true;
                 let _ = self.record_log("reload", LogStatus::Failure(error));
             }
         }
@@ -637,11 +692,13 @@ impl LiteApp {
                 self.refresh_frame();
                 self.last_status = format!("Went back with {}.", backend(status));
                 self.last_ok = true;
+                self.validation.tab_control_seen = true;
                 let _ = self.record_log("back", LogStatus::Success);
             }
             Err(error) => {
                 self.last_status = format!("Back unavailable: {}", error);
                 self.last_ok = false;
+                self.validation.error_seen = true;
                 let _ = self.record_log("back", LogStatus::Failure(error));
             }
         }
@@ -655,11 +712,13 @@ impl LiteApp {
                 self.refresh_frame();
                 self.last_status = format!("Went forward with {}.", backend(status));
                 self.last_ok = true;
+                self.validation.tab_control_seen = true;
                 let _ = self.record_log("forward", LogStatus::Success);
             }
             Err(error) => {
                 self.last_status = format!("Forward unavailable: {}", error);
                 self.last_ok = false;
+                self.validation.error_seen = true;
                 let _ = self.record_log("forward", LogStatus::Failure(error));
             }
         }
@@ -675,12 +734,14 @@ impl LiteApp {
                     self.wake_query = page.title.clone();
                     self.last_status = format!("Distilled '{}' into Wake.", page.title);
                     self.last_ok = true;
+                    self.validation.distill_seen = true;
                     let _ = self.record_log("distill active", LogStatus::Success);
                     self.search_wake();
                 }
                 Err(error) => {
                     self.last_status = format!("Wake record failed: {}", error);
                     self.last_ok = false;
+                    self.validation.error_seen = true;
                     let _ =
                         self.record_log("distill active", LogStatus::Failure(error.to_string()));
                 }
@@ -688,26 +749,151 @@ impl LiteApp {
             Err(error) => {
                 self.last_status = format!("Distill failed: {}", error);
                 self.last_ok = false;
+                self.validation.error_seen = true;
                 let _ = self.record_log("distill active", LogStatus::Failure(error));
             }
         }
     }
 
     fn search_wake(&mut self) {
-        let query = self.wake_query.trim();
-        match self.wake.search(&self.persona_id, query) {
+        let query = self.wake_query.trim().to_string();
+        match self.wake.search(&self.persona_id, &query) {
             Ok(results) => {
                 self.last_status = format!("Wake search found {} result(s).", results.len());
                 self.last_ok = true;
+                self.validation.wake_seen = !results.is_empty();
                 self.wake_results = results;
                 let _ = self.record_log(&format!("search Wake '{}'", query), LogStatus::Success);
             }
             Err(error) => {
                 self.last_status = format!("Wake search failed: {}", error);
                 self.last_ok = false;
+                self.validation.error_seen = true;
                 let _ = self.record_log("search Wake", LogStatus::Failure(error.to_string()));
             }
         }
+    }
+
+    fn validation_rows(&self) -> Vec<ValidationRow> {
+        let active_url = self
+            .active_tab()
+            .and_then(|tab| tab.url.as_ref())
+            .map(short_url)
+            .unwrap_or_else(|| "no URL yet".to_string());
+        let distilled_title = self
+            .active_tab()
+            .and_then(|tab| tab.distilled_page.as_ref())
+            .map(|page| page.title.clone());
+        let frame_ready = self
+            .latest_frame
+            .as_ref()
+            .map(|frame| frame.width > 0 && frame.height > 0 && !frame.pixels.is_empty())
+            .unwrap_or(false);
+        let has_page = distilled_title.is_some();
+
+        vec![
+            ValidationRow {
+                label: "ACTIVE TAB",
+                status: if self.active_tab().is_some() {
+                    ValidationStatus::Pass
+                } else {
+                    ValidationStatus::Waiting
+                },
+                detail: format!("{} tab(s) in engine state", self.engine.get_tabs().len()),
+            },
+            ValidationRow {
+                label: "NAVIGATION",
+                status: if self.validation.navigation_seen {
+                    ValidationStatus::Pass
+                } else {
+                    ValidationStatus::Waiting
+                },
+                detail: active_url,
+            },
+            ValidationRow {
+                label: "VIEWPORT",
+                status: if frame_ready || self.validation.frame_seen {
+                    ValidationStatus::Pass
+                } else if has_page {
+                    ValidationStatus::Attention
+                } else {
+                    ValidationStatus::Waiting
+                },
+                detail: if frame_ready {
+                    "Servo frame captured in-window".to_string()
+                } else if has_page {
+                    "Reader fallback visible; Servo frame not captured yet".to_string()
+                } else {
+                    "Press GO, then wait for frame warm-up".to_string()
+                },
+            },
+            ValidationRow {
+                label: "BROWSER INPUT",
+                status: if self.validation.browser_focus_seen {
+                    ValidationStatus::Pass
+                } else {
+                    ValidationStatus::Waiting
+                },
+                detail: "Click the live viewport and type or scroll".to_string(),
+            },
+            ValidationRow {
+                label: "DISTILL",
+                status: if self.validation.distill_seen || has_page {
+                    ValidationStatus::Pass
+                } else {
+                    ValidationStatus::Waiting
+                },
+                detail: distilled_title
+                    .unwrap_or_else(|| "No distilled page attached yet".to_string()),
+            },
+            ValidationRow {
+                label: "WAKE",
+                status: if self.validation.wake_seen || !self.wake_results.is_empty() {
+                    ValidationStatus::Pass
+                } else {
+                    ValidationStatus::Waiting
+                },
+                detail: format!("{} visible result(s)", self.wake_results.len()),
+            },
+            ValidationRow {
+                label: "CAPTAIN LOG",
+                status: if self.validation.log_seen || !self.recent_logs.is_empty() {
+                    ValidationStatus::Pass
+                } else {
+                    ValidationStatus::Waiting
+                },
+                detail: format!("{} recent entry row(s)", self.recent_logs.len()),
+            },
+            ValidationRow {
+                label: "TAB CONTROLS",
+                status: if self.validation.tab_control_seen {
+                    ValidationStatus::Pass
+                } else {
+                    ValidationStatus::Waiting
+                },
+                detail: "Use new tab, close, reload, back, or forward".to_string(),
+            },
+            ValidationRow {
+                label: "ERROR SURFACE",
+                status: if self.validation.error_seen {
+                    ValidationStatus::Pass
+                } else {
+                    ValidationStatus::Waiting
+                },
+                detail: if self.last_ok {
+                    "Trigger a disabled action or failed load to verify status text".to_string()
+                } else {
+                    truncate(&self.last_status, 72)
+                },
+            },
+        ]
+    }
+
+    fn validation_pass_count(&self) -> usize {
+        self.validation_rows()
+            .iter()
+            .filter(|row| matches!(row.status, ValidationStatus::Pass))
+            .count()
     }
 
     fn active_tab(&self) -> Option<&Tab> {
@@ -754,6 +940,9 @@ impl LiteApp {
             .resize_current_viewport(viewport.w.max(1), viewport.h.max(1));
         match self.engine.capture_current_frame() {
             Ok(frame) => {
+                if frame.width > 0 && frame.height > 0 && !frame.pixels.is_empty() {
+                    self.validation.frame_seen = true;
+                }
                 self.latest_frame = Some(frame);
                 self.last_frame_refresh = Instant::now();
                 self.frame_refresh_budget = self.frame_refresh_budget.saturating_sub(1);
@@ -765,6 +954,7 @@ impl LiteApp {
                 self.frame_dirty = self.frame_refresh_budget > 0;
                 self.last_status = format!("Servo frame unavailable: {}", error);
                 self.last_ok = false;
+                self.validation.error_seen = true;
             }
         }
     }
@@ -795,19 +985,23 @@ impl LiteApp {
         self.frame_dirty = true;
     }
 
-    fn record_log(&self, intent: &str, status: LogStatus) -> Result<(), String> {
-        self.log
-            .record(&LogEntry {
-                id: Uuid::new_v4(),
-                timestamp: Utc::now(),
-                persona_id: self.persona_id.clone(),
-                intent: intent.to_string(),
-                plan_json: "{}".to_string(),
-                signature: "lite-shell".to_string(),
-                consent_signature: None,
-                status,
-            })
-            .map_err(|e| e.to_string())
+    fn record_log(&mut self, intent: &str, status: LogStatus) -> Result<(), String> {
+        match self.log.record(&LogEntry {
+            id: Uuid::new_v4(),
+            timestamp: Utc::now(),
+            persona_id: self.persona_id.clone(),
+            intent: intent.to_string(),
+            plan_json: "{}".to_string(),
+            signature: "lite-shell".to_string(),
+            consent_signature: None,
+            status,
+        }) {
+            Ok(()) => {
+                self.validation.log_seen = true;
+                Ok(())
+            }
+            Err(error) => Err(error.to_string()),
+        }
     }
 }
 
@@ -1549,6 +1743,7 @@ fn draw(
         MainView::Browser => draw_page_panel(&mut buffer, width, height, app),
         MainView::Wake => draw_wake_panel(&mut buffer, width, height, app),
         MainView::Log => draw_log_panel(&mut buffer, width, height, app),
+        MainView::Validation => draw_validation_panel(&mut buffer, width, height, app),
     }
     draw_ai_rail(&mut buffer, width, height, app);
     draw_status_bar(&mut buffer, width, height, app);
@@ -1683,6 +1878,14 @@ fn draw_controls(buffer: &mut [u32], width: u32, height: u32, app: &LiteApp) {
         app.log_tab_rect,
         "CAPTAIN LOG",
         app.main_view == MainView::Log,
+    );
+    draw_pill(
+        buffer,
+        width,
+        height,
+        app.validation_tab_rect,
+        "VALIDATION",
+        app.main_view == MainView::Validation,
     );
     draw_text(
         buffer,
@@ -2198,6 +2401,91 @@ fn draw_log_panel(buffer: &mut [u32], width: u32, height: u32, app: &LiteApp) {
     }
 }
 
+fn draw_validation_panel(buffer: &mut [u32], width: u32, height: u32, app: &LiteApp) {
+    let rail_x = right_rail_x(width);
+    let panel = main_panel_rect(rail_x, height);
+    fill_rect(buffer, width, height, panel, PANEL_ALT);
+    stroke_rect(buffer, width, height, panel, BORDER);
+
+    let rows = app.validation_rows();
+    let pass_count = app.validation_pass_count();
+    let summary = format!("{} OF {} CHECKS COMPLETE", pass_count, rows.len());
+    draw_text(
+        buffer,
+        width,
+        height,
+        44,
+        panel.y + 18,
+        "NATIVE-LITE VALIDATION",
+        TEXT,
+        1,
+    );
+    draw_text(
+        buffer,
+        width,
+        height,
+        44,
+        panel.y + 44,
+        &summary,
+        if pass_count == rows.len() {
+            STATUS_OK
+        } else {
+            STATUS_WARN
+        },
+        1,
+    );
+    draw_text(
+        buffer,
+        width,
+        height,
+        44,
+        panel.y + 70,
+        "THIS VIEW TRACKS THE CURRENT WINDOW SESSION, NOT ONLY OPERATOR AUTOMATION.",
+        TEXT_DIM,
+        1,
+    );
+
+    let max_detail_chars = ((panel.w.saturating_sub(260)) / char_advance(1)) as usize;
+    let max_rows = panel.h.saturating_sub(116) / 38;
+    for (index, row) in rows.iter().take(max_rows as usize).enumerate() {
+        let y = panel.y + 112 + index as u32 * 38;
+        let color = validation_status_color(row.status);
+        fill_rect(
+            buffer,
+            width,
+            height,
+            Rect {
+                x: 44,
+                y,
+                w: 10,
+                h: 10,
+            },
+            color,
+        );
+        draw_text(
+            buffer,
+            width,
+            height,
+            62,
+            y - 2,
+            validation_status_label(row.status),
+            color,
+            1,
+        );
+        draw_text(buffer, width, height, 132, y - 2, row.label, TEXT, 1);
+        draw_text(
+            buffer,
+            width,
+            height,
+            268,
+            y - 2,
+            &truncate(&row.detail, max_detail_chars),
+            TEXT_DIM,
+            1,
+        );
+    }
+}
+
 fn draw_field(buffer: &mut [u32], width: u32, height: u32, rect: Rect, value: &str, focused: bool) {
     fill_rect(
         buffer,
@@ -2401,12 +2689,15 @@ fn draw_status_bar(buffer: &mut [u32], width: u32, height: u32, app: &LiteApp) {
         .active_tab()
         .map(|tab| display_backend(app, tab).to_string())
         .unwrap_or_else(|| "NO TAB".to_string());
+    let validation_total = app.validation_rows().len();
     let status = format!(
-        "RENDER {} {}    DISTILL REAL FETCH    WAKE RESULTS {}    LOG ENTRIES {}    PRIVACY LOCAL",
+        "RENDER {} {}    DISTILL REAL FETCH    WAKE RESULTS {}    LOG ENTRIES {}    VALIDATION {}/{}    PRIVACY LOCAL",
         backend,
         render_mode_label(),
         app.wake_results.len(),
-        app.recent_logs.len()
+        app.recent_logs.len(),
+        app.validation_pass_count(),
+        validation_total
     );
     draw_text(buffer, width, height, 24, y + 14, &status, TEXT_DIM, 1);
     draw_text(
@@ -2664,6 +2955,22 @@ fn status_label(status: &LogStatus) -> &'static str {
         LogStatus::Failure(_) => "FAIL",
         LogStatus::Aborted => "ABORT",
         LogStatus::AwaitingConsent => "CONSENT",
+    }
+}
+
+fn validation_status_label(status: ValidationStatus) -> &'static str {
+    match status {
+        ValidationStatus::Pass => "PASS",
+        ValidationStatus::Waiting => "WAIT",
+        ValidationStatus::Attention => "CHECK",
+    }
+}
+
+fn validation_status_color(status: ValidationStatus) -> u32 {
+    match status {
+        ValidationStatus::Pass => STATUS_OK,
+        ValidationStatus::Waiting => TEXT_DIM,
+        ValidationStatus::Attention => STATUS_WARN,
     }
 }
 

@@ -75,6 +75,8 @@ Recent progress: operator smoke/probe/run modes now have an internal timeout gua
 
 The old Xilem validation checklist is reference material. Rebuild the same workflow coverage in the native-lite shell around its actual controls and browser viewport, then run a real click-through pass that exercises the app end to end in the window and fixes anything that still only works in tests or partial runtime paths.
 
+Recent progress: `sextant-hull-lite` now has a first-party `VALIDATION` tab and status-bar progress for the current window session. It tracks navigation, frame/reader visibility, browser viewport focus, distillation, Wake, Captain's Log, tab controls, and error surfacing.
+
 Focus checks:
 1. navigate from the address field and verify the live viewport or reader fallback updates truthfully
 2. click into the browser viewport, type into a simple form page, and confirm key/mouse events reach Servo
