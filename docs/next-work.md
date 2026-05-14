@@ -36,10 +36,13 @@ cargo run -p sextant-hull --bin sextant-browser -- --operator-smoke
 cargo run -p sextant-hull --bin sextant-browser -- --operator-probe https://example.com
 cargo run -p sextant-hull --bin sextant-browser -- --operator-run https://example.com --expect "Example Domain"
 cargo run -p sextant-hull --bin sextant-browser -- --operator-timeout 45 --operator-run https://example.com --expect "Example Domain"
+cargo run -p sextant-hull --bin sextant-browser -- --operator-timeout 45 --intent-run "intent: open https://example.com and distill" --expect "Example Domain"
 cargo run -p sextant-hull --bin sextant-browser -- --window-smoke https://example.com --window-smoke-timeout 15
 ```
 
 Use `--operator-smoke` for a deterministic data-URL workflow that exercises Servo navigation, native DOM fill/click, live DOM distillation, Wake recording/search, Captain's Log writes, and frame capture. Use `--operator-probe <url-or-search>` to aim the same native browser path at representative HTTP/HTTPS pages before doing slower manual click-through. Use `--operator-run <url-or-search>` with `--fill`, `--click`, `--submit`, and `--expect` steps when a blocker requires a repeatable form or interaction script.
+
+Use `--intent-run "<intent>" --expect "<text>"` to exercise the native Intent Bar loop headlessly. The current deterministic path resolves the intent, navigates with Servo when available, distills into Wake, records Captain's Log, and captures a frame. This is the bridge back toward the original Pilot-led workflow while the active browser shell remains the stability target.
 
 Operator runs default to a 120-second internal timeout and accept `--operator-timeout <seconds>` for harder probes. A timeout exits with code `124`.
 
@@ -88,6 +91,8 @@ Recent progress: harder documentation/repository pages exposed semantic quality 
 Recent progress: operator smoke/probe/run modes now have an internal timeout guard, so stalled hard-site checks fail with exit code `124` instead of hanging until an outer process kills Cargo or the shell.
 
 Recent progress: a real Google search flow now passes through the native operator bridge. The run loads `https://www.google.com`, fills `textarea[name=q]`, submits `form`, verifies the decoded `q` query value, distills, updates Wake/Log, and captures a Servo frame.
+
+Recent progress: the active shell now has a first native Intent Bar loop. Normal URL/search input still navigates directly, while explicit intents such as `intent: open https://example.com and distill` plan, navigate, distill into Wake, record Captain's Log, and show Pilot state in the Context Vault rail. A matching `--intent-run` operator path keeps it regression-testable without opening the window.
 
 ### 2. Full In-Window Workflow Validation (~1-2 hours)
 

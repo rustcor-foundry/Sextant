@@ -27,7 +27,7 @@ If you only read five docs, read these in order:
 
 | Layer | Technology | Current State |
 |-------|------------|---------------|
-| Native UI shell | Rust + `winit` + `softbuffer` | Active `sextant-hull-lite` shell with direct drawing, address input, tabs, Wake, Log, and Servo frame display |
+| Native UI shell | Rust + `winit` + `softbuffer` | Active `sextant-browser` shell with direct drawing, Intent/URL input, tabs, Wake, Log, MCP-backed operator tooling, and Servo frame display |
 | Legacy native hull | Rust + Xilem 0.1.0 | Parked reference shell; Windows interactive use exposed toolkit access violations |
 | Pilot orchestration | `sextant-pilot` | Real intent flow, consent gating, regression coverage |
 | Engine | `sextant-engine` | Real fetch/distill path plus Servo-backed live navigation, frame capture, input forwarding, history, and live DOM distillation |
@@ -41,7 +41,7 @@ If you only read five docs, read these in order:
 
 ### Native Product Path
 
-- [rust/sextant-hull/src/lite.rs](rust/sextant-hull/src/lite.rs) — active native-lite shell
+- [rust/sextant-hull/src/browser.rs](rust/sextant-hull/src/browser.rs) — active native browser shell
 - [rust/sextant-hull](rust/sextant-hull) — native hull package; Xilem shell remains as parked reference code
 - [rust/sextant-pilot](rust/sextant-pilot) — intent reasoning and orchestration
 - [rust/sextant-engine](rust/sextant-engine) — fetch, distill, and rendering backend surface
@@ -57,34 +57,35 @@ If you only read five docs, read these in order:
 
 ## Build And Run
 
-### Rust Native-Lite Heavy Browsing Lane
+### Rust Native Browser Heavy Browsing Lane
 
 This is the active lane for getting back to real browsing. It uses the hull package defaults, which enable the Servo backend.
 
 ```bash
 cd rust
 cargo check
-cargo run -p sextant-hull --bin sextant-hull-lite
+cargo run -p sextant-hull --bin sextant-browser
 ```
 
-### Rust Native-Lite Reader/Fallback Lane
+### Rust Native Browser Reader/Fallback Lane
 
 This builds without the Xilem shell and without Servo. It is useful for quick smoke checks and fallback reader-mode work, but it is not the heavy browsing path.
 
 ```bash
 cd rust
-cargo run -p sextant-hull --bin sextant-hull-lite --no-default-features
+cargo run -p sextant-hull --bin sextant-browser --no-default-features
 ```
 
-### Rust Native-Lite Operator Bridge
+### Rust Native Browser Operator Bridge
 
-These commands exercise the native-lite product loop without opening the visible event loop. Use them before manual click-through when hardening heavy browsing.
+These commands exercise the native browser product loop without opening the visible event loop. Use them before manual click-through when hardening heavy browsing.
 
 ```bash
 cd rust
-cargo run -p sextant-hull --bin sextant-hull-lite -- --operator-smoke
-cargo run -p sextant-hull --bin sextant-hull-lite -- --operator-probe https://example.com
-cargo run -p sextant-hull --bin sextant-hull-lite -- --operator-run https://example.com --expect "Example Domain"
+cargo run -p sextant-hull --bin sextant-browser -- --operator-smoke
+cargo run -p sextant-hull --bin sextant-browser -- --operator-probe https://example.com
+cargo run -p sextant-hull --bin sextant-browser -- --operator-run https://example.com --expect "Example Domain"
+cargo run -p sextant-hull --bin sextant-browser -- --intent-run "intent: open https://example.com and distill" --expect "Example Domain"
 ```
 
 ### Legacy Xilem Hull

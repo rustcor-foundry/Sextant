@@ -138,6 +138,14 @@ struct WindowSmokeSpec {
     timeout: Duration,
 }
 
+#[derive(Clone)]
+struct NativeIntentPlan {
+    intent: String,
+    target: Url,
+    should_distill: bool,
+    steps: Vec<String>,
+}
+
 struct ButtonRegion {
     rect: Rect,
     label: &'static str,
@@ -153,6 +161,10 @@ struct BrowserApp {
     wake_query: String,
     last_status: String,
     last_ok: bool,
+    last_intent: String,
+    pilot_status: String,
+    pilot_plan: Vec<String>,
+    pilot_result: String,
     cursor: Option<(f64, f64)>,
     focus: FocusTarget,
     address_rect: Rect,
@@ -190,6 +202,10 @@ impl BrowserApp {
             wake_query: "example".to_string(),
             last_status: "Ready. Type a URL or search, then press Enter.".to_string(),
             last_ok: true,
+            last_intent: String::new(),
+            pilot_status: "IDLE".to_string(),
+            pilot_plan: vec!["Awaiting URL, search, or native intent.".to_string()],
+            pilot_result: "No active intent yet.".to_string(),
             cursor: None,
             focus: FocusTarget::Address,
             address_rect: Rect {
@@ -311,7 +327,7 @@ impl BrowserApp {
                     w: 78,
                     h: button_h,
                 },
-                label: "GO",
+                label: "RUN",
                 action: Action::Navigate,
             },
             ButtonRegion {
@@ -636,19 +652,116 @@ impl BrowserApp {
     }
 
     fn navigate_input(&mut self) {
-        let raw = self.address_input.trim();
+        let raw = self.address_input.trim().to_string();
         if raw.is_empty() {
-            self.last_status = "Enter a URL or search phrase first.".to_string();
+            self.last_status = "Enter a URL, search phrase, or intent first.".to_string();
             self.last_ok = false;
             return;
         }
-        match parse_navigation_target(raw) {
+
+        if native_intent_body(&raw).is_some() {
+            self.run_native_intent(&raw);
+            return;
+        }
+
+        match parse_navigation_target(&raw) {
             Ok(url) => self.navigate_to(url),
             Err(error) => {
                 self.last_status = error;
                 self.last_ok = false;
             }
         }
+    }
+
+    fn run_native_intent(&mut self, raw: &str) {
+        let Some(intent) = native_intent_body(raw) else {
+            self.last_status = "That input did not resolve to a native intent.".to_string();
+            self.last_ok = false;
+            self.validation.error_seen = true;
+            return;
+        };
+
+        self.last_intent = intent.clone();
+        self.pilot_status = "PLANNING".to_string();
+        self.pilot_result = "Planning native browser work.".to_string();
+        self.pilot_plan = vec![
+            "Read intent".to_string(),
+            "Resolve navigation target".to_string(),
+        ];
+
+        if intent_needs_consent(&intent) {
+            self.pilot_status = "AWAITING CONSENT".to_string();
+            self.pilot_plan
+                .push("Hold before performing sensitive action".to_string());
+            self.pilot_result =
+                "Sensitive intent paused. Consent UX will own this path next.".to_string();
+            self.last_status = format!("Intent paused for consent: {}", truncate(&intent, 56));
+            self.last_ok = true;
+            let _ = self.record_log(
+                &format!("native intent {}", intent),
+                LogStatus::AwaitingConsent,
+            );
+            return;
+        }
+
+        let plan = match plan_native_intent(&intent) {
+            Ok(plan) => plan,
+            Err(error) => {
+                self.pilot_status = "FAILED".to_string();
+                self.pilot_result = error.clone();
+                self.last_status = error.clone();
+                self.last_ok = false;
+                self.validation.error_seen = true;
+                let _ = self.record_log(
+                    &format!("native intent {}", intent),
+                    LogStatus::Failure(error),
+                );
+                return;
+            }
+        };
+
+        self.pilot_plan = plan.steps.clone();
+        self.pilot_status = "NAVIGATING".to_string();
+        self.navigate_to(plan.target.clone());
+        if !self.last_ok {
+            self.pilot_status = "FAILED".to_string();
+            self.pilot_result = self.last_status.clone();
+            let _ = self.record_log(
+                &format!("native intent {}", plan.intent),
+                LogStatus::Failure(self.last_status.clone()),
+            );
+            return;
+        }
+
+        if plan.should_distill {
+            self.pilot_status = "DISTILLING".to_string();
+            self.distill_active();
+            if !self.last_ok {
+                self.pilot_status = "FAILED".to_string();
+                self.pilot_result = self.last_status.clone();
+                let _ = self.record_log(
+                    &format!("native intent {}", plan.intent),
+                    LogStatus::Failure(self.last_status.clone()),
+                );
+                return;
+            }
+        }
+
+        self.pilot_status = "COMPLETE".to_string();
+        self.pilot_result = if plan.should_distill {
+            format!(
+                "Opened {} and stored the distilled page in Wake.",
+                short_url(&plan.target)
+            )
+        } else {
+            format!("Opened {}.", short_url(&plan.target))
+        };
+        self.last_status = format!("Intent complete: {}", truncate(&plan.intent, 58));
+        self.last_ok = true;
+        let _ = self.record_log(
+            &format!("native intent {}", plan.intent),
+            LogStatus::Success,
+        );
     }
 
     fn navigate_to(&mut self, url: Url) {
@@ -1104,6 +1217,13 @@ fn main() {
         run_operator_mode("operator-smoke", operator_timeout, run_operator_smoke);
     }
 
+    if let Some(intent) = operator_arg_value(&args, "--intent-run") {
+        let expect = operator_arg_value(&args, "--expect");
+        run_operator_mode("intent-run", operator_timeout, move || {
+            run_intent_script(&intent, expect.as_deref())
+        });
+    }
+
     let window_smoke = match parse_window_smoke(&args) {
         Ok(spec) => spec,
         Err(error) => {
@@ -1435,6 +1555,101 @@ fn run_operator_smoke() -> Result<Vec<String>, String> {
     ));
 
     report.push("native-browser operator bridge smoke passed".to_string());
+    Ok(report)
+}
+
+fn run_intent_script(intent: &str, expect: Option<&str>) -> Result<Vec<String>, String> {
+    let mut report = Vec::new();
+    report.push(format!("starting native intent run for {}", intent));
+
+    let data_dir = env::temp_dir().join(format!("sextant-browser-intent-run-{}", Uuid::new_v4()));
+    let mut app = BrowserApp::new_with_data_dir(data_dir.clone())?;
+    app.layout(PhysicalSize::new(1180, 760));
+    report.push(format!("isolated data dir: {}", data_dir.display()));
+
+    app.address_input = intent.to_string();
+    app.run_native_intent(intent);
+    if !app.last_ok {
+        return Err(app.last_status);
+    }
+    report.push(format!("pilot status: {}", app.pilot_status));
+    report.push(format!("pilot result: {}", app.pilot_result));
+
+    let page = app
+        .active_tab()
+        .and_then(|tab| tab.distilled_page.clone())
+        .ok_or_else(|| "intent run did not attach distilled page data".to_string())?;
+    let counts = semantic_counts(&page);
+    report.push(format!(
+        "distilled '{}' from {} via {} ({} chars, h={} links={} inputs={} images={} text={})",
+        page.title,
+        page.url,
+        distillation_label(&page),
+        page.content.chars().count(),
+        counts.headings,
+        counts.links,
+        counts.inputs,
+        counts.images,
+        counts.text
+    ));
+
+    if let Some(text) = expect {
+        let haystack = operator_page_search_text(&page);
+        if !haystack.contains(text) {
+            return Err(format!(
+                "expected text '{}' was not found in distilled page '{}' ({})",
+                text, page.title, page.url
+            ));
+        }
+        report.push(format!("found expected text '{}'", text));
+    }
+
+    if app.wake_results.is_empty() {
+        return Err("intent run Wake search returned no result after distillation".to_string());
+    }
+    report.push(format!(
+        "Wake search returned {} result(s)",
+        app.wake_results.len()
+    ));
+
+    app.refresh_logs();
+    if !app
+        .recent_logs
+        .iter()
+        .any(|entry| entry.intent.starts_with("native intent "))
+    {
+        return Err("Captain's Log did not include the native intent entry".to_string());
+    }
+    report.push(format!(
+        "Captain's Log returned {} recent entries",
+        app.recent_logs.len()
+    ));
+
+    if cfg!(feature = "servo-backend") {
+        app.refresh_frame();
+        let frame = app
+            .latest_frame
+            .as_ref()
+            .ok_or_else(|| "intent run did not capture a Servo frame".to_string())?;
+        if frame.width == 0 || frame.height == 0 || frame.pixels.is_empty() {
+            return Err(format!(
+                "intent run captured an empty Servo frame: {}x{} pixels={}",
+                frame.width,
+                frame.height,
+                frame.pixels.len()
+            ));
+        }
+        report.push(format!(
+            "captured Servo frame {}x{} ({} pixels)",
+            frame.width,
+            frame.height,
+            frame.pixels.len()
+        ));
+    } else {
+        report.push("reader/fallback build completed without Servo frame capture".to_string());
+    }
+
+    report.push("native intent run passed".to_string());
     Ok(report)
 }
 
@@ -1818,6 +2033,242 @@ fn parse_navigation_target(input: &str) -> Result<Url, String> {
     let query = url::form_urlencoded::byte_serialize(input.as_bytes()).collect::<String>();
     Url::parse(&format!("https://duckduckgo.com/?q={}", query))
         .map_err(|error| format!("Search URL parse failed: {}", error))
+}
+
+fn native_intent_body(input: &str) -> Option<String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    for prefix in [
+        "intent:",
+        "pilot:",
+        "research:",
+        "summarize:",
+        "summarise:",
+        "remember:",
+    ] {
+        if trimmed.len() >= prefix.len() && trimmed[..prefix.len()].eq_ignore_ascii_case(prefix) {
+            let body = trimmed[prefix.len()..].trim();
+            return (!body.is_empty()).then(|| body.to_string());
+        }
+    }
+
+    let lower = trimmed.to_ascii_lowercase();
+    let explicit_work = lower.starts_with("research ")
+        || lower.starts_with("summarize ")
+        || lower.starts_with("summarise ")
+        || lower.starts_with("remember ")
+        || lower.starts_with("distill ");
+    let open_then_memory = lower.starts_with("open ")
+        && (lower.contains(" and distill")
+            || lower.contains(" and remember")
+            || lower.contains(" and summarize")
+            || lower.contains(" and summarise"));
+
+    if explicit_work || open_then_memory {
+        Some(trimmed.to_string())
+    } else {
+        None
+    }
+}
+
+fn intent_needs_consent(intent: &str) -> bool {
+    let lower = intent.to_ascii_lowercase();
+    [
+        "buy",
+        "purchase",
+        "checkout",
+        "delete",
+        "remove",
+        "transfer",
+        "wire",
+        "sign",
+        "authorize",
+        "submit payment",
+        "send money",
+    ]
+    .iter()
+    .any(|term| lower.contains(term))
+}
+
+fn plan_native_intent(intent: &str) -> Result<NativeIntentPlan, String> {
+    let target_input = intent_navigation_text(intent);
+    let target = parse_navigation_target(&target_input)?;
+    let should_distill = intent_should_distill(intent);
+    let mut steps = vec![
+        format!("Resolve target: {}", truncate(&target_input, 42)),
+        format!(
+            "Navigate with {}",
+            if cfg!(feature = "servo-backend") {
+                "Servo"
+            } else {
+                "fallback backend"
+            }
+        ),
+    ];
+    if should_distill {
+        steps.push("Distill page into Wake".to_string());
+        steps.push("Search Wake for the recorded page".to_string());
+    }
+
+    Ok(NativeIntentPlan {
+        intent: intent.to_string(),
+        target,
+        should_distill,
+        steps,
+    })
+}
+
+fn intent_should_distill(intent: &str) -> bool {
+    let lower = intent.to_ascii_lowercase();
+    [
+        "research",
+        "summarize",
+        "summarise",
+        "distill",
+        "remember",
+        "wake",
+        "learn",
+    ]
+    .iter()
+    .any(|term| lower.contains(term))
+}
+
+fn intent_navigation_text(intent: &str) -> String {
+    if let Some(candidate) = first_navigation_candidate(intent) {
+        return candidate;
+    }
+
+    let mut text = intent.trim().to_string();
+    let lower = text.to_ascii_lowercase();
+    for prefix in [
+        "open ",
+        "go to ",
+        "visit ",
+        "research ",
+        "summarize ",
+        "summarise ",
+        "distill ",
+        "remember ",
+        "find ",
+        "search for ",
+        "look up ",
+    ] {
+        if lower.starts_with(prefix) {
+            text = text[prefix.len()..].trim().to_string();
+            break;
+        }
+    }
+
+    strip_memory_suffixes(&text)
+}
+
+fn first_navigation_candidate(input: &str) -> Option<String> {
+    for token in input.split_whitespace() {
+        let candidate = token.trim_matches(|c: char| {
+            matches!(
+                c,
+                '"' | '\'' | '(' | ')' | '[' | ']' | '<' | '>' | ',' | ';'
+            )
+        });
+        let candidate = candidate.trim_end_matches(|c: char| matches!(c, '.' | '!' | '?'));
+        if candidate.is_empty() {
+            continue;
+        }
+        if Url::parse(candidate).is_ok() {
+            return Some(candidate.to_string());
+        }
+        if candidate.contains('.') && !candidate.contains('/') {
+            let lower = candidate.to_ascii_lowercase();
+            let looks_like_domain = lower
+                .split('.')
+                .last()
+                .map(|tld| tld.len() >= 2 && tld.chars().all(|c| c.is_ascii_alphabetic()))
+                .unwrap_or(false);
+            if looks_like_domain {
+                return Some(candidate.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn strip_memory_suffixes(input: &str) -> String {
+    let mut text = input.trim().to_string();
+    loop {
+        let lower = text.to_ascii_lowercase();
+        let Some(index) = [
+            " and distill",
+            " and remember",
+            " and summarize",
+            " and summarise",
+            " then distill",
+            " then remember",
+            " then summarize",
+            " then summarise",
+        ]
+        .iter()
+        .filter_map(|suffix| lower.find(suffix))
+        .min() else {
+            break;
+        };
+        text.truncate(index);
+        text = text
+            .trim()
+            .trim_end_matches(|c: char| c == ',' || c == ';')
+            .to_string();
+    }
+    if text.is_empty() {
+        input.trim().to_string()
+    } else {
+        text
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_explicit_native_intents() {
+        assert_eq!(
+            native_intent_body("intent: open example.com and distill").as_deref(),
+            Some("open example.com and distill")
+        );
+        assert_eq!(
+            native_intent_body("research Rust ownership docs").as_deref(),
+            Some("research Rust ownership docs")
+        );
+        assert!(native_intent_body("plain web search").is_none());
+    }
+
+    #[test]
+    fn plans_domain_intent_without_losing_memory_step() {
+        let plan = plan_native_intent("open example.com and distill").unwrap();
+        assert_eq!(plan.target.as_str(), "https://example.com/");
+        assert!(plan.should_distill);
+        assert!(plan.steps.iter().any(|step| step.contains("Distill")));
+    }
+
+    #[test]
+    fn strips_intent_verbs_for_search_targets() {
+        assert_eq!(
+            intent_navigation_text("research sovereign browser architecture"),
+            "sovereign browser architecture"
+        );
+        let target =
+            parse_navigation_target(&intent_navigation_text("summarize https://example.com now"))
+                .unwrap();
+        assert_eq!(target.as_str(), "https://example.com/");
+    }
+
+    #[test]
+    fn pauses_sensitive_intents_for_consent() {
+        assert!(intent_needs_consent("buy this item and checkout"));
+        assert!(!intent_needs_consent("summarize example.com"));
+    }
 }
 
 fn browser_key_from_winit(key: &NamedKey) -> Option<BrowserKey> {
@@ -2729,9 +3180,9 @@ fn draw_ai_rail(buffer: &mut [u32], width: u32, height: u32, app: &BrowserApp) {
         height,
         rail_x + 20,
         92,
-        "SEXTANT AI",
+        "CONTEXT VAULT",
         TEXT,
-        2,
+        1,
     );
     draw_text(
         buffer,
@@ -2739,8 +3190,12 @@ fn draw_ai_rail(buffer: &mut [u32], width: u32, height: u32, app: &BrowserApp) {
         height,
         rail_x + 20,
         118,
-        "LOCAL ASSISTANT ONLINE",
-        STATUS_OK,
+        &format!("PILOT {}", truncate(&app.pilot_status, 18)),
+        if app.pilot_status == "FAILED" {
+            STATUS_WARN
+        } else {
+            STATUS_OK
+        },
         1,
     );
     let active_url = app
@@ -2748,23 +3203,32 @@ fn draw_ai_rail(buffer: &mut [u32], width: u32, height: u32, app: &BrowserApp) {
         .and_then(|tab| tab.url.as_ref())
         .map(short_url)
         .unwrap_or_else(|| "NO ACTIVE PAGE".to_string());
-    let page_state = app
-        .active_tab()
-        .and_then(|tab| tab.distilled_page.as_ref())
-        .map(|page| format!("I HAVE DISTILLED '{}'.", page.title))
-        .unwrap_or_else(|| format!("TRACKING {}. DISTILL RUNS REAL HTTP FETCH.", active_url));
-    let next_step = if app.active_tab().is_none() {
-        "OPEN A PAGE TO START THE BROWSER LOOP."
-    } else if app
-        .active_tab()
-        .and_then(|tab| tab.distilled_page.as_ref())
-        .is_none()
-    {
-        "NEXT: DISTILL THE PAGE INTO WAKE."
-    } else if app.wake_results.is_empty() {
-        "NEXT: SEARCH WAKE FOR THE DISTILLED PAGE."
+    let page_state = if app.last_intent.is_empty() {
+        app.active_tab()
+            .and_then(|tab| tab.distilled_page.as_ref())
+            .map(|page| format!("I HAVE DISTILLED '{}'.", page.title))
+            .unwrap_or_else(|| format!("TRACKING {}. DISTILL RUNS REAL HTTP FETCH.", active_url))
     } else {
-        "WAKE HAS RESULTS. ASK A QUESTION OR OPEN ANOTHER PAGE."
+        format!("INTENT: {}", truncate(&app.last_intent, 70))
+    };
+    let plan_summary = if app.pilot_plan.is_empty() {
+        "NEXT: OPEN A PAGE OR ENTER A NATIVE INTENT.".to_string()
+    } else {
+        format!("PLAN: {}", truncate(&app.pilot_plan.join(" -> "), 72))
+    };
+    let next_step = if app.last_intent.is_empty() && app.active_tab().is_none() {
+        "OPEN A PAGE TO START THE BROWSER LOOP.".to_string()
+    } else if app.last_intent.is_empty()
+        && app
+            .active_tab()
+            .and_then(|tab| tab.distilled_page.as_ref())
+            .is_none()
+    {
+        "NEXT: DISTILL THE PAGE INTO WAKE.".to_string()
+    } else if app.wake_results.is_empty() {
+        plan_summary
+    } else {
+        format!("RESULT: {}", truncate(&app.pilot_result, 72))
     };
 
     draw_chat_bubble(
@@ -2790,7 +3254,7 @@ fn draw_ai_rail(buffer: &mut [u32], width: u32, height: u32, app: &BrowserApp) {
             w: RAIL_WIDTH.saturating_sub(76),
             h: 66,
         },
-        next_step,
+        &next_step,
         true,
     );
     draw_chat_bubble(
@@ -3044,7 +3508,7 @@ fn draw_button(
 
 fn disabled_reason(action: Action) -> &'static str {
     match action {
-        Action::Navigate => "Enter an address or search phrase first.",
+        Action::Navigate => "Enter an address, search phrase, or intent first.",
         Action::NewTab => "New tab is always available.",
         Action::Back => "Back is unavailable for this tab/backend.",
         Action::Forward => "Forward is unavailable for this tab/backend.",

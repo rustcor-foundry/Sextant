@@ -31,6 +31,8 @@ The active `sextant-browser` binary is not just a smoke window. It has a direct-
 
 `sextant-browser` is now the canonical native product binary. The old `sextant-hull-lite` bin remains as a compatibility alias during the transition, but new docs, scripts, and validation work should use `sextant-browser`.
 
+The original Intent Bar/Context Vault shape is returning in the active shell. The address field now accepts normal URLs/searches plus explicit native intents such as `intent: open https://example.com and distill`; the native intent loop plans, navigates, distills into Wake, records Captain's Log entries, and shows Pilot state in the right rail. This is a deterministic bridge back toward the full `sextant-pilot` orchestration layer while Servo hardening continues.
+
 The biggest remaining gaps are now heavy browsing hardening, real-window Servo bug fixing, richer validation inside the browser shell, provider-path hardening, CI depth, and dependency cleanup.
 
 ## What Is Working
@@ -44,6 +46,7 @@ The biggest remaining gaps are now heavy browsing hardening, real-window Servo b
 | Native browser reader lane | ✅ | `sextant-browser --no-default-features` builds and stays responsive in a timed real launch check |
 | Native browser heavy browsing build | ✅ | package default features wire `sextant-browser` to Servo; focused Servo engine tests pass |
 | Native operator bridge | ✅ baseline | `--operator-smoke` drives Servo navigation, native DOM fill/click, distillation, Wake, Log, and frame capture; `--operator-probe <url>` probes real pages; `--operator-run` scripts selector actions and expectations; `--operator-timeout <seconds>` bounds stalled runs |
+| Native intent runner | ✅ baseline | `--intent-run "intent: open https://example.com and distill" --expect "Example Domain"` exercises the Intent Bar loop headlessly through Servo navigation, live DOM distillation, Wake, Captain's Log, and frame capture |
 | MCP browser advertising layer | ✅ baseline | `sextant-mcp` exposes local stdio MCP tools/resources for browser capabilities, bounded operator smoke/probe/run, and recent Captain's Log reads |
 | Servo live navigation | ✅ baseline / ⚠️ buggy | tests cover data URLs, live DOM mutation, history, back/forward, and cache invalidation; operator probes now cover `example.com`, Google search, `rust-lang.org`, MDN, Wikipedia, docs.rs, GitHub, `neverssl`, and `httpbin`; broader real-window browsing still needs hardening |
 | Servo frame viewport | ✅ baseline / ⚠️ buggy | browser shell captures `RenderedFrame` pixels from Servo and paints them into the `softbuffer` viewport |
@@ -121,7 +124,9 @@ The active native browser hull is intentionally plain, but it now has real brows
 - address input and keyboard focus
 - browser, Wake, and Captain's Log tabs
 - native browser `VALIDATION` tab for session-aware manual click-through coverage
-- direct controls for GO, NEW TAB, BACK, FORWARD, RELOAD, CLOSE TAB, DISTILL, and WAKE search
+- direct controls for RUN, NEW TAB, BACK, FORWARD, RELOAD, CLOSE TAB, DISTILL, and WAKE search
+- Intent/URL entry that preserves normal browsing while allowing explicit native intent runs to plan, navigate, distill, and write Wake/Log state
+- Context Vault rail with current Pilot status, intent, plan summary, and result text
 - Servo viewport frame painting when built with default features
 - browser viewport mouse, wheel, character-key, and named-key forwarding into the engine
 - native operator bridge commands for automated smoke/probe runs before manual click-through

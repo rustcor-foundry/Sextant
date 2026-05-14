@@ -27,6 +27,7 @@ Follow [next-work.md](next-work.md) as the active execution guide unless the tea
    - `cargo run -p sextant-hull --bin sextant-browser -- --operator-smoke`
    - `cargo run -p sextant-hull --bin sextant-browser -- --operator-probe https://example.com`
    - `cargo run -p sextant-hull --bin sextant-browser -- --operator-run https://example.com --expect "Example Domain"`
+   - `cargo run -p sextant-hull --bin sextant-browser -- --intent-run "intent: open https://example.com and distill" --expect "Example Domain"`
    - `cargo run -p sextant-hull --bin sextant-browser -- --window-smoke https://example.com --window-smoke-timeout 15`
    - `cargo run -p sextant-hull --bin sextant-browser`
 6. Update docs if the current state, workflow, or recovery story changed.
@@ -71,6 +72,7 @@ cargo run -p sextant-hull --bin sextant-browser -- --operator-smoke
 cargo run -p sextant-hull --bin sextant-browser -- --operator-probe https://example.com
 cargo run -p sextant-hull --bin sextant-browser -- --operator-run https://example.com --expect "Example Domain"
 cargo run -p sextant-hull --bin sextant-browser -- --operator-timeout 45 --operator-run https://example.com --expect "Example Domain"
+cargo run -p sextant-hull --bin sextant-browser -- --operator-timeout 45 --intent-run "intent: open https://example.com and distill" --expect "Example Domain"
 cargo run -p sextant-hull --bin sextant-browser -- --window-smoke https://example.com --window-smoke-timeout 15
 ```
 
@@ -79,6 +81,8 @@ cargo run -p sextant-hull --bin sextant-browser -- --window-smoke https://exampl
 `--operator-probe <url-or-search>` runs the same native browser navigation/distill/Wake/frame path against a target page. Use it before manual click-through when hardening heavy browsing.
 
 `--operator-run <url-or-search>` adds a tiny scripted layer for native browser interaction. Supported steps are `--fill <selector> <value>`, `--click <selector>`, `--submit <selector>`, and `--expect <text>`.
+
+`--intent-run "<intent>"` drives the native Intent Bar loop without opening the visible event loop. It currently validates deterministic planning, Servo navigation, live DOM distillation, Wake search, Captain's Log recording, and frame capture. Pair it with `--expect <text>` when the distilled page should contain a known string.
 
 `--operator-timeout <seconds>` applies to smoke, probe, and scripted runs. The default is 120 seconds; timeout exits use code `124` so stalled hard-site probes are visible to scripts instead of relying on an outer shell kill.
 

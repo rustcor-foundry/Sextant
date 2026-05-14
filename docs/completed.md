@@ -4,6 +4,16 @@ Audit trail of completed work sessions. Newest first.
 
 ---
 
+## 2026-05-14 — Native Intent Bar Loop
+
+- Reintroduced the original Intent Bar/Context Vault direction inside the active `sextant-browser` shell
+- Kept normal URL/search behavior intact while adding explicit native intents such as `intent: open https://example.com and distill`
+- Added deterministic shell-level intent planning that resolves a target, navigates, distills into Wake when requested, records Captain's Log, and updates Pilot status/result text in the right rail
+- Added `--intent-run "<intent>" --expect "<text>"` for headless regression coverage of the Intent Bar loop through Servo navigation, live DOM distillation, Wake, Captain's Log, and frame capture
+- Confirmed `--intent-run "intent: open https://example.com and distill" --expect "Example Domain"` passes with a Servo frame capture
+
+---
+
 ## 2026-05-14 — MCP And Visible Shell Hardening
 
 - Hardened `sextant-mcp` initialization and compatibility responses with stable protocol reporting, `ping`, empty prompt lists, and structured launch failures

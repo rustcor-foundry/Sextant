@@ -78,6 +78,8 @@ The TypeScript layer (`src/`) is a React 19 + Vite + Tailwind + shadcn simulator
 
 The active Rust UI is `sextant-browser`, a first-party shell that owns its event loop and pixel drawing through `winit` and `softbuffer`. In default-feature builds it uses `sextant-engine`'s Servo path for heavy browsing: WebView sessions, live navigation, frame capture, viewport resize, mouse/wheel/key forwarding, and live DOM distillation. In `--no-default-features` builds it stays in a lighter reader/fallback mode without Servo.
 
+The top field is again becoming the planned Intent Bar, not only an address bar. Plain URLs and search strings still go straight through normal navigation. Explicit native intents, for example `intent: open https://example.com and distill`, run through a deterministic shell-level intent loop that resolves a target, navigates through the engine, distills into Wake when requested, records Captain's Log entries, and reports Pilot state in the Context Vault rail. This is intentionally thin so it can be replaced by deeper `sextant-pilot` ownership once the Servo browser lane is stable.
+
 The old `sextant-hull-lite` binary name is retained only as a compatibility alias for existing scripts; the implementation lives in `src/browser.rs`.
 
 The older Xilem/Masonry hull remains in the package as reference code for the async command/event architecture and validation ideas, but it is not the current Windows interactive product lane.
