@@ -59,6 +59,19 @@ cargo check -p sextant-mcp
 
 The MCP server is a local stdio bridge for Codex/Claude. It exposes truthful browser capability resources plus bounded operator tools and `browser_window_smoke`, all delegated to `sextant-browser`.
 
+Xilem/Vello diagnostic ladder:
+
+```bash
+cd "D:/Paul/Software Projects/Sextant/rust"
+cargo run -p sextant-hull --bin sextant-hull -- --xilem-modes
+cargo run -p sextant-hull --bin sextant-hull -- --xilem-smoke minimal --xilem-timeout 5
+cargo run -p sextant-hull --bin sextant-hull -- --xilem-smoke safe --xilem-timeout 5
+cargo run -p sextant-hull --bin sextant-hull -- --xilem-smoke interactive-smoke --xilem-timeout 5
+cargo run -p sextant-hull --bin sextant-hull -- --xilem-smoke full --xilem-timeout 5
+```
+
+Recent progress: all four bounded Xilem modes survived first paint for five seconds on Windows. The next Xilem/Vello work should focus on actual click/text/focus/accessibility interaction paths instead of treating initial Vello startup as the only suspect.
+
 ### 1. Stabilize Heavy Browsing In The Owned Shell (~1-2 days)
 
 The active product lane is the first-party `sextant-browser` shell. It uses `winit` for window/input and direct `softbuffer` drawing while reusing the engine, Wake, and Captain's Log crates. With default features, it is already wired back toward heavy browsing through Servo:

@@ -14,17 +14,61 @@ use sextant_privacy::PrivacyLevel;
 use sextant_vault::{CitadelVault, KeyType};
 use sextant_wake::DigitalWake;
 use state::SextantState;
+use std::env;
 use std::fs;
 use std::io::Write;
 use std::sync::{mpsc, Arc};
+use std::thread;
+use std::time::Duration;
 use tokio::sync::Mutex;
 use util::{app_data_dir, env_key};
 use views::app_logic_native;
 use xilem::Xilem;
 
+#[derive(Clone, Copy)]
+enum XilemShellMode {
+    Safe,
+    Minimal,
+    InteractiveSmoke,
+    Full,
+}
+
+impl XilemShellMode {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Safe => "safe",
+            Self::Minimal => "minimal",
+            Self::InteractiveSmoke => "interactive-smoke",
+            Self::Full => "full",
+        }
+    }
+}
+
+struct XilemLaunchOptions {
+    shell_mode: XilemShellMode,
+    smoke_timeout: Option<Duration>,
+}
+
 fn main() {
     install_panic_logging();
     tracing_subscriber::fmt::init();
+
+    let launch = match parse_xilem_launch_options() {
+        Ok(options) => options,
+        Err(error) => {
+            eprintln!("[sextant-hull] failed to parse arguments: {error}");
+            std::process::exit(2);
+        }
+    };
+    apply_xilem_shell_mode(launch.shell_mode);
+    append_xilem_diagnostic(&format!(
+        "launch mode={} smoke_timeout={:?}",
+        launch.shell_mode.label(),
+        launch.smoke_timeout.map(|duration| duration.as_secs())
+    ));
+    if let Some(timeout) = launch.smoke_timeout {
+        install_xilem_smoke_watchdog(launch.shell_mode, timeout);
+    }
 
     let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
 
@@ -203,9 +247,125 @@ fn main() {
         state
     });
 
+    append_xilem_diagnostic("state constructed; starting Xilem window");
     Xilem::new(state, app_logic_native)
-        .run_windowed("SEXTANT — Sovereign Browser".to_string())
+        .run_windowed(format!(
+            "SEXTANT - Sovereign Browser [{}]",
+            launch.shell_mode.label()
+        ))
         .expect("Failed to run Sextant window");
+}
+
+fn parse_xilem_launch_options() -> Result<XilemLaunchOptions, String> {
+    let args: Vec<String> = env::args().collect();
+    if args.iter().any(|arg| arg == "--xilem-modes") {
+        println!("safe");
+        println!("minimal");
+        println!("interactive-smoke");
+        println!("full");
+        std::process::exit(0);
+    }
+
+    let shell_mode = if let Some(mode) = xilem_smoke_mode_arg(&args) {
+        parse_xilem_mode(&mode)?
+    } else if env_flag("SEXTANT_MINIMAL_SHELL") {
+        XilemShellMode::Minimal
+    } else if env_flag("SEXTANT_INTERACTIVE_SMOKE") {
+        XilemShellMode::InteractiveSmoke
+    } else if env_flag("SEXTANT_FULL_SHELL") {
+        XilemShellMode::Full
+    } else {
+        XilemShellMode::Safe
+    };
+
+    let smoke_timeout = if args.iter().any(|arg| arg == "--xilem-smoke") {
+        Some(parse_duration_arg(
+            &args,
+            "--xilem-timeout",
+            Duration::from_secs(8),
+        )?)
+    } else {
+        None
+    };
+
+    Ok(XilemLaunchOptions {
+        shell_mode,
+        smoke_timeout,
+    })
+}
+
+fn parse_xilem_mode(mode: &str) -> Result<XilemShellMode, String> {
+    match mode {
+        "safe" | "passive" => Ok(XilemShellMode::Safe),
+        "minimal" => Ok(XilemShellMode::Minimal),
+        "interactive" | "interactive-smoke" => Ok(XilemShellMode::InteractiveSmoke),
+        "full" => Ok(XilemShellMode::Full),
+        other => Err(format!(
+            "unknown --xilem-smoke mode '{}'; expected safe, minimal, interactive-smoke, or full",
+            other
+        )),
+    }
+}
+
+fn apply_xilem_shell_mode(mode: XilemShellMode) {
+    env::remove_var("SEXTANT_MINIMAL_SHELL");
+    env::remove_var("SEXTANT_INTERACTIVE_SMOKE");
+    env::remove_var("SEXTANT_FULL_SHELL");
+    match mode {
+        XilemShellMode::Safe => {}
+        XilemShellMode::Minimal => env::set_var("SEXTANT_MINIMAL_SHELL", "1"),
+        XilemShellMode::InteractiveSmoke => env::set_var("SEXTANT_INTERACTIVE_SMOKE", "1"),
+        XilemShellMode::Full => env::set_var("SEXTANT_FULL_SHELL", "1"),
+    }
+}
+
+fn install_xilem_smoke_watchdog(mode: XilemShellMode, timeout: Duration) {
+    thread::spawn(move || {
+        thread::sleep(timeout);
+        append_xilem_diagnostic(&format!(
+            "smoke mode={} survived {}s; exiting 0",
+            mode.label(),
+            timeout.as_secs()
+        ));
+        println!(
+            "[xilem-smoke] mode={} survived {}s",
+            mode.label(),
+            timeout.as_secs()
+        );
+        std::process::exit(0);
+    });
+}
+
+fn parse_duration_arg(args: &[String], flag: &str, default: Duration) -> Result<Duration, String> {
+    let Some(value) = arg_value(args, flag) else {
+        return Ok(default);
+    };
+    let seconds = value
+        .parse::<u64>()
+        .map_err(|error| format!("{flag} expects a positive whole number of seconds: {error}"))?;
+    if seconds == 0 {
+        return Err(format!("{flag} must be greater than zero"));
+    }
+    Ok(Duration::from_secs(seconds))
+}
+
+fn arg_value(args: &[String], flag: &str) -> Option<String> {
+    args.windows(2)
+        .find(|pair| pair[0] == flag)
+        .map(|pair| pair[1].clone())
+}
+
+fn xilem_smoke_mode_arg(args: &[String]) -> Option<String> {
+    let index = args.iter().position(|arg| arg == "--xilem-smoke")?;
+    args.get(index + 1)
+        .filter(|value| !value.starts_with("--"))
+        .cloned()
+}
+
+fn env_flag(name: &str) -> bool {
+    env::var(name)
+        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+        .unwrap_or(false)
 }
 
 fn install_panic_logging() {
@@ -229,4 +389,23 @@ fn install_panic_logging() {
         }
         previous_hook(panic_info);
     }));
+}
+
+fn append_xilem_diagnostic(message: &str) {
+    let diagnostics_log = app_data_dir().join("xilem-diagnostics.log");
+    if let Some(parent) = diagnostics_log.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    if let Ok(mut file) = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&diagnostics_log)
+    {
+        let _ = writeln!(
+            file,
+            "[{}] {}",
+            chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
+            message
+        );
+    }
 }

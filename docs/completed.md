@@ -4,6 +4,16 @@ Audit trail of completed work sessions. Newest first.
 
 ---
 
+## 2026-05-14 — Xilem Smoke Ladder And MCP Intent Tool
+
+- Added bounded parked-Xilem launch modes: `--xilem-smoke minimal|safe|interactive-smoke|full --xilem-timeout <seconds>`
+- Added `--xilem-modes` discovery and `xilem-diagnostics.log` breadcrumbs for future Vello/Masonry crash isolation
+- Confirmed minimal, safe, interactive-smoke, and full Xilem shells survive first paint for five seconds on Windows
+- Added MCP `browser_intent_run` so Codex/Claude can drive the native Intent Bar loop through `sextant-browser --intent-run`
+- Updated MCP docs/resources to advertise the Intent Bar workflow alongside operator probe/run/window smoke tools
+
+---
+
 ## 2026-05-14 — Native Intent Bar Loop
 
 - Reintroduced the original Intent Bar/Context Vault direction inside the active `sextant-browser` shell

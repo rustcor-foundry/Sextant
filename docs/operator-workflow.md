@@ -64,6 +64,21 @@ cd rust
 cargo run -p sextant-hull --bin sextant-browser
 ```
 
+### Xilem/Vello Diagnostic Ladder
+
+The parked Xilem hull can now be launched in bounded smoke modes while investigating the 2D rendering path:
+
+```bash
+cd rust
+cargo run -p sextant-hull --bin sextant-hull -- --xilem-modes
+cargo run -p sextant-hull --bin sextant-hull -- --xilem-smoke minimal --xilem-timeout 5
+cargo run -p sextant-hull --bin sextant-hull -- --xilem-smoke safe --xilem-timeout 5
+cargo run -p sextant-hull --bin sextant-hull -- --xilem-smoke interactive-smoke --xilem-timeout 5
+cargo run -p sextant-hull --bin sextant-hull -- --xilem-smoke full --xilem-timeout 5
+```
+
+These modes write breadcrumbs to `xilem-diagnostics.log` under the Sextant app data directory. Passing first-paint smoke does not prove interactive stability; it narrows the next investigation to click, text, focus, accessibility, or longer widget lifecycle paths.
+
 ### Native Operator Bridge
 
 ```bash

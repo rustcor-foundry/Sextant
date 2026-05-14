@@ -87,7 +87,7 @@ fn handle_message(message: Value) -> Option<Value> {
                     "protocolVersion": PROTOCOL_VERSION,
                     "capabilities": server_capabilities(),
                     "serverInfo": server_info(),
-                    "instructions": "Sextant exposes local browser automation through the native sextant-browser operator bridge. Start with browser_capabilities, then use browser_operator_probe or browser_operator_run for bounded real browsing checks.",
+                    "instructions": "Sextant exposes local browser automation through the native sextant-browser operator bridge. Start with browser_capabilities, then use browser_intent_run, browser_operator_probe, or browser_operator_run for bounded real browsing checks.",
                 }),
             )
         }),
@@ -127,6 +127,29 @@ fn handle_tool_call(id: Value, params: Option<Value>) -> Value {
             json!({ "arguments": arguments }),
         ),
         "browser_window_smoke" => run_browser_window_smoke_tool(arguments),
+        "browser_intent_run" => {
+            let Some(intent) = required_string(&arguments, "intent") else {
+                let _ = record_audit(
+                    "browser_intent_run",
+                    LogStatus::Failure("missing intent".to_string()),
+                    arguments,
+                );
+                return response(
+                    id,
+                    tool_error("browser_intent_run requires a string intent argument"),
+                );
+            };
+            let mut args = vec!["--intent-run".to_string(), intent];
+            if let Some(expect) = required_string(&arguments, "expect") {
+                args.extend(["--expect".to_string(), expect]);
+            }
+            run_browser_operator_tool(
+                "browser_intent_run",
+                operator_timeout(&arguments),
+                args,
+                json!({ "arguments": arguments }),
+            )
+        }
         "browser_operator_probe" => {
             let Some(target) = required_string(&arguments, "target") else {
                 let _ = record_audit(
@@ -281,6 +304,26 @@ fn tools() -> Value {
             },
         },
         {
+            "name": "browser_intent_run",
+            "title": "Browser Intent Run",
+            "description": "Run a native Intent Bar command through sextant-browser, including navigation, optional distillation, Wake, Log, and frame checks.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "intent": {
+                        "type": "string",
+                        "description": "Native Intent Bar text, for example: intent: open https://example.com and distill"
+                    },
+                    "expect": {
+                        "type": "string",
+                        "description": "Optional text expected in the distilled page."
+                    },
+                    "timeout_seconds": timeout_property(),
+                },
+                "required": ["intent"],
+            },
+        },
+        {
             "name": "browser_operator_probe",
             "title": "Browser Operator Probe",
             "description": "Navigate the native browser to a URL or search phrase, distill the page, and report operator results.",
@@ -417,6 +460,7 @@ fn resource_text(uri: &str) -> Option<String> {
                 "- Default engine: Servo-backed native browser lane",
                 "- Fallback lane: `sextant-browser --no-default-features`",
                 "- Automation: bounded native operator smoke/probe/run modes",
+                "- Intent automation: bounded `--intent-run` mode for native Intent Bar workflows",
                 "- Visible shell checks: bounded `--window-smoke` launch/draw/navigation mode",
                 "- Persistence: Digital Wake and Captain's Log under the browser data directory",
                 "- Current MCP posture: local stdio server, no network listener, tool calls audited to Captain's Log when the data store is available",
@@ -428,12 +472,19 @@ fn resource_text(uri: &str) -> Option<String> {
                 "# Native Operator Workflow",
                 "",
                 "Use `browser_operator_smoke` first when validating the bridge itself.",
+                "Use `browser_intent_run` for Intent Bar workflows such as opening and distilling a page.",
                 "Use `browser_operator_probe` for page-level navigation and distillation checks.",
                 "Use `browser_operator_run` for ordered selector scripts:",
                 "Use `browser_window_smoke` when validating the actual visible shell startup/draw path.",
                 "",
                 "```json",
                 r#"{"target":"https://www.google.com","steps":[{"action":"fill","selector":"textarea[name=q]","value":"Sextant native browser test"},{"action":"submit","selector":"form"},{"action":"expect","text":"Sextant native browser test"}]}"#,
+                "```",
+                "",
+                "Intent example:",
+                "",
+                "```json",
+                r#"{"intent":"intent: open https://example.com and distill","expect":"Example Domain"}"#,
                 "```",
             ]
             .join("\n"),
@@ -446,6 +497,7 @@ fn resource_text(uri: &str) -> Option<String> {
                 "",
                 "- Discovery is handled by `browser_capabilities` and static resources.",
                 "- Real browsing is routed through `sextant-browser` operator mode.",
+                "- Intent work is routed through `sextant-browser --intent-run`.",
                 "- Visible shell validation is routed through `sextant-browser --window-smoke`.",
                 "- Operator tools are bounded by `timeout_seconds` and return captured stdout/stderr.",
                 "- Tool calls are recorded with the `sextant-mcp-stdio` signature when Captain's Log is writable.",
@@ -466,6 +518,7 @@ fn browser_capabilities() -> Value {
             "fallbackEngine": "reader/fetch/distill build via --no-default-features",
             "operatorBridge": {
                 "smoke": true,
+                "intentRun": true,
                 "probe": true,
                 "run": ["fill", "click", "submit", "expect"],
                 "timeoutSecondsDefault": 120,
@@ -483,6 +536,7 @@ fn browser_capabilities() -> Value {
                 "browser_capabilities",
                 "browser_operator_smoke",
                 "browser_window_smoke",
+                "browser_intent_run",
                 "browser_operator_probe",
                 "browser_operator_run",
                 "captains_log_recent"
@@ -725,7 +779,12 @@ fn run_browser_window_smoke_tool(arguments: Value) -> Result<Value, String> {
 }
 
 fn operator_report_lines(stdout: &str) -> Vec<String> {
-    tagged_report_lines(stdout, "[operator-")
+    stdout
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with("[operator-") || line.starts_with("[intent-run]"))
+        .map(str::to_string)
+        .collect()
 }
 
 fn tagged_report_lines(stdout: &str, prefix: &str) -> Vec<String> {
@@ -970,6 +1029,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert!(names.contains(&"browser_capabilities"));
+        assert!(names.contains(&"browser_intent_run"));
         assert!(names.contains(&"browser_operator_run"));
         assert!(names.contains(&"browser_window_smoke"));
     }
@@ -1009,6 +1069,9 @@ mod tests {
         assert!(resource_text("sextant://browser/capabilities")
             .unwrap()
             .contains("sextant-browser"));
+        assert!(resource_text("sextant://browser/operator-workflow")
+            .unwrap()
+            .contains("browser_intent_run"));
     }
 
     #[test]
@@ -1060,6 +1123,19 @@ mod tests {
         assert_eq!(
             tagged_report_lines(output, "[window-smoke]"),
             vec!["[window-smoke] visible shell draw passed"]
+        );
+    }
+
+    #[test]
+    fn extracts_intent_run_lines_with_operator_reports() {
+        let output =
+            "noise\n[intent-run] native intent run passed\n[operator-run] scripted run passed";
+        assert_eq!(
+            operator_report_lines(output),
+            vec![
+                "[intent-run] native intent run passed",
+                "[operator-run] scripted run passed"
+            ]
         );
     }
 }
