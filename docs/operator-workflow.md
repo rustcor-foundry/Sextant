@@ -26,6 +26,7 @@ Follow [next-work.md](next-work.md) as the active execution guide unless the tea
    - `cargo test -p sextant-engine --lib`
    - `cargo run -p sextant-hull --bin sextant-browser -- --operator-smoke`
    - `cargo run -p sextant-hull --bin sextant-browser -- --showcase-run`
+   - `cargo run -p sextant-mcp -- --launch-preflight --timeout-seconds 60`
    - `cargo run -p sextant-hull --bin sextant-browser -- --operator-probe https://example.com`
    - `cargo run -p sextant-hull --bin sextant-browser -- --operator-run https://example.com --expect "Example Domain"`
    - `cargo run -p sextant-hull --bin sextant-browser -- --intent-run "intent: open https://example.com and distill" --expect "Example Domain"`
@@ -86,6 +87,7 @@ These modes write breadcrumbs to `xilem-diagnostics.log` under the Sextant app d
 cd rust
 cargo run -p sextant-hull --bin sextant-browser -- --operator-smoke
 cargo run -p sextant-hull --bin sextant-browser -- --showcase-run
+cargo run -p sextant-mcp -- --launch-preflight --timeout-seconds 60
 cargo run -p sextant-hull --bin sextant-browser -- --operator-probe https://example.com
 cargo run -p sextant-hull --bin sextant-browser -- --operator-run https://example.com --expect "Example Domain"
 cargo run -p sextant-hull --bin sextant-browser -- --operator-timeout 45 --operator-run https://example.com --expect "Example Domain"
@@ -100,6 +102,8 @@ cargo run -p sextant-hull --bin sextant-browser -- --start "intent: open https:/
 `--operator-smoke` runs a deterministic native browser workflow without opening the visible event loop. It validates Servo navigation, native DOM fill/click, live DOM distillation, Wake, Captain's Log, and frame capture.
 
 `--showcase-run` runs the current launch-demo proof in one bounded command: Intent Bar, Servo navigation, Wake, Captain's Log, native form interaction, tab creation, and frame capture.
+
+`sextant-mcp --launch-preflight` runs the launch-critical pre-demo sequence: operator smoke, Intent Bar run, showcase run, and visible showcase smoke. Use it before showing the product live.
 
 The visible browser also has a `SHOWCASE` control in the main toolbar. Use it during manual demo prep to seed the app into the same proof state without leaving the window; it switches to the Validation tab and shows the recent passed showcase steps.
 

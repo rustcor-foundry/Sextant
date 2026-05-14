@@ -34,6 +34,7 @@ Native operator bridge:
 cd "D:/Paul/Software Projects/Sextant/rust"
 cargo run -p sextant-hull --bin sextant-browser -- --operator-smoke
 cargo run -p sextant-hull --bin sextant-browser -- --showcase-run
+cargo run -p sextant-mcp -- --launch-preflight --timeout-seconds 60
 cargo run -p sextant-hull --bin sextant-browser -- --operator-probe https://example.com
 cargo run -p sextant-hull --bin sextant-browser -- --operator-run https://example.com --expect "Example Domain"
 cargo run -p sextant-hull --bin sextant-browser -- --operator-timeout 45 --operator-run https://example.com --expect "Example Domain"
@@ -48,6 +49,8 @@ cargo run -p sextant-hull --bin sextant-browser -- --start "intent: open https:/
 Use `--operator-smoke` for a deterministic data-URL workflow that exercises Servo navigation, native DOM fill/click, live DOM distillation, Wake recording/search, Captain's Log writes, and frame capture. Use `--operator-probe <url-or-search>` to aim the same native browser path at representative HTTP/HTTPS pages before doing slower manual click-through. Use `--operator-run <url-or-search>` with `--fill`, `--click`, `--submit`, and `--expect` steps when a blocker requires a repeatable form or interaction script.
 
 Use `--showcase-run` for the launch-demo proof. It exercises a native intent, Servo navigation, live DOM distillation, Wake, Captain's Log, tab creation, native form fill/click, and frame capture in one bounded command.
+
+Use `cargo run -p sextant-mcp -- --launch-preflight --timeout-seconds 60` before live demo work. It runs operator smoke, Intent Bar, showcase, and visible showcase smoke checks in sequence and fails the whole run if any piece breaks.
 
 Use `--intent-run "<intent>" --expect "<text>"` to exercise the native Intent Bar loop headlessly. The current deterministic path resolves the intent, navigates with Servo when available, distills into Wake, records Captain's Log, and captures a frame. This is the bridge back toward the original Pilot-led workflow while the active browser shell remains the stability target.
 
@@ -119,6 +122,8 @@ Recent progress: the browser now has a launch showcase path. `--showcase-run` pr
 Recent progress: the visible browser toolbar now includes a `SHOWCASE` control that runs the same launch-demo workflow in-window.
 
 Recent progress: `sextant-browser --demo` now opens the visible browser directly into the launch showcase proof state. `--start-showcase` can be combined with `--window-smoke` for a bounded visible check of that same path.
+
+Recent progress: `sextant-mcp --launch-preflight` now runs the launch-critical pre-demo sequence and passed operator smoke, Intent Bar, showcase, and visible showcase checks.
 
 ### 2. Full In-Window Workflow Validation (~1-2 hours)
 

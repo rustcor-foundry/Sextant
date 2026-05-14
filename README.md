@@ -82,6 +82,7 @@ These commands exercise the native browser product loop without opening the visi
 
 ```bash
 cd rust
+cargo run -p sextant-mcp -- --launch-preflight --timeout-seconds 60
 cargo run -p sextant-hull --bin sextant-browser -- --operator-smoke
 cargo run -p sextant-hull --bin sextant-browser -- --showcase-run
 cargo run -p sextant-hull --bin sextant-browser -- --operator-probe https://example.com

@@ -42,6 +42,18 @@ fn run() -> Result<(), String> {
         );
         return Ok(());
     }
+    if args.iter().any(|arg| arg == "--launch-preflight") {
+        let timeout_seconds = parse_cli_timeout(&args, "--timeout-seconds", 60)?;
+        let result = browser_launch_preflight_tool(json!({
+            "timeout_seconds": timeout_seconds,
+            "visible_timeout_seconds": 30,
+        }));
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&result).map_err(|error| error.to_string())?
+        );
+        return Ok(());
+    }
 
     let stdin = io::stdin();
     let mut stdout = io::stdout();
@@ -132,6 +144,7 @@ fn handle_tool_call(id: Value, params: Option<Value>) -> Value {
             vec!["--showcase-run".to_string()],
             json!({ "arguments": arguments }),
         ),
+        "browser_launch_preflight" => Ok(browser_launch_preflight_tool(arguments)),
         "browser_window_smoke" => run_browser_window_smoke_tool(arguments),
         "browser_intent_run" => {
             let Some(intent) = required_string(&arguments, "intent") else {
@@ -298,6 +311,19 @@ fn tools() -> Value {
             "title": "Browser Showcase Run",
             "description": "Run the launch-demo browser proof: Intent Bar, Servo navigation, Wake, Log, native form interaction, and frame capture.",
             "inputSchema": timeout_schema(),
+        },
+        {
+            "name": "browser_launch_preflight",
+            "title": "Browser Launch Preflight",
+            "description": "Run the launch-critical browser checks in sequence: operator smoke, Intent Bar, showcase, and visible showcase smoke.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "timeout_seconds": timeout_property(),
+                    "visible_timeout_seconds": window_timeout_property(),
+                },
+                "required": [],
+            },
         },
         {
             "name": "browser_window_smoke",
@@ -477,6 +503,7 @@ fn resource_text(uri: &str) -> Option<String> {
                 "- Fallback lane: `sextant-browser --no-default-features`",
                 "- Automation: bounded native operator smoke/probe/run modes",
                 "- Showcase: bounded `--showcase-run` proof for launch demos",
+                "- Launch preflight: bounded sequence covering operator, intent, showcase, and visible showcase checks",
                 "- Intent automation: bounded `--intent-run` mode for native Intent Bar workflows",
                 "- Visible shell checks: bounded `--window-smoke` launch/draw/navigation mode",
                 "- Persistence: Digital Wake and Captain's Log under the browser data directory",
@@ -489,6 +516,7 @@ fn resource_text(uri: &str) -> Option<String> {
                 "# Native Operator Workflow",
                 "",
                 "Use `browser_operator_smoke` first when validating the bridge itself.",
+                "Use `browser_launch_preflight` before live demos to check the full launch-critical path.",
                 "Use `browser_showcase_run` for a launch-demo proof across Intent, Servo, Wake, Log, interaction, and frame capture.",
                 "Use `browser_intent_run` for Intent Bar workflows such as opening and distilling a page.",
                 "Use `browser_operator_probe` for page-level navigation and distillation checks.",
@@ -516,6 +544,7 @@ fn resource_text(uri: &str) -> Option<String> {
                 "- Discovery is handled by `browser_capabilities` and static resources.",
                 "- Real browsing is routed through `sextant-browser` operator mode.",
                 "- Launch showcase checks are routed through `sextant-browser --showcase-run`.",
+                "- Launch preflight runs the bounded browser commands in sequence and reports each result.",
                 "- Intent work is routed through `sextant-browser --intent-run`.",
                 "- Visible shell validation is routed through `sextant-browser --window-smoke`.",
                 "- Operator tools are bounded by `timeout_seconds` and return captured stdout/stderr.",
@@ -537,6 +566,7 @@ fn browser_capabilities() -> Value {
             "fallbackEngine": "reader/fetch/distill build via --no-default-features",
             "operatorBridge": {
                 "smoke": true,
+                "launchPreflight": true,
                 "showcaseRun": true,
                 "intentRun": true,
                 "probe": true,
@@ -555,6 +585,7 @@ fn browser_capabilities() -> Value {
             "tools": [
                 "browser_capabilities",
                 "browser_operator_smoke",
+                "browser_launch_preflight",
                 "browser_showcase_run",
                 "browser_window_smoke",
                 "browser_intent_run",
@@ -614,6 +645,23 @@ fn timeout_seconds(arguments: &Value, default: u64, max: u64) -> u64 {
         .filter(|seconds| *seconds > 0)
         .unwrap_or(default)
         .min(max)
+}
+
+fn parse_cli_timeout(args: &[String], flag: &str, default: u64) -> Result<u64, String> {
+    let Some(value) = args
+        .windows(2)
+        .find(|pair| pair[0] == flag)
+        .map(|pair| &pair[1])
+    else {
+        return Ok(default);
+    };
+    let seconds = value
+        .parse::<u64>()
+        .map_err(|error| format!("{flag} expects a positive whole number of seconds: {error}"))?;
+    if seconds == 0 {
+        return Err(format!("{flag} must be greater than zero"));
+    }
+    Ok(seconds.min(600))
 }
 
 fn operator_run_args(arguments: &Value, target: String) -> Result<Vec<String>, String> {
@@ -805,6 +853,170 @@ fn run_browser_window_smoke_tool(arguments: Value) -> Result<Value, String> {
         result["isError"] = Value::Bool(true);
     }
     Ok(result)
+}
+
+fn browser_launch_preflight_tool(arguments: Value) -> Value {
+    let timeout_seconds = operator_timeout(&arguments);
+    let visible_timeout_seconds = arguments
+        .get("visible_timeout_seconds")
+        .and_then(Value::as_u64)
+        .filter(|seconds| *seconds > 0)
+        .unwrap_or(30)
+        .min(120);
+    let checks = vec![
+        PreflightCheck {
+            name: "operator smoke",
+            args: vec![
+                "--operator-timeout".to_string(),
+                timeout_seconds.to_string(),
+                "--operator-smoke".to_string(),
+            ],
+            report: ReportKind::Operator,
+        },
+        PreflightCheck {
+            name: "intent run",
+            args: vec![
+                "--operator-timeout".to_string(),
+                timeout_seconds.to_string(),
+                "--intent-run".to_string(),
+                "intent: open https://example.com and distill".to_string(),
+                "--expect".to_string(),
+                "Example Domain".to_string(),
+            ],
+            report: ReportKind::Operator,
+        },
+        PreflightCheck {
+            name: "showcase run",
+            args: vec![
+                "--operator-timeout".to_string(),
+                timeout_seconds.to_string(),
+                "--showcase-run".to_string(),
+            ],
+            report: ReportKind::Operator,
+        },
+        PreflightCheck {
+            name: "visible showcase smoke",
+            args: vec![
+                "--start-showcase".to_string(),
+                "--window-smoke".to_string(),
+                "--window-smoke-timeout".to_string(),
+                visible_timeout_seconds.to_string(),
+            ],
+            report: ReportKind::Window,
+        },
+    ];
+
+    let mut results = Vec::new();
+    let mut success = true;
+    for check in checks {
+        let check_result = run_preflight_check(&check);
+        success &= check_result
+            .get("success")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        results.push(check_result);
+    }
+
+    let status = if success {
+        LogStatus::Success
+    } else {
+        LogStatus::Failure("launch preflight failed".to_string())
+    };
+    let structured = json!({
+        "success": success,
+        "checks": results,
+    });
+    let _ = record_audit(
+        "browser_launch_preflight",
+        status,
+        json!({ "arguments": arguments, "result": structured }),
+    );
+
+    let text = preflight_result_text(&structured);
+    let mut result = json!({
+        "content": [{
+            "type": "text",
+            "text": text,
+        }],
+        "structuredContent": structured,
+    });
+    if !success {
+        result["isError"] = Value::Bool(true);
+    }
+    result
+}
+
+struct PreflightCheck {
+    name: &'static str,
+    args: Vec<String>,
+    report: ReportKind,
+}
+
+#[derive(Clone, Copy)]
+enum ReportKind {
+    Operator,
+    Window,
+}
+
+fn run_preflight_check(check: &PreflightCheck) -> Value {
+    let output = match run_browser_command(&check.args) {
+        Ok(output) => output,
+        Err(error) => {
+            return json!({
+                "name": check.name,
+                "success": false,
+                "error": error,
+                "command": {
+                    "binary": "sextant-browser",
+                    "args": check.args,
+                }
+            });
+        }
+    };
+    let stdout = strip_ansi(&String::from_utf8_lossy(&output.stdout))
+        .trim()
+        .to_string();
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr))
+        .trim()
+        .to_string();
+    let report = match check.report {
+        ReportKind::Operator => operator_report_lines(&stdout),
+        ReportKind::Window => window_report_lines(&stdout),
+    };
+    json!({
+        "name": check.name,
+        "success": output.status.success(),
+        "exitCode": output.status.code(),
+        "report": report,
+        "stdout": stdout,
+        "stderr": stderr,
+        "command": {
+            "binary": "sextant-browser",
+            "args": check.args,
+        }
+    })
+}
+
+fn preflight_result_text(structured: &Value) -> String {
+    let success = structured
+        .get("success")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let mut lines = vec![format!(
+        "Sextant launch preflight {}",
+        if success { "passed" } else { "failed" }
+    )];
+    if let Some(checks) = structured.get("checks").and_then(Value::as_array) {
+        for check in checks {
+            let name = check.get("name").and_then(Value::as_str).unwrap_or("check");
+            let ok = check
+                .get("success")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            lines.push(format!("{}: {}", if ok { "PASS" } else { "FAIL" }, name));
+        }
+    }
+    lines.join("\n")
 }
 
 fn operator_report_lines(stdout: &str) -> Vec<String> {
@@ -1073,6 +1285,7 @@ mod tests {
 
         assert!(names.contains(&"browser_capabilities"));
         assert!(names.contains(&"browser_intent_run"));
+        assert!(names.contains(&"browser_launch_preflight"));
         assert!(names.contains(&"browser_operator_run"));
         assert!(names.contains(&"browser_showcase_run"));
         assert!(names.contains(&"browser_window_smoke"));
@@ -1186,5 +1399,19 @@ mod tests {
                 "[showcase-run] Sextant launch showcase run passed"
             ]
         );
+    }
+
+    #[test]
+    fn formats_launch_preflight_summary() {
+        let text = preflight_result_text(&json!({
+            "success": false,
+            "checks": [
+                {"name": "operator smoke", "success": true},
+                {"name": "visible showcase smoke", "success": false}
+            ]
+        }));
+        assert!(text.contains("Sextant launch preflight failed"));
+        assert!(text.contains("PASS: operator smoke"));
+        assert!(text.contains("FAIL: visible showcase smoke"));
     }
 }
