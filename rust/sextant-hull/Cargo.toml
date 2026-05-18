@@ -11,6 +11,7 @@ xilem-shell = [
     "dep:masonry",
     "dep:sextant-airgap",
     "dep:sextant-bio",
+    "dep:sextant-firewall",
     "dep:sextant-inference",
     "dep:sextant-mesh",
     "dep:sextant-pilot",
@@ -68,6 +69,7 @@ sextant-sync = { path = "../sextant-sync", optional = true }
 sextant-bio = { path = "../sextant-bio", optional = true }
 sextant-mesh = { path = "../sextant-mesh", optional = true }
 sextant-airgap = { path = "../sextant-airgap", optional = true }
+sextant-firewall = { path = "../sextant-firewall", optional = true }
 sextant-log = { path = "../sextant-log" }
 sextant-pq = { path = "../sextant-pq", optional = true }
 sextant-privacy = { path = "../sextant-privacy", optional = true }

@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::Path;
 use url::Url;
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
@@ -15,6 +16,14 @@ pub struct FirewallRule {
     pub domain_pattern: String,
     pub action: FirewallAction,
     pub reason: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct FirewallPolicy {
+    #[serde(default)]
+    pub persona_rules: HashMap<String, Vec<FirewallRule>>,
+    #[serde(default)]
+    pub global_blacklist: Vec<String>,
 }
 
 pub struct SextantFirewall {
@@ -64,6 +73,38 @@ impl SextantFirewall {
         }
     }
 
+    pub fn from_policy_overlay(policy: FirewallPolicy) -> Self {
+        let mut firewall = Self::new();
+        for domain in policy.global_blacklist {
+            firewall.add_global_blacklist(domain);
+        }
+        for (persona_id, mut rules) in policy.persona_rules {
+            let existing = firewall.persona_rules.entry(persona_id).or_default();
+            rules.append(existing);
+            *existing = rules;
+        }
+        firewall
+    }
+
+    pub fn load_policy_overlay(path: impl AsRef<Path>) -> Result<Self, String> {
+        let path = path.as_ref();
+        let raw = std::fs::read_to_string(path).map_err(|error| {
+            format!(
+                "Failed to read firewall policy {}: {}",
+                path.display(),
+                error
+            )
+        })?;
+        let policy = serde_json::from_str::<FirewallPolicy>(&raw).map_err(|error| {
+            format!(
+                "Failed to parse firewall policy {}: {}",
+                path.display(),
+                error
+            )
+        })?;
+        Ok(Self::from_policy_overlay(policy))
+    }
+
     pub fn check_access(&self, persona_id: &str, url: &Url) -> (FirewallAction, String) {
         let domain = url.domain().unwrap_or("");
 
@@ -102,6 +143,24 @@ impl SextantFirewall {
             .or_default()
             .push(rule);
     }
+
+    pub fn add_global_blacklist(&mut self, domain_pattern: impl Into<String>) {
+        let domain_pattern = domain_pattern.into();
+        if !self.global_blacklist.contains(&domain_pattern) {
+            self.global_blacklist.push(domain_pattern);
+        }
+    }
+
+    pub fn persona_rules(&self, persona_id: &str) -> &[FirewallRule] {
+        self.persona_rules
+            .get(persona_id)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
+    pub fn global_blacklist(&self) -> &[String] {
+        &self.global_blacklist
+    }
 }
 
 #[cfg(test)]
@@ -139,5 +198,88 @@ mod tests {
 
         assert_eq!(action, FirewallAction::Audit);
         assert_eq!(reason, "No specific rule matched");
+    }
+
+    #[test]
+    fn policy_overlay_adds_persona_rules() {
+        let policy = FirewallPolicy {
+            persona_rules: HashMap::from([(
+                "browser-persona".to_string(),
+                vec![FirewallRule {
+                    domain_pattern: "example.com".to_string(),
+                    action: FirewallAction::Block,
+                    reason: "QA block".to_string(),
+                }],
+            )]),
+            global_blacklist: Vec::new(),
+        };
+        let firewall = SextantFirewall::from_policy_overlay(policy);
+        let url = Url::parse("https://example.com").unwrap();
+
+        let (action, reason) = firewall.check_access("browser-persona", &url);
+
+        assert_eq!(action, FirewallAction::Block);
+        assert_eq!(reason, "QA block");
+    }
+
+    #[test]
+    fn policy_overlay_persona_rules_take_precedence() {
+        let policy = FirewallPolicy {
+            persona_rules: HashMap::from([(
+                "Work".to_string(),
+                vec![FirewallRule {
+                    domain_pattern: "facebook.com".to_string(),
+                    action: FirewallAction::Audit,
+                    reason: "Allow only with audit for launch demo".to_string(),
+                }],
+            )]),
+            global_blacklist: Vec::new(),
+        };
+        let firewall = SextantFirewall::from_policy_overlay(policy);
+        let url = Url::parse("https://facebook.com/messages").unwrap();
+
+        let (action, reason) = firewall.check_access("Work", &url);
+
+        assert_eq!(action, FirewallAction::Audit);
+        assert!(reason.contains("launch demo"));
+    }
+
+    #[test]
+    fn loads_policy_overlay_from_json() {
+        let path = std::env::temp_dir().join(format!(
+            "sextant-firewall-policy-{}.json",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::write(
+            &path,
+            r#"{
+                "persona_rules": {
+                    "browser-persona": [
+                        {
+                            "domain_pattern": "docs.example.com",
+                            "action": "Block",
+                            "reason": "temporary docs block"
+                        }
+                    ]
+                },
+                "global_blacklist": ["ads.example.net"]
+            }"#,
+        )
+        .unwrap();
+
+        let firewall = SextantFirewall::load_policy_overlay(&path).unwrap();
+        let docs = Url::parse("https://docs.example.com/page").unwrap();
+        let ads = Url::parse("https://ads.example.net/pixel").unwrap();
+
+        assert_eq!(
+            firewall.check_access("browser-persona", &docs).0,
+            FirewallAction::Block
+        );
+        assert_eq!(
+            firewall.check_access("browser-persona", &ads).0,
+            FirewallAction::Block
+        );
+
+        let _ = std::fs::remove_file(path);
     }
 }

@@ -27,7 +27,7 @@ If you only read five docs, read these in order:
 
 | Layer | Technology | Current State |
 |-------|------------|---------------|
-| Native UI shell | Rust + `winit` + `softbuffer` | Active `sextant-browser` shell with direct drawing, Intent/URL input, tabs, Wake, Log, MCP-backed operator tooling, and Servo frame display |
+| Native UI shell | Rust + `winit` + `softbuffer` | Active `sextant-browser` shell with direct drawing, Intent/URL input, tabs, Wake, Log, GUARD, SENSE, Perf, Validation, MCP-backed operator tooling, and Servo frame display |
 | Legacy native hull | Rust + Xilem 0.1.0 | Parked reference shell; Windows interactive use exposed toolkit access violations |
 | Pilot orchestration | `sextant-pilot` | Real intent flow, consent gating, regression coverage |
 | Engine | `sextant-engine` | Real fetch/distill path plus Servo-backed live navigation, frame capture, input forwarding, history, and live DOM distillation |
@@ -83,12 +83,28 @@ These commands exercise the native browser product loop without opening the visi
 ```bash
 cd rust
 cargo run -p sextant-mcp -- --launch-preflight --timeout-seconds 60
+cargo run -p sextant-mcp -- --hardening-preflight --timeout-seconds 240 --visible-timeout-seconds 60
+cargo run -p sextant-mcp -- --real-browsing-smoke --timeout-seconds 240
 cargo run -p sextant-hull --bin sextant-browser -- --operator-smoke
 cargo run -p sextant-hull --bin sextant-browser -- --showcase-run
 cargo run -p sextant-hull --bin sextant-browser -- --operator-probe https://example.com
+cargo run -p sextant-hull --bin sextant-browser -- --guard-probe https://example.com --operator-timeout 120
+cargo run -p sextant-hull --bin sextant-browser -- --guard-probe https://example.com --guard-policy path/to/guard-policy.json --operator-timeout 120
+cargo run -p sextant-hull --bin sextant-browser -- --perception-probe https://example.com --operator-timeout 120
+cargo run -p sextant-hull --bin sextant-browser -- --perf-probe https://developer.mozilla.org/en-US/docs/Web/HTML --operator-timeout 180
+cargo run -p sextant-hull --bin sextant-browser -- --perf-baseline --operator-timeout 240
+cargo run -p sextant-mcp -- --guard-probe https://example.com --timeout-seconds 120
+cargo run -p sextant-mcp -- --guard-probe https://example.com --guard-policy path/to/guard-policy.json --timeout-seconds 120
+cargo run -p sextant-mcp -- --guard-policy-read --json
+cargo run -p sextant-mcp -- --guard-policy-write path/to/guard-policy.json --json
+cargo run -p sextant-mcp -- --perception-probe https://example.com --timeout-seconds 120
+cargo run -p sextant-mcp -- --perf-probe https://example.com --timeout-seconds 120
 cargo run -p sextant-hull --bin sextant-browser -- --operator-run https://example.com --expect "Example Domain"
 cargo run -p sextant-hull --bin sextant-browser -- --intent-run "intent: open https://example.com and distill" --expect "Example Domain"
+cargo run -p sextant-hull --bin sextant-browser -- --consent-run "intent: buy https://example.com and checkout" --expect "Example Domain"
 cargo run -p sextant-hull --bin sextant-browser -- --window-smoke "intent: open https://example.com and distill" --window-smoke-timeout 20
+cargo run -p sextant-hull --bin sextant-browser -- --start-real-browsing --window-smoke --window-smoke-timeout 60
+cargo run -p sextant-hull --bin sextant-browser -- --start-shell-interaction --window-smoke --window-smoke-timeout 45
 ```
 
 For a visible demo start that remains open:

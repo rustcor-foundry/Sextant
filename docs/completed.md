@@ -4,6 +4,112 @@ Audit trail of completed work sessions. Newest first.
 
 ---
 
+## 2026-05-17 — Normal Browsing Performance Timing
+
+- Added a visible `GUARD` tab to the native browser for local trust-boundary status
+- Wired browser guard reports through `sextant-airgap`, `sextant-firewall`, and `sextant-privacy` so the active persona/page can show air-gap, firewall, and redaction state
+- Added `--guard-probe <url-or-search>` for bounded native browser guard reports before and after navigation/distillation
+- Exposed guard probing through MCP as `browser_guard_probe`, with parsed `structuredContent.guard` output for agents
+- Added the first GUARD enforcement pass: normal navigation and scripted browser interactions ask the local guard path, blocked targets are audited and stopped before engine navigation, and guard probes report policy blocks as successful findings
+- Added JSON firewall policy overlays for GUARD: `guard-policy.json`, `SEXTANT_GUARD_POLICY`, browser `--guard-policy <path>`, and MCP `policy_path`/`--guard-policy` can add persona-specific rules while preserving the built-in global blocklist
+- Added MCP guard policy management: `browser_guard_policy_read`, `browser_guard_policy_write`, `sextant-mcp --guard-policy-read`, and `sextant-mcp --guard-policy-write <json-path>` inspect and update the canonical browser policy overlay
+- Added a visible `SENSE` tab to the native browser for page perception over distilled semantic maps
+- Added page perception summaries with page type, semantic counts, key semantic nodes, and distillation source metadata
+- Routed Pilot `Perceive` actions to the page perception surface after distillation
+- Added `--perception-probe <url-or-search>` for bounded native browser semantic perception reports
+- Exposed perception probing through MCP as `browser_perception_probe`, with parsed `structuredContent.perception` output for agents
+- Split visible navigation from immediate Servo frame capture so normal browsing can report navigation completion sooner and queue frame warmup separately
+- Added browser performance telemetry for navigation, live distillation, Wake search, viewport resize, and Servo frame capture
+- Surfaced the latest timing summary in the visible status bar with truncation so it does not collide with the right status label
+- Added a visible `PERF` tab to the native browser with latest timings, slowest phase, and capped recent phase history for manual QA
+- Added timing lines to operator probe output for page-level baselines
+- Added `--perf-probe <url-or-search>` for a timed single-page native browsing pass with a second warm frame capture
+- Added `--perf-baseline` for a repeatable simple/heavier page set
+- Cached the last Servo viewport size so repeated frame refreshes skip unnecessary resize/spin work
+- Reused cached Servo distillation for repeat DISTILL runs on an unchanged tab URL, relying on existing navigation/input invalidation to keep live DOM changes fresh
+- Reduced visible frame warmup refresh pressure after page loads and raised idle refresh spacing for heavy pages
+- Captured an initial MDN baseline: navigation 1.2s, distillation 755ms, Wake 6ms, frame capture 863ms
+- Exposed browser performance timing through MCP as `browser_perf_probe` and `browser_perf_baseline`, with matching `sextant-mcp --perf-probe` and `--perf-baseline` CLI shims
+- Added parsed `structuredContent.perfTimings` to MCP performance responses so agents can compare phase durations without scraping text
+- Added `structuredContent.perfSummary` to MCP performance responses with max phase timings and the single slowest phase
+- Added target extraction for MCP perf baseline timing samples so multi-page baselines identify which page produced each slow phase
+- Routed native browser tracing to stderr at WARN level so stdout stays focused on operator/perf report lines for MCP parsing
+- Tightened targeted `--window-smoke` so URL/intent/workflow smokes wait for a captured Servo frame before passing instead of accepting the first chrome redraw
+- Cached the Softbuffer surface size in the visible shell draw loop so ordinary redraws do not call resize every frame
+- Added first shell draw and first Servo frame timing output to visible-window smoke checks; latest debug baseline showed chrome-only draw around 33ms and `https://example.com` first Servo frame around 1.1s
+- Optimized visible Servo frame blitting by replacing per-pixel float division with fixed-point stepping and row-slice writes, plus an explicit truncated-frame warning path
+- Confirmed heavier visible targets still draw real Servo frames: `https://developer.mozilla.org/en-US/docs/Web/HTML` around 1.2s and `https://www.google.com` around 2.1s to first frame in debug smoke checks
+- Split visible smoke performance output into startup work, first shell draw, final draw cost, Servo frame blit, Softbuffer present, and first Servo frame timing
+- Confirmed the current visible bottleneck is mostly startup/navigation before the event-loop draw: `https://example.com` showed about 845ms startup work with 30ms final draw and 9ms frame blit; Google showed about 2.1s startup work with 29ms final draw and 8ms frame blit
+- Queued visible URL/search/intent startup until after the first shell paint so the native browser window appears before Servo page navigation completes
+- Confirmed targeted debug smokes now show fast first shell paint before real page frames: `https://example.com` first shell draw around 31ms with first Servo frame around 1.1s, and `https://www.google.com` first shell draw around 48ms with first Servo frame around 2.3s
+- Added an intermediate "Opening ..." status draw before queued startup navigation runs, so the user sees truthful loading feedback before the synchronous Servo navigation chunk
+- Extended the same deferred "Opening ..." path to live user Enter/RUN navigation in the visible event loop while keeping operator/showcase pre-event-loop workflows immediate
+- Added regression coverage for deferred visible navigation state
+- Extended deferred visible loading feedback to reload/back/forward controls and added regression coverage for deferred reload state
+- Confirmed `--start-shell-interaction --window-smoke --window-smoke-timeout 45` still passes with immediate operator/showcase navigation preserved
+- Extended deferred visible loading feedback to DISTILL so the core Servo-to-Wake action paints a status before live DOM distillation/Wake work begins
+- Added regression coverage for deferred DISTILL state
+- Changed viewport wheel input to queue frame warmup instead of synchronously capturing a Servo frame in the wheel handler
+- Added regression coverage for viewport wheel frame-warmup scheduling
+
+---
+
+## 2026-05-17 — Native Captain's Key Consent Surface
+
+- Added first-class pending consent state to the active native browser shell
+- Added Context Vault rail AUTHORIZE/DENY controls for sensitive Pilot action requests
+- Wired consent denial to clear pending state and record an aborted Captain's Log audit entry
+- Wired consent authorization to sign the pending request through the browser's Captain's Key vault and record the consent signature in Captain's Log
+- Added resumable browser-owned Pilot continuations behind pending consent, so AUTHORIZE resumes the gated navigation/distill/perception plan instead of only closing the consent gate
+- Added `--consent-run "<sensitive intent>"` and MCP `browser_authorized_intent_run` for headless Captain's Key authorize/resume coverage
+- Kept the lighter `--no-default-features` lane working with a deterministic fallback consent signature
+- Added focused tests for deny, authorize, and visible consent button hit regions
+
+---
+
+## 2026-05-16 — Pilot Action Intent Bridge
+
+- Revisited the original architecture and restored a deeper slice of the planned Intent -> Pilot -> Engine -> Wake loop in the active native browser shell
+- Added a default-feature Pilot action lane for explicit browser intents using `sextant-pilot::PilotAction`
+- Mapped safe explicit intents to `Navigate`, optional `Distill`, and `Analyze` actions against the live browser engine, Wake, and Captain's Log state
+- Mapped sensitive intents to `RequestConsent` so they stop at `AWAITING CONSENT` instead of running through the shell fallback path
+- Kept the deterministic native intent runner as the `--no-default-features` fallback lane
+- Updated the `--intent-run` verifier to accept the new `pilot intent` audit entries while remaining compatible with fallback `native intent` entries
+- Added focused regression coverage for safe Pilot action planning and sensitive consent planning
+- Confirmed `--intent-run "intent: open https://example.com and distill" --expect "Example Domain"` passes through the Pilot action lane with Servo frame capture
+
+---
+
+## 2026-05-14 — Real Browsing Smoke Suite
+
+- Added a user-facing page-tab strip to the native browser shell so each engine tab has visible space and can be clicked to switch tabs
+- Stabilized visible tab order so switching tabs no longer reorders the page-tab strip
+- Added page-tab overflow paging controls and mouse-wheel paging so hidden older tabs stay reachable after opening more tabs than fit in the strip
+- Made active-tab close fallback select the adjacent tab in stable strip order instead of an arbitrary map entry
+- Made the page-tab overflow range label layout-aware so it is skipped instead of overlapping visible tabs or the pager on tight widths
+- Added browser chrome keyboard shortcuts for normal browsing: Ctrl+L, Ctrl+T, Ctrl+W, Ctrl+R, Alt+Left, and Alt+Right
+- Added focused regressions for stable tab order, adjacent close fallback, active overflow visibility, hidden-tab pager reachability, and range-label overlap
+- Extended visible shell-interaction smoke to create a second tab, navigate it, switch between page tabs through the tab strip, close back to the first tab, overflow the tab strip, and page back to the hidden first tab through visible controls
+- Added `sextant-browser --real-browsing-smoke` as a broader normal-browsing hardening path covering example.com, Google search form fill/submit, MDN distillation, reload, IANA navigation, back/forward, Wake, Captain's Log, and Servo frame capture
+- Exposed the suite through MCP as `browser_real_browsing_smoke` and CLI `sextant-mcp --real-browsing-smoke --timeout-seconds 240`
+- Fixed stale Servo navigation success by retrying requested navigation once and failing if the WebView remains on the previous URL
+- Added `--start-real-browsing` so the visible browser can seed into the same proof state, including bounded `--start-real-browsing --window-smoke --window-smoke-timeout 60`
+- Updated MCP `browser_window_smoke` with `real_browsing: true` for the visible real-browsing proof
+- Improved MCP report extraction so bracketed browser failure lines emitted on stderr appear in tool/preflight summaries
+- Added `--start-shell-interaction` to click through visible chrome controls for address/run, distill, Wake, view tabs, viewport focus, new tab, and close tab before drawing
+- Updated MCP `browser_window_smoke` with `shell_interaction: true` for the visible chrome-click proof
+- Added `sextant-mcp --hardening-preflight --timeout-seconds 240 --visible-timeout-seconds 60` and MCP `browser_hardening_preflight`
+- Added total and per-check timing telemetry to launch and hardening preflight summaries and structured output
+- QA pass caught a visible real-browsing flake where a delayed Google interstitial redirect could contaminate the following MDN navigation; the workflow now isolates post-Google documentation/history checks in a fresh tab
+- Improved MCP preflight failure summaries so browser-side `[sextant-browser] failed: ...` lines are preserved and preferred over generic startup breadcrumbs
+- Confirmed `cargo run -p sextant-mcp -- --real-browsing-smoke --timeout-seconds 240` passes
+- Confirmed visible real-browsing smoke passes directly and through MCP with a captured Servo frame
+- Confirmed visible shell-interaction smoke passes directly and through MCP with a captured Servo frame
+- Confirmed hardening preflight passes operator smoke, Intent Bar, showcase, real browsing, visible showcase, visible real browsing, and visible shell-interaction checks
+
+---
+
 ## 2026-05-14 — Launch Showcase Path
 
 - Added `sextant-browser --showcase-run` as a bounded launch-demo proof across Intent Bar, Servo navigation, live DOM distillation, Wake, Captain's Log, tab creation, native form fill/click, validation progress, and frame capture

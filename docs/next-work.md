@@ -35,28 +35,52 @@ cd "D:/Paul/Software Projects/Sextant/rust"
 cargo run -p sextant-hull --bin sextant-browser -- --operator-smoke
 cargo run -p sextant-hull --bin sextant-browser -- --showcase-run
 cargo run -p sextant-mcp -- --launch-preflight --timeout-seconds 60
+cargo run -p sextant-mcp -- --hardening-preflight --timeout-seconds 240 --visible-timeout-seconds 60
+cargo run -p sextant-mcp -- --real-browsing-smoke --timeout-seconds 240
 cargo run -p sextant-hull --bin sextant-browser -- --operator-probe https://example.com
+cargo run -p sextant-hull --bin sextant-browser -- --guard-probe https://example.com --operator-timeout 120
+cargo run -p sextant-hull --bin sextant-browser -- --guard-probe https://example.com --guard-policy path/to/guard-policy.json --operator-timeout 120
+cargo run -p sextant-hull --bin sextant-browser -- --perception-probe https://example.com --operator-timeout 120
+cargo run -p sextant-hull --bin sextant-browser -- --perf-probe https://developer.mozilla.org/en-US/docs/Web/HTML --operator-timeout 180
+cargo run -p sextant-hull --bin sextant-browser -- --perf-baseline --operator-timeout 240
+cargo run -p sextant-mcp -- --guard-probe https://example.com --timeout-seconds 120
+cargo run -p sextant-mcp -- --guard-probe https://example.com --guard-policy path/to/guard-policy.json --timeout-seconds 120
+cargo run -p sextant-mcp -- --guard-policy-read --json
+cargo run -p sextant-mcp -- --guard-policy-write path/to/guard-policy.json --json
+cargo run -p sextant-mcp -- --perception-probe https://example.com --timeout-seconds 120
+cargo run -p sextant-mcp -- --perf-probe https://example.com --timeout-seconds 120
 cargo run -p sextant-hull --bin sextant-browser -- --operator-run https://example.com --expect "Example Domain"
 cargo run -p sextant-hull --bin sextant-browser -- --operator-timeout 45 --operator-run https://example.com --expect "Example Domain"
 cargo run -p sextant-hull --bin sextant-browser -- --operator-timeout 45 --intent-run "intent: open https://example.com and distill" --expect "Example Domain"
+cargo run -p sextant-hull --bin sextant-browser -- --operator-timeout 120 --consent-run "intent: buy https://example.com and checkout" --expect "Example Domain"
 cargo run -p sextant-hull --bin sextant-browser -- --window-smoke https://example.com --window-smoke-timeout 15
 cargo run -p sextant-hull --bin sextant-browser -- --window-smoke "intent: open https://example.com and distill" --window-smoke-timeout 20
 cargo run -p sextant-hull --bin sextant-browser -- --start-showcase --window-smoke --window-smoke-timeout 30
+cargo run -p sextant-hull --bin sextant-browser -- --start-real-browsing --window-smoke --window-smoke-timeout 60
+cargo run -p sextant-hull --bin sextant-browser -- --start-shell-interaction --window-smoke --window-smoke-timeout 45
 cargo run -p sextant-hull --bin sextant-browser -- --demo
 cargo run -p sextant-hull --bin sextant-browser -- --start "intent: open https://example.com and distill"
 ```
 
-Use `--operator-smoke` for a deterministic data-URL workflow that exercises Servo navigation, native DOM fill/click, live DOM distillation, Wake recording/search, Captain's Log writes, and frame capture. Use `--operator-probe <url-or-search>` to aim the same native browser path at representative HTTP/HTTPS pages before doing slower manual click-through. Use `--operator-run <url-or-search>` with `--fill`, `--click`, `--submit`, and `--expect` steps when a blocker requires a repeatable form or interaction script.
+Use `--operator-smoke` for a deterministic data-URL workflow that exercises Servo navigation, native DOM fill/click, live DOM distillation, Wake recording/search, Captain's Log writes, and frame capture. Use `--operator-probe <url-or-search>` to aim the same native browser path at representative HTTP/HTTPS pages before doing slower manual click-through; probe output now includes phase timings for navigation, distillation, Wake, viewport resize, and frame capture. Use `--guard-probe <url-or-search>` when the question is what local guardrails apply: it reports persona, policy source, rule counts, air-gap status, firewall decision, privacy redaction status, and a redacted sample; blocked targets are reported as policy findings instead of attempted navigation. Add `--guard-policy <json-path>` to test a persona policy overlay. Use `--perception-probe <url-or-search>` when the question is what the browser thinks the page is: it reports page type, semantic counts, key nodes, source metadata, and timings. Use `--perf-probe <url-or-search>` for the same timed pass plus a second warm frame capture when performance is the focus, and `--perf-baseline` for a small built-in set of simple and heavier pages. Use `--operator-run <url-or-search>` with `--fill`, `--click`, `--submit`, and `--expect` steps when a blocker requires a repeatable form or interaction script.
 
 Use `--showcase-run` for the launch-demo proof. It exercises a native intent, Servo navigation, live DOM distillation, Wake, Captain's Log, tab creation, native form fill/click, and frame capture in one bounded command.
 
 Use `cargo run -p sextant-mcp -- --launch-preflight --timeout-seconds 60` before live demo work. It runs operator smoke, Intent Bar, showcase, and visible showcase smoke checks in sequence and fails the whole run if any piece breaks.
 
-Use `--intent-run "<intent>" --expect "<text>"` to exercise the native Intent Bar loop headlessly. The current deterministic path resolves the intent, navigates with Servo when available, distills into Wake, records Captain's Log, and captures a frame. This is the bridge back toward the original Pilot-led workflow while the active browser shell remains the stability target.
+Use `cargo run -p sextant-mcp -- --hardening-preflight --timeout-seconds 240 --visible-timeout-seconds 60` for the broader confidence pass. It runs launch checks plus real browsing, visible real browsing, and visible shell-interaction checks.
+
+Use `cargo run -p sextant-mcp -- --real-browsing-smoke --timeout-seconds 240` when hardening normal browsing. It covers example.com, a real Google search form submission, MDN distillation, reload, IANA navigation, back/forward, Wake, Captain's Log, and Servo frame capture.
+
+Use `--intent-run "<intent>" --expect "<text>"` to exercise the native Intent Bar loop headlessly. The current deterministic path resolves the intent, navigates with Servo when available, distills into Wake, records Captain's Log, and captures a frame. Use `--consent-run "<sensitive intent>" --expect "<text>"` when the path should pause for Captain's Key consent, authorize it, and resume the bounded browser continuation. This is the bridge back toward the original Pilot-led workflow while the active browser shell remains the stability target.
 
 Operator runs default to a 120-second internal timeout and accept `--operator-timeout <seconds>` for harder probes. A timeout exits with code `124`.
 
-Use `--window-smoke [url-search-or-intent] --window-smoke-timeout <seconds>` for a bounded user-facing launch/draw check. It creates the real window, initializes Softbuffer and browser app state, optionally navigates or runs an intent, draws once, reports any Servo frame, and exits. Use `--start "<url-search-or-intent>"` for a visible launch that remains open, and `--demo` for the shortest showcase launch that remains open.
+Use `--window-smoke [url-search-or-intent] --window-smoke-timeout <seconds>` for a bounded user-facing launch/draw check. It creates the real window, initializes Softbuffer and browser app state, optionally navigates or runs an intent, waits for a Servo frame when the target/workflow should produce one, reports first draw/frame timing, and exits. Use `--start "<url-search-or-intent>"` for a visible launch that remains open, and `--demo` for the shortest showcase launch that remains open.
+
+Use `--start-real-browsing --window-smoke --window-smoke-timeout 60` when the question is whether the visible shell can draw after the broader normal-browsing workflow.
+
+Use `--start-shell-interaction --window-smoke --window-smoke-timeout 45` when the question is whether visible chrome clicks still work through the shell's own hit-region path.
 
 MCP advertising layer:
 
@@ -67,7 +91,7 @@ cargo run -p sextant-mcp -- --list-tools
 cargo check -p sextant-mcp
 ```
 
-The MCP server is a local stdio bridge for Codex/Claude. It exposes truthful browser capability resources plus bounded operator tools and `browser_window_smoke`, all delegated to `sextant-browser`.
+The MCP server is a local stdio bridge for Codex/Claude. It exposes truthful browser capability resources plus bounded operator tools, `browser_guard_probe`, `browser_guard_policy_read`, `browser_guard_policy_write`, `browser_perception_probe`, and `browser_window_smoke`, with browser execution delegated to `sextant-browser`.
 
 Xilem/Vello diagnostic ladder:
 
@@ -117,6 +141,22 @@ Recent progress: a real Google search flow now passes through the native operato
 
 Recent progress: the active shell now has a first native Intent Bar loop. Normal URL/search input still navigates directly, while explicit intents such as `intent: open https://example.com and distill` plan, navigate, distill into Wake, record Captain's Log, and show Pilot state in the Context Vault rail. A matching `--intent-run` operator path keeps it regression-testable without opening the window.
 
+Recent progress: default-feature intent runs now plan through `sextant-pilot`'s `PilotAction` vocabulary before touching the live browser state. Safe browser intents execute as Pilot `Navigate`/`Distill`/`Analyze` actions; sensitive intents pause as `RequestConsent` with `AWAITING CONSENT`; `--no-default-features` keeps the deterministic fallback path. `--intent-run "intent: open https://example.com and distill" --expect "Example Domain"` passes through this lane with Servo frame capture.
+
+Recent progress: pending sensitive Pilot actions now have a first native Captain's Key surface in the active browser shell. The Context Vault rail shows AUTHORIZE/DENY controls, denial records an aborted audit entry, authorization records a consent signature in Captain's Log, and authorization resumes the browser-owned gated continuation. `--consent-run "intent: buy https://example.com and checkout" --expect "Example Domain"` covers the headless consent/resume path. The next deeper pass is to share browser state with `SextantPilot` directly so the full orchestrator owns the vault-signed plan lifecycle.
+
+Recent progress: normal browsing now records phase timings for navigation, live distillation, Wake lookup, viewport resize, and Servo frame capture. The visible status bar shows the latest timing summary, `--operator-probe` emits perf lines, `--perf-probe <url>` is available for single-page baselines, and `--perf-baseline` runs a small representative page set. Initial MDN baseline before viewport-resize caching: navigation 1.2s, distillation 755ms, Wake 6ms, frame capture 863ms.
+
+Recent progress: repeated DISTILL on an unchanged Servo tab now reuses the cached distilled page. `--perf-probe https://example.com --operator-timeout 120` showed first distill at 374ms and repeat distill at 0ms, with first frame resize/frame at 16ms/22ms and warm frame resize/frame at 0ms/19ms.
+
+Recent progress: the MCP layer now advertises `browser_perf_probe` and `browser_perf_baseline`, plus CLI shims `sextant-mcp --perf-probe <target> --timeout-seconds <n>` and `sextant-mcp --perf-baseline --timeout-seconds <n>`, so Codex/Claude can ask the native browser for normal-browsing timing baselines directly. Perf responses also include structured `perfTimings` samples with parsed phase durations and target pages, plus `perfSummary` with max phase timings and the slowest phase.
+
+Recent progress: the visible browser now has a `PERF` tab that shows latest phase timings, the slowest recorded phase, and a capped recent timing history. The shell-interaction smoke walks through the tab so the user-facing performance surface stays covered.
+
+Recent progress: the visible browser now has a `SENSE` tab for distilled page perception. It summarizes page type, semantic counts, key nodes, and distillation source, Pilot `Perceive` routes there, `--perception-probe <target>` emits the same semantic report, and MCP exposes it as `browser_perception_probe` with structured `perception` output.
+
+Recent progress: the visible browser now has a `GUARD` tab for the local trust boundary. It reports persona, policy source, rule counts, air-gap status, firewall decision, and privacy redaction status, `--guard-probe <target>` emits the same report before and after navigation/distillation, and MCP exposes it as `browser_guard_probe` with structured `guard` output. Navigation and scripted interaction paths now ask the local guard first; blacklisted targets are blocked and audited before engine navigation starts. `guard-policy.json`, `SEXTANT_GUARD_POLICY`, and `--guard-policy <json-path>` can add persona-specific firewall overlay rules for operator and agent probes. MCP can now read/write the canonical browser policy through `browser_guard_policy_read` and `browser_guard_policy_write`.
+
 Recent progress: the browser now has a launch showcase path. `--showcase-run` proves the product loop across Intent Bar, Servo, Wake, Captain's Log, tab creation, native form interaction, and frame capture. The visible shell also accepts `--start "<url-search-or-intent>"`, and `--window-smoke` can now run an intent before drawing.
 
 Recent progress: the visible browser toolbar now includes a `SHOWCASE` control that runs the same launch-demo workflow in-window.
@@ -124,6 +164,22 @@ Recent progress: the visible browser toolbar now includes a `SHOWCASE` control t
 Recent progress: `sextant-browser --demo` now opens the visible browser directly into the launch showcase proof state. `--start-showcase` can be combined with `--window-smoke` for a bounded visible check of that same path.
 
 Recent progress: `sextant-mcp --launch-preflight` now runs the launch-critical pre-demo sequence and passed operator smoke, Intent Bar, showcase, and visible showcase checks.
+
+Recent progress: `sextant-mcp --real-browsing-smoke --timeout-seconds 240` now runs and passes a broader normal-browsing suite across example.com, Google search, MDN, reload, IANA, back/forward, Wake, Captain's Log, and Servo frame capture. It also exposed and fixed a stale Servo navigation success where a requested navigation could report success while the WebView stayed on the previous URL.
+
+Recent progress: the same real-browsing workflow can now seed the visible browser with `--start-real-browsing`, and `--start-real-browsing --window-smoke --window-smoke-timeout 60` passed with a captured Servo frame. MCP `browser_window_smoke` also accepts `{"real_browsing": true}` for the same visible proof.
+
+Recent progress: QA found that Google can issue a delayed interstitial redirect after the search form test and race the following documentation navigation. The real-browsing workflow now opens a fresh tab for the MDN/IANA history segment after proving Google search, keeping the broader visible smoke stable without dropping the real Google coverage.
+
+Recent progress: `--start-shell-interaction --window-smoke --window-smoke-timeout 45` now passes. It clicks the native chrome controls for address/run, distill, Wake, view tabs, viewport focus, new tab, page-tab switching, close tab, and page-tab overflow paging before drawing, and MCP `browser_window_smoke` accepts `{"shell_interaction": true}` for the same check.
+
+Recent progress: the visible page-tab strip now behaves more like a real browser surface. Tabs keep stable visual order when selected, closing the active tab falls back to the adjacent tab, newly opened/selected tabs stay visible, and overflow arrows plus mouse-wheel paging make hidden tabs reachable.
+
+Recent progress: `sextant-mcp --hardening-preflight --timeout-seconds 240 --visible-timeout-seconds 60` now passes. It chains operator smoke, Intent Bar, showcase, real browsing, visible showcase, visible real browsing, and visible shell-interaction checks into one broader confidence command.
+
+Recent progress: targeted visible smokes now require a captured Servo frame before passing, cache the Softbuffer surface size so normal redraws skip repeated resize calls, and print startup work, first shell draw, final draw cost, Servo frame blit, Softbuffer present, and first Servo frame timing. The visible frame blit now uses integer stepping and row-slice writes instead of per-pixel float division. URL/search/intent startup, live user Enter/RUN navigation, reload/back/forward controls, and DISTILL are queued until after the shell paints a loading status before blocking on Servo or distillation work, so targeted launches and normal browsing show truthful native feedback before the page frame or Wake result arrives. Operator/showcase proof workflows keep immediate navigation before the event loop so deterministic smoke scripts still run to completion. Latest debug checks showed chrome-only first draw around 20-35ms, `https://example.com` first shell draw around 18-34ms with first Servo frame around 891ms-1.1s, `https://developer.mozilla.org/en-US/docs/Web/HTML` around 1.1-1.2s to first frame with about 7ms in frame blit, and `https://www.google.com` first shell draw around 32-48ms with first Servo frame around 2.3s.
+
+Recent progress: viewport wheel input now queues frame warmup instead of synchronously capturing a Servo frame inside the wheel handler. That keeps scroll input responsive while the event loop owns the next frame capture.
 
 ### 2. Full In-Window Workflow Validation (~1-2 hours)
 

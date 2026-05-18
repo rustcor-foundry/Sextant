@@ -1185,11 +1185,31 @@ mod servo_runtime {
         session: &mut ServoTabSession,
         url: Url,
     ) -> Result<ServoRenderResult, String> {
-        if session.webview.url().as_ref() != Some(&url) {
+        let previous_url = session.webview.url();
+        if previous_url.as_ref() != Some(&url) {
             session.webview.load(url.clone());
         }
-        let url_note = wait_for_url(servo, &session.webview, &url, NAVIGATION_TIMEOUT).err();
-        let final_url = session.webview.url().unwrap_or_else(|| url.clone());
+        let mut url_note = wait_for_url(servo, &session.webview, &url, NAVIGATION_TIMEOUT).err();
+        let mut final_url = session.webview.url().unwrap_or_else(|| url.clone());
+
+        if previous_url.as_ref() != Some(&url) && Some(&final_url) == previous_url.as_ref() {
+            session.webview.load(url.clone());
+            let retry_note = wait_for_url(servo, &session.webview, &url, NAVIGATION_TIMEOUT).err();
+            final_url = session.webview.url().unwrap_or_else(|| url.clone());
+            if Some(&final_url) == previous_url.as_ref() {
+                return Err(format!(
+                    "Servo navigation stayed on {} after requesting {}{}",
+                    final_url,
+                    url,
+                    retry_note
+                        .or(url_note)
+                        .map(|note| format!(" ({note})"))
+                        .unwrap_or_default()
+                ));
+            }
+            url_note = retry_note.or(url_note);
+        }
+
         let load_note = wait_for_load(servo, &session.webview, LOAD_SETTLE_TIMEOUT)
             .err()
             .or(url_note);
@@ -1961,6 +1981,7 @@ impl ParallelLayoutEngine {
 
 pub struct SextantEngine {
     tabs: HashMap<Uuid, Tab>,
+    tab_order: Vec<Uuid>,
     active_tab_id: Option<Uuid>,
     fallback_enabled: bool,
     semantic_cache: HashMap<Url, DistilledPage>,
@@ -2507,6 +2528,7 @@ impl SextantEngine {
     pub fn new() -> Self {
         let mut engine = Self {
             tabs: HashMap::new(),
+            tab_order: Vec::new(),
             active_tab_id: None,
             fallback_enabled: true,
             semantic_cache: HashMap::new(),
@@ -2566,6 +2588,7 @@ impl SextantEngine {
             last_active: Utc::now(),
         };
         self.tabs.insert(id, tab);
+        self.tab_order.push(id);
         self.active_tab_id = Some(id);
         id
     }
@@ -2573,8 +2596,16 @@ impl SextantEngine {
     pub fn close_tab(&mut self, id: &Uuid) -> Result<(), String> {
         self.tabs.remove(id).ok_or("Tab not found")?;
         self.close_servo_tab_session(*id)?;
+        let closed_position = self.tab_order.iter().position(|tab_id| tab_id == id);
+        if let Some(position) = closed_position {
+            self.tab_order.remove(position);
+        } else {
+            self.tab_order.retain(|tab_id| tab_id != id);
+        }
         if self.active_tab_id == Some(*id) {
-            self.active_tab_id = self.tabs.keys().next().cloned();
+            self.active_tab_id = closed_position
+                .and_then(|position| self.tab_order.get(position).copied())
+                .or_else(|| self.tab_order.last().copied());
         }
         Ok(())
     }
@@ -2615,8 +2646,20 @@ impl SextantEngine {
     }
 
     pub fn get_tabs(&self) -> Vec<Tab> {
-        let mut tabs: Vec<Tab> = self.tabs.values().cloned().collect();
-        tabs.sort_by(|a, b| b.last_active.cmp(&a.last_active));
+        let mut tabs: Vec<Tab> = self
+            .tab_order
+            .iter()
+            .filter_map(|id| self.tabs.get(id).cloned())
+            .collect();
+        let ordered_ids: HashSet<Uuid> = self.tab_order.iter().copied().collect();
+        let mut unordered_tabs: Vec<Tab> = self
+            .tabs
+            .iter()
+            .filter(|(id, _)| !ordered_ids.contains(id))
+            .map(|(_, tab)| tab.clone())
+            .collect();
+        unordered_tabs.sort_by(|a, b| b.last_active.cmp(&a.last_active));
+        tabs.extend(unordered_tabs);
         tabs
     }
 
@@ -3184,6 +3227,18 @@ impl SextantEngine {
                 let Some(current_url) = tab.url.clone() else {
                     return fetch_distilled_page(&Url::parse("about:blank").unwrap());
                 };
+                if let Some(cached) = tab
+                    .distilled_page
+                    .as_ref()
+                    .filter(|page| page.url == current_url)
+                    .cloned()
+                    .or_else(|| self.semantic_cache.get(&current_url).cloned())
+                {
+                    if let Some(tab) = self.tabs.get_mut(&tab_id) {
+                        tab.distilled_page = Some(cached.clone());
+                    }
+                    return Ok(cached);
+                }
                 let page = match self.servo_service.distill_tab(tab_id) {
                     Ok(snapshot) if snapshot.page.url.scheme() != "about" => {
                         let live_page = snapshot.page;
@@ -3432,6 +3487,42 @@ mod tests {
             .expect("perception should update the active tab");
         assert_eq!(page.title, "Blank Page");
         assert_eq!(active_tab.url.as_ref(), Some(&page.url));
+    }
+
+    #[test]
+    fn tab_order_stays_stable_when_switching() {
+        let mut engine = SextantEngine::new();
+        let first = engine.get_active_tab().expect("initial tab").id;
+        let second = engine.open_tab();
+        let third = engine.open_tab();
+        let original_order: Vec<Uuid> = engine.get_tabs().iter().map(|tab| tab.id).collect();
+
+        engine
+            .switch_to_tab(second)
+            .expect("second tab should be selectable");
+
+        let current_order: Vec<Uuid> = engine.get_tabs().iter().map(|tab| tab.id).collect();
+        assert_eq!(original_order, current_order);
+        assert_eq!(current_order, vec![first, second, third]);
+    }
+
+    #[test]
+    fn closing_active_tab_selects_adjacent_ordered_tab() {
+        let mut engine = SextantEngine::new();
+        let first = engine.get_active_tab().expect("initial tab").id;
+        let second = engine.open_tab();
+        let third = engine.open_tab();
+
+        engine
+            .switch_to_tab(second)
+            .expect("second tab should be selectable");
+        engine
+            .close_tab(&second)
+            .expect("active tab should be closable");
+
+        assert_eq!(engine.get_active_tab().map(|tab| tab.id), Some(third));
+        let current_order: Vec<Uuid> = engine.get_tabs().iter().map(|tab| tab.id).collect();
+        assert_eq!(current_order, vec![first, third]);
     }
 
     #[test]

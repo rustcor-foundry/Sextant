@@ -25,7 +25,8 @@ Use that repository as the canonical shared source of truth.
 ### Native Product Path
 
 - [rust/Cargo.toml](../rust/Cargo.toml) — Rust workspace root
-- [rust/sextant-hull/src/browser.rs](../rust/sextant-hull/src/browser.rs) — active native browser shell, direct drawing, address input, browser/Wake/Log views, Servo frame display, and viewport input forwarding
+- [rust/sextant-hull/src/browser.rs](../rust/sextant-hull/src/browser.rs) — active native browser shell, direct drawing, address input, browser/Wake/Log/Guard/Sense/Perf/Validation views, Servo frame display, and viewport input forwarding
+- [rust/sextant-firewall/src/lib.rs](../rust/sextant-firewall/src/lib.rs) — persona firewall rules, global blocklist, and JSON policy overlays used by the browser GUARD surface
 - [rust/sextant-hull/src/lite.rs](../rust/sextant-hull/src/lite.rs) — compatibility wrapper for the old `sextant-hull-lite` bin alias
 - [rust/sextant-hull/src/main.rs](../rust/sextant-hull/src/main.rs) — parked Xilem app startup and composition root
 - [rust/sextant-hull/src/app_core.rs](../rust/sextant-hull/src/app_core.rs) — toolkit-agnostic command/event runtime
