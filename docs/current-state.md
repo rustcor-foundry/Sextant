@@ -1,6 +1,6 @@
 # Current State
 
-Date of this snapshot: `2026-05-17`
+Date of this snapshot: `2026-05-19`
 
 ## How To Read This
 
@@ -20,6 +20,8 @@ The code is further along than the older May 1 wording suggested. There are now 
 - **Heavy browsing lane:** `sextant-browser` with package default features, which enables Servo live navigation, Servo frame capture, browser viewport input forwarding, back/forward/reload, and live DOM distillation.
 - **Reader/fallback lane:** `sextant-browser --no-default-features`, which avoids Servo/Xilem and keeps the direct shell, fetch/distill, Wake, and Captain's Log workflow available for fast smoke checks.
 
+There is also a new experimental direct Servo presentation proof: `sextant-servo-direct`. It opens a Servo `WindowRenderingContext`, loads a URL, paints directly through Servo's rendering context, and presents without the current frame-capture-to-Softbuffer bridge. The first smoke against `https://example.com` reached first direct present in about 165ms after the Windows ANGLE runtime bootstrap was shared with the proof binary, and MCP now exposes that same path as `browser_direct_present_smoke`.
+
 The product is no longer just a compile-clean scaffold. The core crates can:
 
 - route commands through async app commands/events
@@ -33,7 +35,7 @@ The active `sextant-browser` binary is not just a smoke window. It has a direct-
 
 The original Intent Bar/Context Vault shape is returning in the active shell. The address field now accepts normal URLs/searches plus explicit native intents such as `intent: open https://example.com and distill`; the native intent loop plans, navigates, distills into Wake, records Captain's Log entries, and shows Pilot state in the right rail. This is a deterministic bridge back toward the full `sextant-pilot` orchestration layer while Servo hardening continues.
 
-The biggest remaining gaps are now heavy browsing hardening, real-window Servo bug fixing, richer validation inside the browser shell, provider-path hardening, CI depth, and dependency cleanup.
+The biggest remaining gaps are now replacing the temporary frame-capture render bridge with a first-class Servo compositor path, heavy browsing hardening, real-window Servo bug fixing, richer validation inside the browser shell, provider-path hardening, CI depth, and dependency cleanup.
 
 ## What Is Working
 
@@ -51,16 +53,22 @@ The biggest remaining gaps are now heavy browsing hardening, real-window Servo b
 | Launch preflight | ✅ baseline | `sextant-mcp --launch-preflight --timeout-seconds 60` runs operator smoke, Intent Bar, showcase, and visible showcase smoke checks in sequence |
 | Hardening preflight | ✅ baseline | `sextant-mcp --hardening-preflight --timeout-seconds 240 --visible-timeout-seconds 60` runs launch checks plus real browsing, visible real browsing, and visible shell-interaction checks |
 | Real browsing smoke suite | ✅ baseline | `sextant-mcp --real-browsing-smoke --timeout-seconds 240` covers example.com, real Google search form fill/submit, MDN distillation, reload, IANA navigation, back/forward, Wake, Captain's Log, and Servo frame capture |
-| MCP browser advertising layer | ✅ baseline | `sextant-mcp` exposes local stdio MCP tools/resources for browser capabilities, bounded operator smoke/probe/run, guard probe, guard policy read/write, perception probe, perf probe/baseline, and recent Captain's Log reads |
+| MCP browser advertising layer | ✅ baseline | `sextant-mcp` exposes local stdio MCP tools/resources for browser capabilities, browser modes/runtime-loop boundaries, direct-present smoke, render-path baseline, bounded operator smoke/probe/run, guard probe, guard policy read/write, perception probe, perf probe/baseline, and recent Captain's Log reads |
 | Xilem/Vello diagnostic ladder | ✅ baseline | parked `sextant-hull` now has bounded `--xilem-smoke` modes for minimal, safe, interactive-smoke, and full shells; all four survived five-second first-paint checks on Windows |
 | Servo live navigation | ✅ baseline / ⚠️ buggy | tests cover data URLs, live DOM mutation, history, back/forward, and cache invalidation; real browsing smoke covers `example.com`, Google search, MDN, IANA, reload, and back/forward; broader real-window browsing still needs hardening |
 | Servo frame viewport | ✅ baseline / ⚠️ buggy | browser shell captures `RenderedFrame` pixels from Servo and paints them into the `softbuffer` viewport |
+| Direct Servo presentation proof | ✅ experimental | `sextant-servo-direct` uses Servo `WindowRenderingContext` and direct `present()`; `https://example.com` smoke reached first direct present in about 165ms, and MCP `browser_direct_present_smoke` returned structured `directPresent.firstPresentMs` around 149-163ms |
+| Production render-path boundary | ✅ baseline | `sextant-browser` now distinguishes engine backend from user render path; the active production path is `BRIDGE`, Direct/Incognito report `direct compositor pending`, `--render-path direct` fails honestly until integration lands, and MCP can compare direct proof vs bridge smoke timings |
 | Browser input forwarding | ✅ baseline / ⚠️ buggy | mouse move/click, wheel, character keys, and named keys are forwarded to the Servo WebView path; scripted selector fill/click works on data URLs, Google search, and `httpbin` form inputs |
+| Visible frame refresh responsiveness | ✅ baseline / ⚠️ tuning | wheel input is enqueue-only, passive mouse movement is rate-limited before it reaches Servo, printable character input is press-only, shell-debounced, and coalesced in the Servo service, viewport input uses a debounced one-capture warmup budget, and visible frame refresh runs Servo resize plus frame capture on a worker so expensive layout/capture work does not block the window event loop |
+| Visible navigation responsiveness | ✅ baseline / ⚠️ tuning | normal URL/search navigation in the real window starts a Servo navigation worker and keeps the event loop alive while the page loads; operator/proof paths still keep synchronous navigation for deterministic evidence |
+| Browser mode boundary | ✅ baseline / ⚠️ tuning | active shell exposes Agent, Assisted, Observe, Direct, and Incognito modes with capability flags for AI control, DOM/frame observation, Wake reads/writes, content logging, MCP exposure, and direct-render intent; frame capture is split between temporary user render bridge and AI observation purposes |
+| Small-window viewport layout | ✅ baseline | narrow windows hide the right rail, compute panels from the actual window size, and keep the Servo viewport clipped inside the visible content area |
 | Native browser validation surface | ✅ baseline | owned shell now has a `VALIDATION` tab, reset control, and status-bar progress for session-aware manual click-through coverage |
 | Native browser guard surface | ✅ baseline | owned shell now has a `GUARD` tab with persona, policy source, rule counts, air-gap, firewall, and privacy redaction status; navigation and scripted interaction paths now stop on local guard blocks; matching `--guard-probe`, `--guard-policy`, MCP `browser_guard_probe`, and MCP guard policy read/write surfaces report and manage allowed/audited/blocked outcomes |
 | Native browser perception surface | ✅ baseline | owned shell now has a `SENSE` tab with page perception summary, semantic counts, key nodes, source metadata, and a matching `browser_perception_probe` MCP tool |
 | Native browser performance surface | ✅ baseline | owned shell now has a `PERF` tab with latest phase timings, slowest phase callout, and capped recent event history for navigation, distillation, Wake, resize, and frame capture |
-| Visible browser smoke check | ✅ baseline | `--window-smoke [target] --window-smoke-timeout <seconds>` launches the real user-facing shell, draws once, optionally navigates or seeds showcase, real-browsing, or shell-interaction proof state, waits for an actual Servo frame when a target/workflow should produce one, reports first draw/frame timing, and exits; shell-interaction smoke now covers visible page-tab switching |
+| Visible browser smoke check | ✅ baseline | `--window-smoke [target] --window-smoke-timeout <seconds>` launches the real user-facing shell, draws once, optionally navigates or seeds showcase, real-browsing, or shell-interaction proof state, waits for an actual Servo frame when a target/workflow should produce one, reports first draw/frame timing, draw/blit/present costs, and latest PERF timing summary, then exits; shell-interaction smoke now covers visible page-tab switching |
 | Xilem/Masonry hull | ⚠️ parked | crashes on Windows during interactive use; retained as reference, not the active product lane |
 | Lower-stack guardrails | ✅ | bio, privacy, firewall, bridge, sync, log, inference, Wake, and engine edge cases now have focused coverage |
 | Hull modular structure | ✅ | `app_core`, `state`, `views`, `poller`, `util`, `deferred` split in place |
@@ -142,11 +150,39 @@ The active native browser hull is intentionally plain, but it now has real brows
 - Captain's Key consent controls in the Context Vault rail for pending sensitive Pilot actions
 - Servo viewport frame painting when built with default features
 - browser viewport mouse, wheel, character-key, and named-key forwarding into the engine
-- viewport wheel input queues a frame warmup instead of blocking the wheel handler on immediate Servo frame capture
+- passive browser viewport mouse movement is rate-limited so Servo is not buried under stale hover commands while clicks still force the final pointer position
+- printable browser viewport text input is forwarded only on key press, debounced in the shell, and coalesced in the Servo service, reducing no-op release traffic and fast-typing service-loop churn
+- viewport wheel input uses an enqueue-only Servo command and queues frame warmup instead of blocking the wheel handler on Servo acknowledgement or immediate frame capture
+- browser viewport mouse/key/wheel input uses a debounced one-capture interaction frame-warmup budget, reducing repeated capture pressure after input bursts
+- visible viewport input now has a shell-side lane: mouse moves, wheel deltas, and printable text queue/coalesce before engine enqueue, the queue is pinned to the active tab so stale input is dropped on tab changes, and the Servo service then prioritizes queued viewport input over pending frame captures
+- visible event-loop frame refresh starts Servo viewport resize plus frame capture on a background worker and polls for completion, keeping the window loop free while layout/capture work completes; visible tab switch and close-tab refreshes use that async render-bridge path too
+- the Servo service now prioritizes queued viewport input over pending frame captures and coalesces queued mouse moves, so render readback work is less likely to sit in front of keystrokes or passive pointer movement
+- visible URL/search navigation plus reload/back/forward controls start Servo navigation workers and poll for completion, so the shell can keep drawing and handling close/input events during page load or history navigation
+- small windows hide the right rail and compute the browser viewport from the actual surface size instead of a fixed minimum shell size
+- visible browser modes are ordered Agent, Assisted, Observe, Direct, Incognito; Direct and Incognito block AI observation/persistence, while Agent keeps full AI control
+- Direct/Incognito still use the current frame-capture render bridge as a temporary user-render path until Servo can render directly into the real window/compositor
+- `sextant-servo-direct` now proves Servo can create a real window rendering context and present directly after priming the Windows ANGLE runtime; the remaining work is integrating that path into the production `sextant-browser` chrome/mode/input architecture
+- MCP exposes the direct-present proof through `browser_direct_present_smoke` and `sextant-mcp --direct-present-smoke <url> --json`, returning structured target, first-present timing, frame-readback=false, and productionIntegrated=false fields
+- the production shell now has a user render-path boundary: `BRIDGE` is integrated, `DIRECT` is parsed but rejected with a clear production-integration-incomplete error, and window smoke reports `renderPath`, `renderPathStatus`, and `renderGap`
+- MCP exposes `browser_render_path_baseline` and `sextant-mcp --render-path-baseline <url> --json`; the current example.com baseline measured direct present at 179ms, production bridge first frame at 1.2s, and a 1.0s gap. The opt-in pre-sized bridge variant removed resize cost but pushed first frame to 8.3s, so pre-sizing should remain experimental and off by default.
+- frame capture now carries a purpose: the visible render bridge remains available in every mode for user display, while AI observation/proof snapshots are blocked when the active mode disables frame observation
+- visible launches and window smokes accept `--browser-mode <agent|assisted|observe|direct|incognito>`, and Direct-mode window smoke proves the temporary render bridge can still draw a page while AI observation is disabled
+- Incognito visible launches and runtime switches use an ephemeral browser data directory for Wake/Log storage, report that path in window-smoke output, restore normal profile storage when leaving Incognito, and clean up the temp directory after bounded smoke runs
+- native `intent:` execution is limited to Agent and Assisted modes; Observe, Direct, and Incognito stop explicit intents at the mode boundary before navigation, distillation, Wake writes, or Pilot control work
+- in-window proof workflows such as Showcase, real-browsing seed, and shell-interaction seed are also limited to Agent and Assisted modes so proof automation cannot bypass Direct/Incognito boundaries
+- MCP `browser_window_smoke` pre-validates mode/workflow combinations so agents get immediate boundary errors for Direct/Observe/Incognito proof seeders or native-intent targets instead of launching the browser first
+- disabled action messages, validation rows, and the status bar now explain the active mode boundary, including AI posture and profile vs ephemeral storage state
+- MCP `browser_window_smoke` now returns structured `windowSmoke` fields for mode, mode status, storage, ephemeral data path, draw/navigation/frame timings, and latest frame dimensions
+- `sextant-mcp --window-smoke` exposes the same visible-smoke path from the terminal, including mode selection, proof-workflow flags, mode prevalidation, and JSON output
+- Servo frame capture skips redundant explicit paint calls when the WebView delegate has already painted a newly-ready frame
 - native operator bridge commands for automated smoke/probe runs before manual click-through
 - local trust-boundary reporting and navigation enforcement for persona, JSON policy overlays, air-gap, firewall, and privacy redaction in-window and through MCP
 - normal-browsing timing telemetry for navigation, distillation, Wake search, viewport resize, and Servo frame capture in the status bar and operator probe output
-- visible-window smoke timing telemetry for startup work, first shell draw, final draw cost, Servo frame blit, Softbuffer present, and first Servo frame, with targeted smokes proving a real captured page frame instead of only a chrome redraw
+- visible-window smoke timing telemetry for startup work, first shell draw, final draw cost, Servo frame blit, Softbuffer present, latest PERF summary, and first Servo frame, with targeted smokes proving a real captured page frame instead of only a chrome redraw
+- visible user-triggered DISTILL now queues an async engine worker and polls completion from the event loop; operator/proof distillation remains synchronous for deterministic checks
+- MCP/window smoke can exercise that async user DISTILL path with `user_distill` / `--window-smoke-distill` and returns structured `distillMs` and `wakeMs`
+- visible async DISTILL now hands Wake record/search and Captain's Log write to a dedicated Persistence lane worker; visible Wake searches, ordinary visible Log writes, and visible recent-log refreshes use the same lane, and the UI loop only polls completion and applies returned Wake/Log rows
+- render-bridge telemetry now splits Servo resize from actual frame capture/readback; the first corrected assisted smoke showed resize around 18ms and frame readback around 36ms, which means the earlier 300-400ms frame numbers were mostly a measurement/round-trip artifact
 - page perception reporting for distilled semantic maps in-window and through MCP
 - bounded `--window-smoke` mode for visible shell launch/draw checks before manual browsing
 - visible launch seeding with `--start "<url-search-or-intent>"` for demo/manual sessions
@@ -164,6 +200,7 @@ The active native browser hull is intentionally plain, but it now has real brows
 
 | Gap | Priority | Notes |
 |-----|----------|-------|
+| Direct Servo compositor integration | High | experimental proof works, but production `sextant-browser` still uses the temporary frame-capture render bridge |
 | Heavy browsing hardening | High | default-feature `sextant-browser` has Servo live browsing pieces, but real-window use is still buggy |
 | Full in-window interactive workflow exercise | High | now belongs on the browser shell; the Xilem checklist is reference material |
 | Full native browser manual validation pass | High | the first validation tab is in place; next pass should drive it through real window usage and fix any misses |

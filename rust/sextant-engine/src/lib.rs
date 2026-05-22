@@ -11,7 +11,9 @@ use std::collections::{HashMap, HashSet};
 use std::env;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
+#[cfg(feature = "servo-backend")]
+use std::thread;
 use std::time::{Duration, Instant};
 use url::Url;
 use uuid::Uuid;
@@ -19,8 +21,9 @@ use uuid::Uuid;
 #[cfg(feature = "servo-backend")]
 mod servo_runtime {
     use super::{
-        collapse_whitespace, BrowserInteraction, BrowserInteractionResult, DistilledPage,
-        EngineBackend, EngineStatus, NodeType, RenderedFrame, SandboxProfile, SemanticNode,
+        collapse_whitespace, AsyncFrameCapture, BrowserInteraction, BrowserInteractionResult,
+        DistilledPage, EngineBackend, EngineStatus, NodeType, RenderedFrame, SandboxProfile,
+        SemanticNode,
     };
     use dpi::PhysicalSize;
     use servo::{
@@ -30,7 +33,7 @@ mod servo_runtime {
         MouseMoveEvent, NamedKey, RenderingContext, Servo, ServoBuilder, SoftwareRenderingContext,
         WebView, WebViewBuilder, WebViewDelegate, WheelDelta, WheelEvent, WheelMode,
     };
-    use std::collections::HashMap;
+    use std::collections::{HashMap, VecDeque};
     use std::env;
     use std::panic::{self, AssertUnwindSafe};
     use std::path::PathBuf;
@@ -80,6 +83,7 @@ mod servo_runtime {
         Navigate {
             tab_id: Uuid,
             url: Url,
+            viewport_size: Option<(u32, u32)>,
             reply_tx: mpsc::Sender<Result<ServoRenderResult, String>>,
         },
         Reload {
@@ -109,6 +113,11 @@ mod servo_runtime {
         CaptureFrame {
             tab_id: Uuid,
             reply_tx: mpsc::Sender<Result<ServoFrameSnapshot, String>>,
+        },
+        ResizeAndCaptureFrame {
+            tab_id: Uuid,
+            viewport_size: Option<(u32, u32)>,
+            reply_tx: mpsc::Sender<Result<AsyncFrameCapture, String>>,
         },
         ResizeTab {
             tab_id: Uuid,
@@ -155,6 +164,26 @@ mod servo_runtime {
         },
     }
 
+    impl ServoCommand {
+        fn is_viewport_input(&self) -> bool {
+            matches!(
+                self,
+                ServoCommand::Wheel { .. }
+                    | ServoCommand::MouseMove { .. }
+                    | ServoCommand::MouseButton { .. }
+                    | ServoCommand::KeyCharacter { .. }
+                    | ServoCommand::KeyNamed { .. }
+            )
+        }
+
+        fn can_yield_to_viewport_input(&self) -> bool {
+            matches!(
+                self,
+                ServoCommand::CaptureFrame { .. } | ServoCommand::ResizeAndCaptureFrame { .. }
+            )
+        }
+    }
+
     #[derive(Clone, Copy)]
     pub enum BrowserNamedKey {
         Enter,
@@ -180,11 +209,20 @@ mod servo_runtime {
     }
 
     #[derive(Default)]
-    struct HeadlessWebViewDelegate;
+    struct HeadlessWebViewDelegate {
+        frame_ready: AtomicBool,
+    }
+
+    impl HeadlessWebViewDelegate {
+        fn take_frame_ready(&self) -> bool {
+            self.frame_ready.swap(false, Ordering::SeqCst)
+        }
+    }
 
     impl WebViewDelegate for HeadlessWebViewDelegate {
         fn notify_new_frame_ready(&self, webview: WebView) {
             webview.paint();
+            self.frame_ready.store(true, Ordering::SeqCst);
         }
     }
 
@@ -309,6 +347,21 @@ mod servo_runtime {
             self.request(|reply_tx| ServoCommand::Navigate {
                 tab_id,
                 url: url.clone(),
+                viewport_size: None,
+                reply_tx,
+            })
+        }
+
+        pub fn navigate_with_viewport(
+            &self,
+            tab_id: Uuid,
+            url: Url,
+            viewport_size: Option<(u32, u32)>,
+        ) -> Result<ServoRenderResult, String> {
+            self.request(|reply_tx| ServoCommand::Navigate {
+                tab_id,
+                url: url.clone(),
+                viewport_size,
                 reply_tx,
             })
         }
@@ -341,6 +394,18 @@ mod servo_runtime {
             self.request(|reply_tx| ServoCommand::CaptureFrame { tab_id, reply_tx })
         }
 
+        pub fn resize_and_capture_frame(
+            &self,
+            tab_id: Uuid,
+            viewport_size: Option<(u32, u32)>,
+        ) -> Result<AsyncFrameCapture, String> {
+            self.request(|reply_tx| ServoCommand::ResizeAndCaptureFrame {
+                tab_id,
+                viewport_size,
+                reply_tx,
+            })
+        }
+
         pub fn resize_tab(&self, tab_id: Uuid, width: u32, height: u32) -> Result<(), String> {
             self.request(|reply_tx| ServoCommand::ResizeTab {
                 tab_id,
@@ -364,6 +429,16 @@ mod servo_runtime {
                 pixel_mode,
                 reply_tx,
             })
+        }
+
+        pub fn enqueue_wheel(&self, tab_id: Uuid, delta_x: f64, delta_y: f64, pixel_mode: bool) {
+            self.enqueue(|reply_tx| ServoCommand::Wheel {
+                tab_id,
+                delta_x,
+                delta_y,
+                pixel_mode,
+                reply_tx,
+            });
         }
 
         pub fn mouse_move(&self, tab_id: Uuid, x: f32, y: f32) -> Result<(), String> {
@@ -504,6 +579,9 @@ mod servo_runtime {
                         ServoCommand::CaptureFrame { reply_tx, .. } => {
                             let _ = reply_tx.send(Err(error.clone()));
                         }
+                        ServoCommand::ResizeAndCaptureFrame { reply_tx, .. } => {
+                            let _ = reply_tx.send(Err(error.clone()));
+                        }
                         ServoCommand::ResizeTab { reply_tx, .. } => {
                             let _ = reply_tx.send(Err(error.clone()));
                         }
@@ -531,14 +609,18 @@ mod servo_runtime {
             }
         };
 
-        while let Ok(command) = command_rx.recv() {
+        let mut pending_commands = VecDeque::new();
+        while let Ok(command) = next_servo_command(&command_rx, &mut pending_commands) {
             match command {
                 ServoCommand::Navigate {
                     tab_id,
                     url,
+                    viewport_size,
                     reply_tx,
                 } => {
-                    let result = run_servo_command(|| navigate_tab(&mut runtime, tab_id, url));
+                    let result = run_servo_command(|| {
+                        navigate_tab(&mut runtime, tab_id, url, viewport_size)
+                    });
                     let _ = reply_tx.send(result);
                 }
                 ServoCommand::Reload { tab_id, reply_tx } => {
@@ -586,6 +668,16 @@ mod servo_runtime {
                     let result = run_servo_command(|| capture_frame(&mut runtime, tab_id));
                     let _ = reply_tx.send(result);
                 }
+                ServoCommand::ResizeAndCaptureFrame {
+                    tab_id,
+                    viewport_size,
+                    reply_tx,
+                } => {
+                    let result = run_servo_command(|| {
+                        resize_and_capture_frame(&mut runtime, tab_id, viewport_size)
+                    });
+                    let _ = reply_tx.send(result);
+                }
                 ServoCommand::ResizeTab {
                     tab_id,
                     width,
@@ -610,10 +702,11 @@ mod servo_runtime {
                 }
                 ServoCommand::MouseMove {
                     tab_id,
-                    x,
-                    y,
+                    mut x,
+                    mut y,
                     reply_tx,
                 } => {
+                    coalesce_pending_mouse_move(&mut pending_commands, tab_id, &mut x, &mut y);
                     let result = run_servo_command(|| mouse_move_tab(&mut runtime, tab_id, x, y));
                     let _ = reply_tx.send(result);
                 }
@@ -634,6 +727,15 @@ mod servo_runtime {
                     pressed,
                     reply_tx,
                 } => {
+                    let mut text = text;
+                    if pressed && !text.is_empty() {
+                        coalesce_pending_key_text(
+                            &command_rx,
+                            &mut pending_commands,
+                            tab_id,
+                            &mut text,
+                        );
+                    }
                     let result = run_servo_command(|| {
                         key_character_tab(&mut runtime, tab_id, text, pressed)
                     });
@@ -659,6 +761,150 @@ mod servo_runtime {
                     let _ = reply_tx.send(result);
                 }
             }
+        }
+    }
+
+    fn next_servo_command(
+        command_rx: &mpsc::Receiver<ServoCommand>,
+        pending_commands: &mut VecDeque<ServoCommand>,
+    ) -> Result<ServoCommand, mpsc::RecvError> {
+        if pending_commands.is_empty() {
+            pending_commands.push_back(command_rx.recv()?);
+        }
+        while let Ok(command) = command_rx.try_recv() {
+            pending_commands.push_back(command);
+        }
+
+        if let Some(index) = prioritized_viewport_input_index(pending_commands) {
+            return Ok(pending_commands
+                .remove(index)
+                .expect("pending command index disappeared"));
+        }
+
+        Ok(pending_commands
+            .pop_front()
+            .expect("pending command queue was unexpectedly empty"))
+    }
+
+    fn prioritized_viewport_input_index(
+        pending_commands: &VecDeque<ServoCommand>,
+    ) -> Option<usize> {
+        let first = pending_commands.front()?;
+        if first.is_viewport_input() {
+            return Some(0);
+        }
+        if !first.can_yield_to_viewport_input() {
+            return None;
+        }
+
+        for (index, command) in pending_commands.iter().enumerate().skip(1) {
+            if command.is_viewport_input() {
+                return Some(index);
+            }
+            if !command.can_yield_to_viewport_input() {
+                return None;
+            }
+        }
+
+        None
+    }
+
+    fn coalesce_pending_key_text(
+        command_rx: &mpsc::Receiver<ServoCommand>,
+        pending_commands: &mut VecDeque<ServoCommand>,
+        tab_id: Uuid,
+        text: &mut String,
+    ) {
+        while let Some(command) = pending_commands.pop_front() {
+            match command {
+                ServoCommand::KeyCharacter {
+                    tab_id: next_tab_id,
+                    text: next_text,
+                    pressed: true,
+                    reply_tx,
+                } if next_tab_id == tab_id && !next_text.is_empty() => {
+                    text.push_str(&next_text);
+                    let _ = reply_tx.send(Ok(()));
+                }
+                other => {
+                    pending_commands.push_front(other);
+                    return;
+                }
+            }
+        }
+
+        while let Ok(command) = command_rx.try_recv() {
+            match command {
+                ServoCommand::KeyCharacter {
+                    tab_id: next_tab_id,
+                    text: next_text,
+                    pressed: true,
+                    reply_tx,
+                } if next_tab_id == tab_id && !next_text.is_empty() => {
+                    text.push_str(&next_text);
+                    let _ = reply_tx.send(Ok(()));
+                }
+                other => {
+                    pending_commands.push_back(other);
+                    return;
+                }
+            }
+        }
+    }
+
+    fn coalesce_pending_mouse_move(
+        pending_commands: &mut VecDeque<ServoCommand>,
+        tab_id: Uuid,
+        x: &mut f32,
+        y: &mut f32,
+    ) {
+        let mut index = 0;
+        while index < pending_commands.len() {
+            let should_coalesce = matches!(
+                pending_commands.get(index),
+                Some(ServoCommand::MouseMove {
+                    tab_id: next_tab_id,
+                    ..
+                }) if *next_tab_id == tab_id
+            );
+            if should_coalesce {
+                if let Some(ServoCommand::MouseMove {
+                    x: next_x,
+                    y: next_y,
+                    reply_tx,
+                    ..
+                }) = pending_commands.remove(index)
+                {
+                    *x = next_x;
+                    *y = next_y;
+                    let _ = reply_tx.send(Ok(()));
+                }
+                continue;
+            }
+
+            let should_stop = matches!(
+                pending_commands.get(index),
+                Some(ServoCommand::MouseButton {
+                    tab_id: next_tab_id,
+                    ..
+                }) | Some(ServoCommand::Wheel {
+                    tab_id: next_tab_id,
+                    ..
+                }) | Some(ServoCommand::KeyCharacter {
+                    tab_id: next_tab_id,
+                    ..
+                }) | Some(ServoCommand::KeyNamed {
+                    tab_id: next_tab_id,
+                    ..
+                }) if *next_tab_id == tab_id
+            ) || pending_commands
+                .get(index)
+                .map(|command| !command.can_yield_to_viewport_input())
+                .unwrap_or(false);
+            if should_stop {
+                break;
+            }
+            index += 1;
         }
     }
 
@@ -704,7 +950,7 @@ mod servo_runtime {
             .map_err(|e| format!("Failed to activate Servo rendering context: {:?}", e))?;
 
         let servo = ServoBuilder::default().build();
-        let delegate = Rc::new(HeadlessWebViewDelegate);
+        let delegate = Rc::new(HeadlessWebViewDelegate::default());
         eprintln!("[sextant-servo] runtime ready");
         Ok(ServoRuntimeState {
             servo,
@@ -736,19 +982,33 @@ mod servo_runtime {
         runtime: &mut ServoRuntimeState,
         tab_id: Uuid,
         url: Url,
+        viewport_size: Option<(u32, u32)>,
     ) -> Result<ServoRenderResult, String> {
         if !runtime.sessions.contains_key(&tab_id) {
             eprintln!(
                 "[sextant-servo] creating initial session for tab {} at {}",
                 tab_id, url
             );
-            let session = create_webview_session(runtime, Some(url.clone()))?;
+            let session = create_webview_session(
+                runtime,
+                if viewport_size.is_some() {
+                    None
+                } else {
+                    Some(url.clone())
+                },
+            )?;
             runtime.sessions.insert(tab_id, session);
         }
         let mut session = runtime
             .sessions
             .remove(&tab_id)
             .ok_or_else(|| "Servo session was not created".to_string())?;
+        if let Some((width, height)) = viewport_size {
+            session
+                .webview
+                .resize(PhysicalSize::new(width.max(1), height.max(1)));
+            runtime.servo.spin_event_loop();
+        }
         let result = navigate_session(&mut runtime.servo, &mut session, url);
         runtime.sessions.insert(tab_id, session);
         result
@@ -809,7 +1069,9 @@ mod servo_runtime {
             .rendering_context
             .make_current()
             .map_err(|e| format!("Failed to make Servo rendering context current: {:?}", e))?;
-        session.webview.paint();
+        if !runtime.delegate.take_frame_ready() {
+            session.webview.paint();
+        }
         runtime.rendering_context.present();
         let size = runtime.rendering_context.size();
         let rect = DeviceIntRect::from_origin_and_size(
@@ -836,6 +1098,27 @@ mod servo_runtime {
                 height: size.height,
                 pixels,
             },
+        })
+    }
+
+    fn resize_and_capture_frame(
+        runtime: &mut ServoRuntimeState,
+        tab_id: Uuid,
+        viewport_size: Option<(u32, u32)>,
+    ) -> Result<AsyncFrameCapture, String> {
+        let resize = if let Some((width, height)) = viewport_size {
+            let started = Instant::now();
+            resize_tab(runtime, tab_id, width, height)?;
+            Some(started.elapsed())
+        } else {
+            None
+        };
+        let capture_started = Instant::now();
+        let frame = capture_frame(runtime, tab_id)?.frame;
+        Ok(AsyncFrameCapture {
+            resize,
+            capture: capture_started.elapsed(),
+            frame,
         })
     }
 
@@ -1711,6 +1994,97 @@ mod servo_runtime {
             .filter(|path| path.is_dir())
             .collect()
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn capture_command(tab_id: Uuid) -> ServoCommand {
+            let (reply_tx, _reply_rx) = mpsc::channel();
+            ServoCommand::CaptureFrame { tab_id, reply_tx }
+        }
+
+        fn inspect_command(tab_id: Uuid) -> ServoCommand {
+            let (reply_tx, _reply_rx) = mpsc::channel();
+            ServoCommand::InspectTab { tab_id, reply_tx }
+        }
+
+        fn key_text_command(tab_id: Uuid, text: &str) -> ServoCommand {
+            let (reply_tx, _reply_rx) = mpsc::channel();
+            ServoCommand::KeyCharacter {
+                tab_id,
+                text: text.to_string(),
+                pressed: true,
+                reply_tx,
+            }
+        }
+
+        fn mouse_move_command(tab_id: Uuid, x: f32, y: f32) -> ServoCommand {
+            let (reply_tx, _reply_rx) = mpsc::channel();
+            ServoCommand::MouseMove {
+                tab_id,
+                x,
+                y,
+                reply_tx,
+            }
+        }
+
+        #[test]
+        fn service_scheduler_prioritizes_input_over_queued_frame_capture() {
+            let (command_tx, command_rx) = mpsc::channel();
+            let tab_id = Uuid::new_v4();
+            command_tx.send(capture_command(tab_id)).unwrap();
+            command_tx.send(key_text_command(tab_id, "a")).unwrap();
+            let mut pending_commands = VecDeque::new();
+
+            let command = next_servo_command(&command_rx, &mut pending_commands).unwrap();
+            assert!(matches!(command, ServoCommand::KeyCharacter { .. }));
+            assert_eq!(pending_commands.len(), 1);
+
+            let command = next_servo_command(&command_rx, &mut pending_commands).unwrap();
+            assert!(matches!(command, ServoCommand::CaptureFrame { .. }));
+        }
+
+        #[test]
+        fn service_scheduler_keeps_non_render_work_ahead_of_input() {
+            let (command_tx, command_rx) = mpsc::channel();
+            let tab_id = Uuid::new_v4();
+            command_tx.send(capture_command(tab_id)).unwrap();
+            command_tx.send(inspect_command(tab_id)).unwrap();
+            command_tx.send(key_text_command(tab_id, "a")).unwrap();
+            let mut pending_commands = VecDeque::new();
+
+            let command = next_servo_command(&command_rx, &mut pending_commands).unwrap();
+            assert!(matches!(command, ServoCommand::CaptureFrame { .. }));
+
+            let command = next_servo_command(&command_rx, &mut pending_commands).unwrap();
+            assert!(matches!(command, ServoCommand::InspectTab { .. }));
+
+            let command = next_servo_command(&command_rx, &mut pending_commands).unwrap();
+            assert!(matches!(command, ServoCommand::KeyCharacter { .. }));
+        }
+
+        #[test]
+        fn service_scheduler_coalesces_mouse_moves_across_frame_captures() {
+            let tab_id = Uuid::new_v4();
+            let mut pending_commands = VecDeque::from([
+                capture_command(tab_id),
+                mouse_move_command(tab_id, 20.0, 30.0),
+                capture_command(tab_id),
+                mouse_move_command(tab_id, 40.0, 50.0),
+            ]);
+            let mut x = 10.0;
+            let mut y = 15.0;
+
+            coalesce_pending_mouse_move(&mut pending_commands, tab_id, &mut x, &mut y);
+
+            assert_eq!((x, y), (40.0, 50.0));
+            assert_eq!(pending_commands.len(), 2);
+            assert!(pending_commands
+                .iter()
+                .all(|command| matches!(command, ServoCommand::CaptureFrame { .. })));
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
@@ -1787,6 +2161,38 @@ pub struct RenderedFrame {
     pub width: u32,
     pub height: u32,
     pub pixels: Vec<u32>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AsyncFrameCapture {
+    pub resize: Option<Duration>,
+    pub capture: Duration,
+    pub frame: RenderedFrame,
+}
+
+#[derive(Debug, Clone)]
+pub struct AsyncNavigationResult {
+    pub tab_id: Uuid,
+    pub requested_url: Url,
+    pub final_url: Url,
+    pub status: EngineStatus,
+    pub distilled_page: Option<DistilledPage>,
+    pub can_go_back: bool,
+    pub can_go_forward: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum AsyncNavigationControl {
+    Reload,
+    Back,
+    Forward,
+}
+
+#[derive(Debug, Clone)]
+pub struct AsyncDistillResult {
+    pub tab_id: Uuid,
+    pub page: DistilledPage,
+    pub status_note: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
@@ -2807,6 +3213,331 @@ impl SextantEngine {
         }
     }
 
+    pub fn navigate_active_tab_async(
+        &self,
+        url: Url,
+        persona_id: String,
+        viewport_size: Option<(u32, u32)>,
+    ) -> Result<mpsc::Receiver<Result<AsyncNavigationResult, String>>, String> {
+        let tab_id = self.active_tab_id.ok_or("No active tab")?;
+        let backend = self
+            .tabs
+            .get(&tab_id)
+            .ok_or("Active tab not found")?
+            .status
+            .active_backend
+            .clone();
+        let firewall = self.firewall.clone();
+        let (result_tx, result_rx) = mpsc::channel();
+
+        #[cfg(feature = "servo-backend")]
+        {
+            let servo_service = self.servo_service.clone();
+            thread::Builder::new()
+                .name("sextant-navigation".into())
+                .spawn(move || {
+                    let requested_url = url.clone();
+                    let result = (|| {
+                        let (firewall_action, reason) = firewall.check_access(&persona_id, &url);
+                        if firewall_action == FirewallAction::Block {
+                            return Err(format!("Firewall Blocked: {} (Reason: {})", url, reason));
+                        }
+
+                        if backend != EngineBackend::Servo {
+                            return Err(
+                                "Async visible navigation is only wired for Servo tabs right now."
+                                    .to_string(),
+                            );
+                        }
+
+                        match servo_service.navigate_with_viewport(
+                            tab_id,
+                            url.clone(),
+                            viewport_size,
+                        ) {
+                            Ok(render) => {
+                                let snapshot = servo_service.inspect_tab(tab_id).ok();
+                                Ok(AsyncNavigationResult {
+                                    tab_id,
+                                    requested_url,
+                                    final_url: render.final_url,
+                                    status: render.status,
+                                    distilled_page: None,
+                                    can_go_back: snapshot
+                                        .as_ref()
+                                        .map(|tab| tab.can_go_back)
+                                        .unwrap_or(false),
+                                    can_go_forward: snapshot
+                                        .as_ref()
+                                        .map(|tab| tab.can_go_forward)
+                                        .unwrap_or(false),
+                                })
+                            }
+                            Err(error) => {
+                                let page = fetch_distilled_page(&url)?;
+                                let status = reader_fallback_status(format!(
+                                    "Servo live navigation failed: {}. Showing distilled reader.",
+                                    error
+                                ));
+                                Ok(AsyncNavigationResult {
+                                    tab_id,
+                                    requested_url,
+                                    final_url: page.url.clone(),
+                                    status,
+                                    distilled_page: Some(page),
+                                    can_go_back: false,
+                                    can_go_forward: false,
+                                })
+                            }
+                        }
+                    })();
+                    let _ = result_tx.send(result);
+                })
+                .map_err(|error| format!("failed to spawn Servo navigation worker: {error}"))?;
+            Ok(result_rx)
+        }
+
+        #[cfg(not(feature = "servo-backend"))]
+        {
+            let _ = (tab_id, url, persona_id, viewport_size, backend, firewall);
+            let _ = result_tx.send(Err(
+                "Servo backend is not enabled in this build.".to_string()
+            ));
+            Ok(result_rx)
+        }
+    }
+
+    pub fn reload_active_tab_async(
+        &self,
+    ) -> Result<mpsc::Receiver<Result<AsyncNavigationResult, String>>, String> {
+        self.active_tab_control_async(AsyncNavigationControl::Reload)
+    }
+
+    pub fn go_back_active_tab_async(
+        &self,
+    ) -> Result<mpsc::Receiver<Result<AsyncNavigationResult, String>>, String> {
+        self.active_tab_control_async(AsyncNavigationControl::Back)
+    }
+
+    pub fn go_forward_active_tab_async(
+        &self,
+    ) -> Result<mpsc::Receiver<Result<AsyncNavigationResult, String>>, String> {
+        self.active_tab_control_async(AsyncNavigationControl::Forward)
+    }
+
+    fn active_tab_control_async(
+        &self,
+        control: AsyncNavigationControl,
+    ) -> Result<mpsc::Receiver<Result<AsyncNavigationResult, String>>, String> {
+        let tab_id = self.active_tab_id.ok_or("No active tab")?;
+        let tab = self.tabs.get(&tab_id).ok_or("Active tab not found")?;
+        let backend = tab.status.active_backend.clone();
+        let requested_url = tab
+            .url
+            .clone()
+            .ok_or("Active tab has no URL for navigation control.")?;
+        let (result_tx, result_rx) = mpsc::channel();
+
+        #[cfg(feature = "servo-backend")]
+        {
+            let servo_service = self.servo_service.clone();
+            thread::Builder::new()
+                .name("sextant-navigation-control".into())
+                .spawn(move || {
+                    let result = (|| {
+                        if backend != EngineBackend::Servo {
+                            return Err(
+                                "Async visible navigation controls are only wired for Servo tabs right now."
+                                    .to_string(),
+                            );
+                        }
+
+                        let render = match control {
+                            AsyncNavigationControl::Reload => servo_service.reload(tab_id),
+                            AsyncNavigationControl::Back => servo_service.go_back(tab_id),
+                            AsyncNavigationControl::Forward => servo_service.go_forward(tab_id),
+                        }?;
+                        let snapshot = servo_service.inspect_tab(tab_id).ok();
+                        Ok(AsyncNavigationResult {
+                            tab_id,
+                            requested_url,
+                            final_url: render.final_url,
+                            status: render.status,
+                            distilled_page: None,
+                            can_go_back: snapshot
+                                .as_ref()
+                                .map(|tab| tab.can_go_back)
+                                .unwrap_or(false),
+                            can_go_forward: snapshot
+                                .as_ref()
+                                .map(|tab| tab.can_go_forward)
+                                .unwrap_or(false),
+                        })
+                    })();
+                    let _ = result_tx.send(result);
+                })
+                .map_err(|error| {
+                    format!("failed to spawn Servo navigation-control worker: {error}")
+                })?;
+            Ok(result_rx)
+        }
+
+        #[cfg(not(feature = "servo-backend"))]
+        {
+            let _ = (tab_id, requested_url, backend, control);
+            let _ = result_tx.send(Err(
+                "Servo backend is not enabled in this build.".to_string()
+            ));
+            Ok(result_rx)
+        }
+    }
+
+    pub fn apply_async_navigation_result(&mut self, result: AsyncNavigationResult) {
+        self.semantic_cache.remove(&result.requested_url);
+        self.semantic_cache.remove(&result.final_url);
+        if let Some(page) = result.distilled_page.as_ref() {
+            self.semantic_cache.insert(page.url.clone(), page.clone());
+        }
+        if let Some(tab) = self.tabs.get_mut(&result.tab_id) {
+            tab.url = Some(result.final_url.clone());
+            tab.status = result.status.clone();
+            tab.distilled_page = result.distilled_page;
+            tab.can_go_back = result.can_go_back;
+            tab.can_go_forward = result.can_go_forward;
+        }
+    }
+
+    pub fn distill_active_tab_async(
+        &self,
+    ) -> Result<mpsc::Receiver<Result<AsyncDistillResult, String>>, String> {
+        let tab_id = self.active_tab_id.ok_or("No active tab")?;
+        self.distill_tab_async(tab_id)
+    }
+
+    pub fn distill_tab_async(
+        &self,
+        tab_id: Uuid,
+    ) -> Result<mpsc::Receiver<Result<AsyncDistillResult, String>>, String> {
+        let tab = self.tabs.get(&tab_id).ok_or("Tab not found")?;
+        let url = tab
+            .url
+            .clone()
+            .unwrap_or_else(|| Url::parse("about:blank").unwrap());
+        let backend = tab.status.active_backend.clone();
+        let cached = tab
+            .distilled_page
+            .as_ref()
+            .filter(|page| page.url == url)
+            .cloned()
+            .or_else(|| self.semantic_cache.get(&url).cloned());
+        let (result_tx, result_rx) = mpsc::channel();
+
+        if let Some(page) = cached {
+            let _ = result_tx.send(Ok(AsyncDistillResult {
+                tab_id,
+                page,
+                status_note: None,
+            }));
+            return Ok(result_rx);
+        }
+
+        #[cfg(feature = "servo-backend")]
+        {
+            let servo_service = self.servo_service.clone();
+            thread::Builder::new()
+                .name("sextant-distill".into())
+                .spawn(move || {
+                    let result = (|| {
+                        let page = if backend == EngineBackend::Servo {
+                            match servo_service.distill_tab(tab_id) {
+                                Ok(snapshot) if snapshot.page.url.scheme() != "about" => {
+                                    let live_page = snapshot.page;
+                                    if should_try_reader_quality_fallback(&live_page) {
+                                        match fetch_distilled_page(&live_page.url) {
+                                            Ok(mut fallback)
+                                                if semantic_signal_count(&fallback)
+                                                    > semantic_signal_count(&live_page) =>
+                                            {
+                                                fallback.metadata.insert(
+                                                    "distillation_backend".to_string(),
+                                                    "reader-fallback-after-weak-live-dom"
+                                                        .to_string(),
+                                                );
+                                                fallback.metadata.insert(
+                                                    "live_dom_signal_count".to_string(),
+                                                    semantic_signal_count(&live_page).to_string(),
+                                                );
+                                                fallback
+                                            }
+                                            _ => live_page,
+                                        }
+                                    } else {
+                                        live_page
+                                    }
+                                }
+                                Ok(snapshot) => fetch_distilled_page(&snapshot.page.url)?,
+                                Err(error) => {
+                                    let mut page =
+                                        fetch_distilled_page(&url).map_err(|fallback| {
+                                            format!(
+                                                "Servo live DOM distillation failed: {}; reader fallback also failed: {}",
+                                                error, fallback
+                                            )
+                                        })?;
+                                    page.metadata.insert(
+                                        "distillation_backend".to_string(),
+                                        "reader-fallback-after-servo-error".to_string(),
+                                    );
+                                    return Ok(AsyncDistillResult {
+                                        tab_id,
+                                        page,
+                                        status_note: Some(format!(
+                                            "Servo live DOM distillation failed: {}; used reader fallback.",
+                                            error
+                                        )),
+                                    });
+                                }
+                            }
+                        } else {
+                            fetch_distilled_page(&url)?
+                        };
+                        Ok(AsyncDistillResult {
+                            tab_id,
+                            page,
+                            status_note: None,
+                        })
+                    })();
+                    let _ = result_tx.send(result);
+                })
+                .map_err(|error| format!("failed to spawn Servo distill worker: {error}"))?;
+            Ok(result_rx)
+        }
+
+        #[cfg(not(feature = "servo-backend"))]
+        {
+            let page = fetch_distilled_page(&url)?;
+            let _ = (backend, tab_id);
+            let _ = result_tx.send(Ok(AsyncDistillResult {
+                tab_id,
+                page,
+                status_note: None,
+            }));
+            Ok(result_rx)
+        }
+    }
+
+    pub fn apply_async_distill_result(&mut self, result: AsyncDistillResult) {
+        self.semantic_cache
+            .insert(result.page.url.clone(), result.page.clone());
+        if let Some(tab) = self.tabs.get_mut(&result.tab_id) {
+            tab.url = Some(result.page.url.clone());
+            tab.distilled_page = Some(result.page);
+            if let Some(status_note) = result.status_note {
+                tab.status.firewall_status = Some(status_note);
+            }
+        }
+    }
+
     fn try_render(
         &self,
         url: &Url,
@@ -2950,6 +3681,76 @@ impl SextantEngine {
         self.capture_tab_frame(tab_id)
     }
 
+    pub fn capture_current_frame_async(
+        &self,
+    ) -> Result<mpsc::Receiver<Result<RenderedFrame, String>>, String> {
+        let tab_id = self.active_tab_id.ok_or("No active tab")?;
+        self.capture_tab_frame_async(tab_id)
+    }
+
+    pub fn capture_tab_frame_async(
+        &self,
+        tab_id: Uuid,
+    ) -> Result<mpsc::Receiver<Result<RenderedFrame, String>>, String> {
+        let (result_tx, result_rx) = mpsc::channel();
+
+        #[cfg(feature = "servo-backend")]
+        {
+            let servo_service = self.servo_service.clone();
+            thread::Builder::new()
+                .name("sextant-frame-capture".into())
+                .spawn(move || {
+                    let result = servo_service
+                        .capture_frame(tab_id)
+                        .map(|snapshot| snapshot.frame);
+                    let _ = result_tx.send(result);
+                })
+                .map_err(|error| format!("failed to spawn Servo frame capture worker: {error}"))?;
+            Ok(result_rx)
+        }
+
+        #[cfg(not(feature = "servo-backend"))]
+        {
+            let _ = tab_id;
+            let _ = result_tx.send(Err(
+                "Servo backend is not enabled in this build.".to_string()
+            ));
+            Ok(result_rx)
+        }
+    }
+
+    pub fn capture_tab_frame_with_resize_async(
+        &self,
+        tab_id: Uuid,
+        viewport_size: Option<(u32, u32)>,
+    ) -> Result<mpsc::Receiver<Result<AsyncFrameCapture, String>>, String> {
+        let (result_tx, result_rx) = mpsc::channel();
+
+        #[cfg(feature = "servo-backend")]
+        {
+            let servo_service = self.servo_service.clone();
+            thread::Builder::new()
+                .name("sextant-frame-resize-capture".into())
+                .spawn(move || {
+                    let result = servo_service.resize_and_capture_frame(tab_id, viewport_size);
+                    let _ = result_tx.send(result);
+                })
+                .map_err(|error| {
+                    format!("failed to spawn Servo frame resize/capture worker: {error}")
+                })?;
+            Ok(result_rx)
+        }
+
+        #[cfg(not(feature = "servo-backend"))]
+        {
+            let _ = (tab_id, viewport_size);
+            let _ = result_tx.send(Err(
+                "Servo backend is not enabled in this build.".to_string()
+            ));
+            Ok(result_rx)
+        }
+    }
+
     pub fn resize_current_viewport(&mut self, width: u32, height: u32) -> Result<(), String> {
         let tab_id = self.active_tab_id.ok_or("No active tab")?;
         self.resize_tab_viewport(tab_id, width, height)
@@ -2984,6 +3785,27 @@ impl SextantEngine {
         {
             self.servo_service
                 .wheel(tab_id, delta_x, delta_y, pixel_mode)
+        }
+
+        #[cfg(not(feature = "servo-backend"))]
+        {
+            let _ = (tab_id, delta_x, delta_y, pixel_mode);
+            Err("Servo backend is not enabled in this build.".to_string())
+        }
+    }
+
+    pub fn enqueue_wheel_current_viewport(
+        &mut self,
+        delta_x: f64,
+        delta_y: f64,
+        pixel_mode: bool,
+    ) -> Result<(), String> {
+        let tab_id = self.active_tab_id.ok_or("No active tab")?;
+        #[cfg(feature = "servo-backend")]
+        {
+            self.servo_service
+                .enqueue_wheel(tab_id, delta_x, delta_y, pixel_mode);
+            Ok(())
         }
 
         #[cfg(not(feature = "servo-backend"))]

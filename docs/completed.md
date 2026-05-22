@@ -4,6 +4,28 @@ Audit trail of completed work sessions. Newest first.
 
 ---
 
+## 2026-05-19 — Direct Servo Presentation Proof
+
+- Added `sextant-servo-direct`, an experimental Servo-backed proof binary that uses Servo's `WindowRenderingContext`, `WebViewBuilder`, direct `paint()`, and `present()` path instead of the current frame-capture-to-Softbuffer render bridge
+- Added the required `winit 0.30` and direct Servo optional dependencies behind the existing `servo-backend` feature without changing the production `sextant-browser` event loop yet
+- Shared the Windows ANGLE runtime bootstrap with the direct proof so Servo/surfman can find `libEGL.dll` and `libGLESv2.dll` before context creation
+- Confirmed `cargo check -p sextant-hull --bin sextant-servo-direct` passes
+- Confirmed `cargo run -p sextant-hull --bin sextant-servo-direct -- --smoke --url https://example.com --timeout-seconds 45` reaches first direct present in about 165ms
+- Added MCP `browser_direct_present_smoke` and CLI `sextant-mcp --direct-present-smoke <url> --json` so agents can run the direct Servo presentation proof and receive structured `directPresent` timing data
+- Confirmed `cargo run -p sextant-mcp -- --direct-present-smoke https://example.com --timeout-seconds 45 --json` returns `directPresent.firstPresentMs` around 163ms with `frameReadback=false`
+- Added a production user render-path boundary in `sextant-browser`: `BRIDGE` is the integrated frame-capture-to-Softbuffer path, while parsed `DIRECT` requests fail with a clear production-integration-incomplete message
+- Added window-smoke render-path reporting and MCP parsing for `renderPath`, `renderPathStatus`, and `renderGap`
+- Confirmed Direct-mode window smoke reports `renderPath=BRIDGE`, `renderGap=direct compositor pending`, and still captures a real Servo frame through the temporary bridge
+- Confirmed `sextant-browser --render-path direct --window-smoke` exits honestly instead of silently falling back
+- Added MCP `browser_render_path_baseline` and CLI `sextant-mcp --render-path-baseline <url> --json` to compare direct Servo presentation against the production bridge-backed window smoke
+- Added MCP `browser_window_smoke.render_path` pass-through so agents can explicitly request `bridge` or prove that `direct` is still rejected in the production shell
+- Confirmed the first example.com render-path baseline: direct present 177ms, production bridge first frame 1.0s, bridge resize 395ms, bridge capture 41ms, first-frame gap 823ms
+- Added opt-in `--pre-size-navigation` for visible browser smoke so pre-navigation viewport sizing can be measured without changing the production default
+- Expanded `browser_render_path_baseline` to include the pre-sized bridge variant; example.com confirmed pre-sizing removes resize cost but regresses first frame to 8.3s, so the default bridge path remains better for now
+- Updated active docs to treat direct Servo presentation as the next render-bridge integration milestone instead of more frame-readback tuning
+
+---
+
 ## 2026-05-17 — Normal Browsing Performance Timing
 
 - Added a visible `GUARD` tab to the native browser for local trust-boundary status
@@ -51,7 +73,89 @@ Audit trail of completed work sessions. Newest first.
 - Extended deferred visible loading feedback to DISTILL so the core Servo-to-Wake action paints a status before live DOM distillation/Wake work begins
 - Added regression coverage for deferred DISTILL state
 - Changed viewport wheel input to queue frame warmup instead of synchronously capturing a Servo frame in the wheel handler
+- Added an enqueue-only Servo wheel command and switched the visible browser wheel path to it so wheel input no longer waits for Servo acknowledgement
 - Added regression coverage for viewport wheel frame-warmup scheduling
+- Added a smaller interaction frame-warmup budget for viewport mouse/key/wheel input so input bursts do not rearm the full navigation capture window
+- Added async Servo frame-capture requests for the visible event loop so frame refresh can poll a background worker instead of blocking the window loop
+- Moved the visible event-loop resize-plus-capture path onto a Servo worker so expensive viewport resize/layout work no longer blocks mouse/key/wheel handling while the next frame is being captured
+- Added viewport mouse-move backpressure so passive hover movement is forwarded to Servo at a bounded rate with small-move suppression, while clicks still force the final pointer position before button dispatch
+- Lowered viewport input frame warmup to a single follow-up capture so typing/scrolling does not keep the capture loop hot after every input burst
+- Trimmed browser text input overhead by forwarding printable characters only on key press, not on key release, so Servo no longer receives no-op character release commands
+- Added Servo service-side coalescing for adjacent printable text commands so fast typing can commit runs of text with fewer service-loop spins
+- Debounced interaction frame capture by resetting the dirty-frame timer on viewport input, allowing typing bursts to settle before the next captured frame competes with key delivery
+- Added a shell-side printable-text debounce queue so fast typing sends one compact Servo text commit after a short pause, then schedules the next frame immediately after the commit instead of waiting the full dirty-frame interval
+- Made small-window layout use the real window dimensions instead of fixed 900x620 assumptions; narrow windows now hide the right rail and keep the browser viewport inside the visible window
+- Added regression coverage for debounced viewport text input and small-window viewport bounds
+- Added the first browser mode boundary in the active shell: Agent, Assisted, Observe, Direct, and Incognito
+- Added per-mode capability flags for AI control, DOM/frame observation, Wake reads/writes, content logging, MCP exposure, and direct-render intent
+- Added visible mode controls in the top bar plus mode status in the bottom bar
+- Routed DOM distillation, Wake reads/writes, and Captain's Log content persistence through mode capabilities; Direct and Incognito now block AI observation/persistence while preserving the temporary frame-capture render bridge
+- Added regression coverage proving Direct mode disables AI observation/persistence and Agent mode restores full capability
+- Moved normal visible URL/search navigation onto a Servo navigation worker so the real window can keep pumping events while page load runs, instead of blocking the UI thread after the loading status paints
+- Paused visible frame refresh while navigation is pending so capture/resize work does not stack up behind an in-flight page load
+- Made Servo frame capture skip an explicit `webview.paint()` when the WebView delegate has already painted a newly-ready frame, avoiding one redundant render step on fresh frames
+- Added visible smoke PERF summary output so first-draw/frame checks report navigation, distill, Wake, resize, and frame timings alongside draw/blit/present costs
+- Captured fresh heavy-page performance probes: Google loaded with Servo in about 2.1s with frame resize/capture around 10ms/27ms, while MDN loaded in about 1.1s with frame resize/capture around 31ms/17ms on the latest debug run
+- Confirmed visible Google smoke now reports an immediate `Opening ... with Servo...` status, first shell draw around 29ms, first Servo frame around 2.3s, and navigation work around 2.1s without doing that navigation work on the UI thread
+- Tested early viewport pre-sizing before navigation and rejected it for now: it removed the post-load resize cost but made Google navigation jump to about 8.1s, so the live path keeps the faster default navigation shape while deeper Servo layout instrumentation is planned
+- Kept synchronous frame refresh available for operator/proof workflows that require immediate captured evidence
+- Split frame capture by purpose: user-visible render bridge captures stay available in every browser mode, while AI observation/proof captures are capability-gated and blocked in Direct/Incognito
+- Added perf labels that distinguish render-bridge frame capture from AI-observation frame capture
+- Updated tab switching and close-tab refreshes to use the render-bridge path, preserving user display in Direct/Incognito while AI observation remains excluded
+- Extended MCP browser discovery so `browser_capabilities`, initialize metadata, and static resources advertise Agent/Assisted/Observe/Direct/Incognito mode boundaries
+- Added structured MCP runtime-loop metadata for the user interaction loop, Servo service loop, temporary render bridge, AI observation path, and persistence path
+- Added `--browser-mode <agent|assisted|observe|direct|incognito>` for visible browser launches and window-smoke runs
+- Exposed visible mode selection through MCP `browser_window_smoke.mode`
+- Proved Direct-mode visible smoke against `https://example.com`: AI observation disabled, temporary render bridge still captured and displayed a real Servo frame
+- Made Incognito visible launches and runtime mode switches use an ephemeral browser data directory for Wake/Log storage instead of the normal browser profile
+- Leaving Incognito now reopens the normal browser profile storage and removes the temp directory
+- Proved Incognito visible smoke against `https://example.com`: ephemeral profile reported, real Servo frame displayed, temp directory removed after bounded smoke exit
+- Limited native `intent:` execution to Agent and Assisted modes so Observe, Direct, and Incognito stop Pilot/browser-control work at the mode boundary
+- Proved Direct-mode visible intent blocking with `intent: open https://example.com and distill`, which failed intentionally before navigation/distillation with a clear mode-boundary message
+- Limited visible proof workflows to Agent and Assisted modes so Showcase, real-browsing seed, and shell-interaction seed cannot bypass Direct/Incognito boundaries
+- Proved Direct-mode showcase blocking with `--start-showcase --window-smoke`, which failed intentionally before proof automation began
+- Added MCP-side prevalidation for `browser_window_smoke.mode` so Direct/Observe/Incognito reject proof seeders and native-intent targets before launching the browser
+- Proved MCP Direct-mode showcase rejection over stdio returned an immediate tool error instead of spawning `sextant-browser`
+- Added mode-aware disabled action messages for Showcase, Distill, and Wake controls
+- Updated validation rows to mark AI observation, Wake, and Captain's Log as mode-disabled when Direct/Incognito/Observe boundaries apply
+- Added AI posture and profile/ephemeral storage state to the visible status bar
+- Added structured `windowSmoke` output to MCP browser window smoke results, including mode, storage, timing, perf, and latest-frame fields
+- Proved Incognito MCP window smoke returns structured mode/storage/frame data and still removes its ephemeral profile after exit
+- Added `sextant-mcp --window-smoke` as a CLI shim for the MCP visible-smoke path, with `--mode`/`--browser-mode`, browser workflow flags, and `--json`
+- Added parser coverage for MCP window-smoke CLI mode, timeout, target, and proof-workflow arguments
+- Added an async distillation worker/apply path in `sextant-engine` so visible browser DOM distillation can run off the UI event loop
+- Routed deferred user DISTILL actions in the visible shell through async distillation polling while keeping operator/proof workflows synchronous for deterministic assertions
+- Added regression coverage proving visible distillation can complete from the worker and attach the distilled page back to the active tab
+- Added visible smoke support for user-triggered async DISTILL with `--window-smoke-distill` / MCP `user_distill`, including structured `distillMs` and `wakeMs`
+- Proved assisted user-DISTILL visible smoke against `https://example.com`: `distillMs=381`, `wakeMs=30`, first draw around 33ms, first Servo frame around 974ms
+- Split render-bridge resize and frame-capture timing so `frameMs` no longer includes resize time and async worker round-trip time
+- Added a combined Servo service `resize + capture` command for the render bridge, removing the extra resize-then-capture service request pair
+- Re-ran assisted user-DISTILL visible smoke after the split: first draw around 22ms, first Servo frame around 874ms, resize around 18ms, frame readback around 36ms
+- Added the first dedicated Persistence lane for visible async DISTILL completion. It owns Wake/Log handles on a worker thread, records the distilled page, searches Wake, writes the Captain's Log entry, and returns results to the UI loop.
+- Persistence lane shutdown now joins the worker before profile switches, preserving Incognito temp-profile cleanup.
+- Proved assisted user-DISTILL visible smoke through the Persistence lane: distill around 26ms, Wake/Log persistence around 46ms, resize around 22ms, frame readback around 27ms, first Servo frame around 895ms.
+- Extended the Persistence lane to visible Wake searches, including Wake query, Captain's Log search entry, recent-log refresh, and UI-loop polling.
+- Added regression coverage proving visible Wake search can complete from the Persistence lane and return both Wake rows and Log rows.
+- Routed ordinary visible Captain's Log writes through the Persistence lane as fire-and-poll work, so visible navigation/tab/control logs no longer need to write SQLite on the UI path.
+- Added regression coverage proving visible log writes complete through the Persistence lane and refresh recent Log rows.
+- Moved visible recent-log refreshes onto the Persistence lane too, so the visible shell no longer needs to perform synchronous Captain's Log reads after navigation, mode changes, or UI actions.
+- Added regression coverage proving visible recent-log refresh can complete from the Persistence lane.
+- Added viewport-input scheduling inside the Servo service: queued key/mouse/wheel input can run ahead of pending frame captures, while navigation/inspection/control commands preserve order.
+- Added Servo-service mouse-move coalescing so queued hover movement collapses to the latest position across deferred frame captures without crossing click, wheel, or key boundaries.
+- Added Servo-feature regression coverage for input-over-frame scheduling and mouse-move coalescing.
+- Re-ran assisted user-DISTILL visible smoke against `https://example.com` after the lane/scheduler work: first shell draw around 35ms, navigation around 406ms, distill around 310ms, Wake/persistence around 50ms, resize around 20ms, frame readback around 24ms, and first Servo frame around 862ms.
+- Added a shell-side viewport input lane so visible mouse moves, wheel deltas, and printable text are queued/coalesced before engine enqueue instead of being sent directly from high-frequency winit handlers.
+- Added regression coverage proving the shell-side viewport input lane coalesces mouse moves, adjacent wheel deltas, and text batches before engine enqueue.
+- Pinned the shell-side viewport input lane to the active tab and clear it on tab changes, preventing queued input from landing on a different tab if the user switches pages before the next lane flush.
+- Added regression coverage proving stale queued viewport input is dropped when the active tab changes before flush.
+- Moved visible tab-switch and close-tab render refresh onto the async render-bridge capture path, removing another synchronous Servo resize/capture call from user tab controls while preserving synchronous operator/proof refreshes.
+- Added async Servo navigation-control workers for visible reload, back, and forward actions, so those deferred user controls no longer run synchronous Servo navigation on the UI loop after the loading notice paints.
+- Added regression coverage for the visible navigation-control guard that prevents reload/back/forward async workers from starting on blank tabs.
+- Added Servo-backed regression coverage proving visible reload can complete through the async navigation-control worker and pending-navigation polling path.
+- Updated MCP browser capability metadata and static resources to advertise the implemented viewport input lane.
+- Re-ran assisted user-DISTILL visible smoke after the shell input lane landed: first shell draw around 25ms, navigation around 407ms, distill around 346ms, Wake/persistence around 48ms, resize around 30ms, frame readback around 51ms, and first Servo frame around 918ms.
+- Re-ran assisted user-DISTILL visible smoke after async tab-control refreshes: first shell draw around 38ms, navigation around 488ms, distill around 448ms, Wake/persistence around 90ms, resize around 27ms, frame readback around 36ms, and first Servo frame around 1.1s.
+- Re-ran assisted user-DISTILL visible smoke after async reload/back/forward workers: first shell draw around 19ms, navigation around 477ms, distill around 370ms, Wake/persistence around 58ms, resize around 31ms, frame readback around 33ms, and first Servo frame around 1.0s.
 
 ---
 

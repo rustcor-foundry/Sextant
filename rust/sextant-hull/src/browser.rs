@@ -2,7 +2,8 @@ use chrono::Utc;
 #[cfg(feature = "xilem-shell")]
 use sextant_airgap::SextantAirGap;
 use sextant_engine::{
-    BrowserKey, EngineBackend, EngineStatus, NodeType, RenderedFrame, SextantEngine, Tab,
+    AsyncDistillResult, AsyncFrameCapture, AsyncNavigationResult, BrowserKey, DistilledPage,
+    EngineBackend, EngineStatus, NodeType, RenderedFrame, SextantEngine, Tab,
 };
 #[cfg(feature = "xilem-shell")]
 use sextant_firewall::{FirewallAction, SextantFirewall};
@@ -15,11 +16,10 @@ use sextant_privacy::{PrivacyLevel, PrivacyMasker};
 use sextant_vault::CitadelVault;
 use sextant_wake::{DigitalWake, WakeEntry};
 use softbuffer::{Context, Surface};
+use std::collections::VecDeque;
 use std::env;
 use std::num::NonZeroU32;
-#[cfg(feature = "xilem-shell")]
-use std::path::Path;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -62,11 +62,15 @@ const GLYPH_GAP: u32 = 2;
 const FRAME_REFRESH_IDLE: Duration = Duration::from_millis(1500);
 const FRAME_REFRESH_DIRTY: Duration = Duration::from_millis(250);
 const FRAME_WARMUP_BUDGET: u8 = 6;
+const FRAME_INTERACTION_WARMUP_BUDGET: u8 = 1;
+const VIEWPORT_MOUSE_MOVE_MIN_INTERVAL: Duration = Duration::from_millis(33);
+const VIEWPORT_MOUSE_MOVE_MIN_DISTANCE_PX: f32 = 2.0;
+const VIEWPORT_TEXT_INPUT_DEBOUNCE: Duration = Duration::from_millis(25);
 const PERF_HISTORY_LIMIT: usize = 24;
 const OPERATOR_DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
 const WINDOW_SMOKE_DEFAULT_TIMEOUT: Duration = Duration::from_secs(15);
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct Rect {
     x: u32,
     y: u32,
@@ -121,6 +125,146 @@ enum BrowserShortcut {
     Forward,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BrowserMode {
+    Agent,
+    Assisted,
+    Observe,
+    Direct,
+    Incognito,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum UserRenderPath {
+    FrameBridge,
+    DirectServo,
+}
+
+impl UserRenderPath {
+    fn label(self) -> &'static str {
+        match self {
+            UserRenderPath::FrameBridge => "BRIDGE",
+            UserRenderPath::DirectServo => "DIRECT",
+        }
+    }
+
+    fn status(self) -> &'static str {
+        match self {
+            UserRenderPath::FrameBridge => {
+                "temporary frame-capture render bridge feeding Softbuffer"
+            }
+            UserRenderPath::DirectServo => {
+                "direct Servo WindowRenderingContext proof; not integrated into the production shell yet"
+            }
+        }
+    }
+
+    fn integrated(self) -> bool {
+        matches!(self, UserRenderPath::FrameBridge)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct BrowserCapabilities {
+    ai_control: bool,
+    ai_observe_dom: bool,
+    ai_observe_frame: bool,
+    read_wake: bool,
+    write_wake: bool,
+    write_log_content: bool,
+    expose_mcp_tools: bool,
+    direct_render_required: bool,
+}
+
+impl BrowserMode {
+    const ALL: [BrowserMode; 5] = [
+        BrowserMode::Agent,
+        BrowserMode::Assisted,
+        BrowserMode::Observe,
+        BrowserMode::Direct,
+        BrowserMode::Incognito,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            BrowserMode::Agent => "AGENT",
+            BrowserMode::Assisted => "ASSIST",
+            BrowserMode::Observe => "OBSERVE",
+            BrowserMode::Direct => "DIRECT",
+            BrowserMode::Incognito => "INCOG",
+        }
+    }
+
+    fn status(self) -> &'static str {
+        match self {
+            BrowserMode::Agent => "Agent Mode: AI can observe, control, persist, and expose tools.",
+            BrowserMode::Assisted => {
+                "Assisted Mode: human first, AI sidecar observation with consent for actions."
+            }
+            BrowserMode::Observe => "Observe Mode: AI can observe but cannot act.",
+            BrowserMode::Direct => "Direct Mode: human performance path, AI observation disabled.",
+            BrowserMode::Incognito => {
+                "Incognito Mode: human-only, no AI observation or content persistence."
+            }
+        }
+    }
+
+    fn capabilities(self) -> BrowserCapabilities {
+        match self {
+            BrowserMode::Agent => BrowserCapabilities {
+                ai_control: true,
+                ai_observe_dom: true,
+                ai_observe_frame: true,
+                read_wake: true,
+                write_wake: true,
+                write_log_content: true,
+                expose_mcp_tools: true,
+                direct_render_required: false,
+            },
+            BrowserMode::Assisted => BrowserCapabilities {
+                ai_control: false,
+                ai_observe_dom: true,
+                ai_observe_frame: true,
+                read_wake: true,
+                write_wake: true,
+                write_log_content: true,
+                expose_mcp_tools: true,
+                direct_render_required: false,
+            },
+            BrowserMode::Observe => BrowserCapabilities {
+                ai_control: false,
+                ai_observe_dom: true,
+                ai_observe_frame: true,
+                read_wake: true,
+                write_wake: false,
+                write_log_content: false,
+                expose_mcp_tools: true,
+                direct_render_required: false,
+            },
+            BrowserMode::Direct => BrowserCapabilities {
+                ai_control: false,
+                ai_observe_dom: false,
+                ai_observe_frame: false,
+                read_wake: false,
+                write_wake: false,
+                write_log_content: false,
+                expose_mcp_tools: false,
+                direct_render_required: true,
+            },
+            BrowserMode::Incognito => BrowserCapabilities {
+                ai_control: false,
+                ai_observe_dom: false,
+                ai_observe_frame: false,
+                read_wake: false,
+                write_wake: false,
+                write_log_content: false,
+                expose_mcp_tools: false,
+                direct_render_required: true,
+            },
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum MainView {
     Browser,
@@ -173,6 +317,7 @@ struct OperatorRunSpec {
 struct WindowSmokeSpec {
     target: Option<String>,
     timeout: Duration,
+    user_distill: bool,
 }
 
 #[derive(Clone)]
@@ -192,6 +337,11 @@ struct ButtonRegion {
 struct PageTabRegion {
     rect: Rect,
     tab_id: Uuid,
+}
+
+struct ModeRegion {
+    rect: Rect,
+    mode: BrowserMode,
 }
 
 #[derive(Clone)]
@@ -254,6 +404,519 @@ struct PerfEvent {
     duration: Duration,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FrameCapturePurpose {
+    RenderBridge,
+    AiObservation,
+}
+
+impl FrameCapturePurpose {
+    fn capture_label(self) -> &'static str {
+        match self {
+            FrameCapturePurpose::RenderBridge => "capture render bridge",
+            FrameCapturePurpose::AiObservation => "capture ai observation",
+        }
+    }
+
+    fn capture_failed_label(self) -> &'static str {
+        match self {
+            FrameCapturePurpose::RenderBridge => "render bridge capture failed",
+            FrameCapturePurpose::AiObservation => "ai observation capture failed",
+        }
+    }
+
+    fn capture_start_failed_label(self) -> &'static str {
+        match self {
+            FrameCapturePurpose::RenderBridge => "render bridge start failed",
+            FrameCapturePurpose::AiObservation => "ai observation start failed",
+        }
+    }
+
+    fn capture_dropped_label(self) -> &'static str {
+        match self {
+            FrameCapturePurpose::RenderBridge => "render bridge capture dropped",
+            FrameCapturePurpose::AiObservation => "ai observation capture dropped",
+        }
+    }
+
+    fn resize_label(self) -> &'static str {
+        match self {
+            FrameCapturePurpose::RenderBridge => "viewport render bridge",
+            FrameCapturePurpose::AiObservation => "viewport ai observation",
+        }
+    }
+
+    fn resize_failed_label(self) -> &'static str {
+        match self {
+            FrameCapturePurpose::RenderBridge => "viewport render bridge failed",
+            FrameCapturePurpose::AiObservation => "viewport ai observation failed",
+        }
+    }
+
+    fn resize_async_label(self) -> &'static str {
+        match self {
+            FrameCapturePurpose::RenderBridge => "viewport render bridge async",
+            FrameCapturePurpose::AiObservation => "viewport ai observation async",
+        }
+    }
+
+    fn resize_async_missing_label(self) -> &'static str {
+        match self {
+            FrameCapturePurpose::RenderBridge => "viewport render bridge async missing",
+            FrameCapturePurpose::AiObservation => "viewport ai observation async missing",
+        }
+    }
+}
+
+struct PendingFrameCapture {
+    tab_id: Uuid,
+    result_rx: mpsc::Receiver<Result<AsyncFrameCapture, String>>,
+    started: Instant,
+    viewport_size: (u32, u32),
+    requested_resize: bool,
+    purpose: FrameCapturePurpose,
+}
+
+struct PendingNavigation {
+    url: Url,
+    kind: PendingNavigationKind,
+    result_rx: mpsc::Receiver<Result<AsyncNavigationResult, String>>,
+    started: Instant,
+    viewport_size: Option<(u32, u32)>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+enum PendingNavigationKind {
+    Open,
+    Reload,
+    Back,
+    Forward,
+}
+
+impl PendingNavigationKind {
+    fn pending_status(self, url: &Url) -> String {
+        match self {
+            PendingNavigationKind::Open => format!("Opening {} with Servo...", short_url(url)),
+            PendingNavigationKind::Reload => "Reloading active tab with Servo...".to_string(),
+            PendingNavigationKind::Back => "Going back with Servo...".to_string(),
+            PendingNavigationKind::Forward => "Going forward with Servo...".to_string(),
+        }
+    }
+
+    fn success_status(self, final_url: &Url, backend_name: &str, elapsed: Duration) -> String {
+        match self {
+            PendingNavigationKind::Open => format!(
+                "{} {} with {} in {}. Frame capture queued.",
+                render_action_label(),
+                short_url(final_url),
+                backend_name,
+                format_duration(elapsed)
+            ),
+            PendingNavigationKind::Reload => format!(
+                "Reloaded active tab with {} in {}. Frame capture queued.",
+                backend_name,
+                format_duration(elapsed)
+            ),
+            PendingNavigationKind::Back => format!(
+                "Went back with {} in {}. Frame capture queued.",
+                backend_name,
+                format_duration(elapsed)
+            ),
+            PendingNavigationKind::Forward => format!(
+                "Went forward with {} in {}. Frame capture queued.",
+                backend_name,
+                format_duration(elapsed)
+            ),
+        }
+    }
+
+    fn failure_status(self, error: &str) -> String {
+        match self {
+            PendingNavigationKind::Open => format!("Open failed: {}", error),
+            PendingNavigationKind::Reload => format!("Reload failed: {}", error),
+            PendingNavigationKind::Back => format!("Back unavailable: {}", error),
+            PendingNavigationKind::Forward => format!("Forward unavailable: {}", error),
+        }
+    }
+
+    fn perf_label(self) -> &'static str {
+        match self {
+            PendingNavigationKind::Open => "open async",
+            PendingNavigationKind::Reload => "reload async",
+            PendingNavigationKind::Back => "back async",
+            PendingNavigationKind::Forward => "forward async",
+        }
+    }
+
+    fn failure_perf_label(self) -> &'static str {
+        match self {
+            PendingNavigationKind::Open => "open async failed",
+            PendingNavigationKind::Reload => "reload async failed",
+            PendingNavigationKind::Back => "back async failed",
+            PendingNavigationKind::Forward => "forward async failed",
+        }
+    }
+
+    fn dropped_perf_label(self) -> &'static str {
+        match self {
+            PendingNavigationKind::Open => "open worker dropped",
+            PendingNavigationKind::Reload => "reload worker dropped",
+            PendingNavigationKind::Back => "back worker dropped",
+            PendingNavigationKind::Forward => "forward worker dropped",
+        }
+    }
+
+    fn log_intent(self, url: &Url) -> String {
+        match self {
+            PendingNavigationKind::Open => format!("navigate {}", url),
+            PendingNavigationKind::Reload => "reload".to_string(),
+            PendingNavigationKind::Back => "back".to_string(),
+            PendingNavigationKind::Forward => "forward".to_string(),
+        }
+    }
+}
+
+struct PendingDistillation {
+    result_rx: mpsc::Receiver<Result<AsyncDistillResult, String>>,
+    started: Instant,
+}
+
+struct PendingPersistence {
+    result_rx: mpsc::Receiver<Result<PersistenceDistillResult, String>>,
+    started: Instant,
+    page_title: String,
+}
+
+struct PendingWakeSearch {
+    result_rx: mpsc::Receiver<Result<PersistenceWakeSearchResult, String>>,
+    started: Instant,
+    query: String,
+}
+
+struct PendingLogWrite {
+    result_rx: mpsc::Receiver<Result<PersistenceLogResult, String>>,
+    started: Instant,
+    intent: String,
+}
+
+struct PendingLogRefresh {
+    result_rx: mpsc::Receiver<Result<PersistenceLogResult, String>>,
+    started: Instant,
+}
+
+enum ViewportInputEvent {
+    MouseMove {
+        x: f32,
+        y: f32,
+    },
+    MouseButton {
+        x: f32,
+        y: f32,
+        pressed: bool,
+    },
+    Wheel {
+        delta_x: f64,
+        delta_y: f64,
+        pixel_mode: bool,
+    },
+    KeyNamed {
+        key: BrowserKey,
+        pressed: bool,
+    },
+    Text {
+        text: String,
+    },
+}
+
+struct PersistenceDistillResult {
+    wake_results: Vec<WakeEntry>,
+    recent_logs: Vec<LogEntry>,
+}
+
+struct PersistenceWakeSearchResult {
+    wake_results: Vec<WakeEntry>,
+    recent_logs: Vec<LogEntry>,
+}
+
+struct PersistenceLogResult {
+    recent_logs: Vec<LogEntry>,
+}
+
+enum PersistenceCommand {
+    RecordDistilledPage {
+        persona_id: String,
+        page: DistilledPage,
+        reply_tx: mpsc::Sender<Result<PersistenceDistillResult, String>>,
+    },
+    SearchWake {
+        persona_id: String,
+        query: String,
+        reply_tx: mpsc::Sender<Result<PersistenceWakeSearchResult, String>>,
+    },
+    RecordLog {
+        entry: LogEntry,
+        reply_tx: mpsc::Sender<Result<PersistenceLogResult, String>>,
+    },
+    RefreshLogs {
+        persona_id: String,
+        limit: usize,
+        reply_tx: mpsc::Sender<Result<PersistenceLogResult, String>>,
+    },
+    Shutdown,
+}
+
+struct PersistenceLane {
+    command_tx: mpsc::Sender<PersistenceCommand>,
+    worker: Option<thread::JoinHandle<()>>,
+}
+
+impl PersistenceLane {
+    fn new(data_dir: &Path) -> Result<Self, String> {
+        std::fs::create_dir_all(data_dir).map_err(|error| error.to_string())?;
+        let wake_path = data_dir.join("wake.db");
+        let log_path = data_dir.join("captains-log.db");
+        let (command_tx, command_rx) = mpsc::channel();
+        let worker = thread::Builder::new()
+            .name("sextant-persistence-lane".to_string())
+            .spawn(move || {
+                let wake = match DigitalWake::open(wake_path) {
+                    Ok(wake) => wake,
+                    Err(error) => {
+                        while let Ok(command) = command_rx.recv() {
+                            match command {
+                                PersistenceCommand::RecordDistilledPage { reply_tx, .. } => {
+                                    let _ = reply_tx.send(Err(format!(
+                                        "Persistence lane Wake initialization failed: {}",
+                                        error
+                                    )));
+                                }
+                                PersistenceCommand::SearchWake { reply_tx, .. } => {
+                                    let _ = reply_tx.send(Err(format!(
+                                        "Persistence lane Wake initialization failed: {}",
+                                        error
+                                    )));
+                                }
+                                PersistenceCommand::RecordLog { reply_tx, .. } => {
+                                    let _ = reply_tx.send(Err(format!(
+                                        "Persistence lane Wake initialization failed: {}",
+                                        error
+                                    )));
+                                }
+                                PersistenceCommand::RefreshLogs { reply_tx, .. } => {
+                                    let _ = reply_tx.send(Err(format!(
+                                        "Persistence lane Wake initialization failed: {}",
+                                        error
+                                    )));
+                                }
+                                PersistenceCommand::Shutdown => break,
+                            }
+                        }
+                        return;
+                    }
+                };
+                let log = match CaptainsLog::new(log_path) {
+                    Ok(log) => log,
+                    Err(error) => {
+                        while let Ok(command) = command_rx.recv() {
+                            match command {
+                                PersistenceCommand::RecordDistilledPage { reply_tx, .. } => {
+                                    let _ = reply_tx.send(Err(format!(
+                                        "Persistence lane Captain's Log initialization failed: {}",
+                                        error
+                                    )));
+                                }
+                                PersistenceCommand::SearchWake { reply_tx, .. } => {
+                                    let _ = reply_tx.send(Err(format!(
+                                        "Persistence lane Captain's Log initialization failed: {}",
+                                        error
+                                    )));
+                                }
+                                PersistenceCommand::RecordLog { reply_tx, .. } => {
+                                    let _ = reply_tx.send(Err(format!(
+                                        "Persistence lane Captain's Log initialization failed: {}",
+                                        error
+                                    )));
+                                }
+                                PersistenceCommand::RefreshLogs { reply_tx, .. } => {
+                                    let _ = reply_tx.send(Err(format!(
+                                        "Persistence lane Captain's Log initialization failed: {}",
+                                        error
+                                    )));
+                                }
+                                PersistenceCommand::Shutdown => break,
+                            }
+                        }
+                        return;
+                    }
+                };
+
+                while let Ok(command) = command_rx.recv() {
+                    match command {
+                        PersistenceCommand::RecordDistilledPage {
+                            persona_id,
+                            page,
+                            reply_tx,
+                        } => {
+                            let result = (|| {
+                                wake.record(&persona_id, &page, None)
+                                    .map_err(|error| error.to_string())?;
+                                let wake_results = wake
+                                    .search(&persona_id, &page.title)
+                                    .map_err(|error| error.to_string())?;
+                                log.record(&LogEntry {
+                                    id: Uuid::new_v4(),
+                                    timestamp: Utc::now(),
+                                    persona_id: persona_id.clone(),
+                                    intent: "distill active".to_string(),
+                                    plan_json: "{}".to_string(),
+                                    signature: "native-browser-shell".to_string(),
+                                    consent_signature: None,
+                                    status: LogStatus::Success,
+                                })
+                                .map_err(|error| error.to_string())?;
+                                let recent_logs = log
+                                    .get_entries(&persona_id, 5)
+                                    .map_err(|error| error.to_string())?;
+                                Ok(PersistenceDistillResult {
+                                    wake_results,
+                                    recent_logs,
+                                })
+                            })();
+                            let _ = reply_tx.send(result);
+                        }
+                        PersistenceCommand::SearchWake {
+                            persona_id,
+                            query,
+                            reply_tx,
+                        } => {
+                            let result = (|| {
+                                let wake_results = wake
+                                    .search(&persona_id, &query)
+                                    .map_err(|error| error.to_string())?;
+                                log.record(&LogEntry {
+                                    id: Uuid::new_v4(),
+                                    timestamp: Utc::now(),
+                                    persona_id: persona_id.clone(),
+                                    intent: format!("search Wake '{}'", query),
+                                    plan_json: "{}".to_string(),
+                                    signature: "native-browser-shell".to_string(),
+                                    consent_signature: None,
+                                    status: LogStatus::Success,
+                                })
+                                .map_err(|error| error.to_string())?;
+                                let recent_logs = log
+                                    .get_entries(&persona_id, 5)
+                                    .map_err(|error| error.to_string())?;
+                                Ok(PersistenceWakeSearchResult {
+                                    wake_results,
+                                    recent_logs,
+                                })
+                            })();
+                            let _ = reply_tx.send(result);
+                        }
+                        PersistenceCommand::RecordLog { entry, reply_tx } => {
+                            let result = (|| {
+                                let persona_id = entry.persona_id.clone();
+                                log.record(&entry).map_err(|error| error.to_string())?;
+                                let recent_logs = log
+                                    .get_entries(&persona_id, 5)
+                                    .map_err(|error| error.to_string())?;
+                                Ok(PersistenceLogResult { recent_logs })
+                            })();
+                            let _ = reply_tx.send(result);
+                        }
+                        PersistenceCommand::RefreshLogs {
+                            persona_id,
+                            limit,
+                            reply_tx,
+                        } => {
+                            let result = log
+                                .get_entries(&persona_id, limit)
+                                .map(|recent_logs| PersistenceLogResult { recent_logs })
+                                .map_err(|error| error.to_string());
+                            let _ = reply_tx.send(result);
+                        }
+                        PersistenceCommand::Shutdown => break,
+                    }
+                }
+            })
+            .map_err(|error| format!("failed to spawn Persistence lane: {error}"))?;
+        Ok(Self {
+            command_tx,
+            worker: Some(worker),
+        })
+    }
+
+    fn record_distilled_page(
+        &self,
+        persona_id: String,
+        page: DistilledPage,
+    ) -> Result<mpsc::Receiver<Result<PersistenceDistillResult, String>>, String> {
+        let (reply_tx, result_rx) = mpsc::channel();
+        self.command_tx
+            .send(PersistenceCommand::RecordDistilledPage {
+                persona_id,
+                page,
+                reply_tx,
+            })
+            .map_err(|error| format!("Persistence lane unavailable: {error}"))?;
+        Ok(result_rx)
+    }
+
+    fn search_wake(
+        &self,
+        persona_id: String,
+        query: String,
+    ) -> Result<mpsc::Receiver<Result<PersistenceWakeSearchResult, String>>, String> {
+        let (reply_tx, result_rx) = mpsc::channel();
+        self.command_tx
+            .send(PersistenceCommand::SearchWake {
+                persona_id,
+                query,
+                reply_tx,
+            })
+            .map_err(|error| format!("Persistence lane unavailable: {error}"))?;
+        Ok(result_rx)
+    }
+
+    fn record_log(
+        &self,
+        entry: LogEntry,
+    ) -> Result<mpsc::Receiver<Result<PersistenceLogResult, String>>, String> {
+        let (reply_tx, result_rx) = mpsc::channel();
+        self.command_tx
+            .send(PersistenceCommand::RecordLog { entry, reply_tx })
+            .map_err(|error| format!("Persistence lane unavailable: {error}"))?;
+        Ok(result_rx)
+    }
+
+    fn refresh_logs(
+        &self,
+        persona_id: String,
+        limit: usize,
+    ) -> Result<mpsc::Receiver<Result<PersistenceLogResult, String>>, String> {
+        let (reply_tx, result_rx) = mpsc::channel();
+        self.command_tx
+            .send(PersistenceCommand::RefreshLogs {
+                persona_id,
+                limit,
+                reply_tx,
+            })
+            .map_err(|error| format!("Persistence lane unavailable: {error}"))?;
+        Ok(result_rx)
+    }
+}
+
+impl Drop for PersistenceLane {
+    fn drop(&mut self) {
+        let _ = self.command_tx.send(PersistenceCommand::Shutdown);
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
 #[derive(Clone, Copy, Default)]
 struct DrawStats {
     total: Duration,
@@ -284,6 +947,10 @@ struct BrowserApp {
     engine: SextantEngine,
     wake: DigitalWake,
     log: CaptainsLog,
+    persistence_lane: PersistenceLane,
+    data_dir: PathBuf,
+    profile_data_dir: PathBuf,
+    incognito_data_dir: Option<PathBuf>,
     #[cfg(feature = "xilem-shell")]
     consent_vault: CitadelVault,
     #[cfg(feature = "xilem-shell")]
@@ -296,8 +963,17 @@ struct BrowserApp {
     last_status: String,
     last_ok: bool,
     defer_user_navigation: bool,
+    pre_size_visible_navigation: bool,
     pending_user_navigation: Option<String>,
     pending_user_action: Option<Action>,
+    pending_navigation: Option<PendingNavigation>,
+    pending_distillation: Option<PendingDistillation>,
+    pending_persistence: Option<PendingPersistence>,
+    pending_wake_search: Option<PendingWakeSearch>,
+    pending_log_writes: Vec<PendingLogWrite>,
+    pending_log_refresh: Option<PendingLogRefresh>,
+    browser_mode: BrowserMode,
+    user_render_path: UserRenderPath,
     perf: BrowserPerf,
     perf_events: Vec<PerfEvent>,
     last_intent: String,
@@ -320,6 +996,7 @@ struct BrowserApp {
     validation_tab_rect: Rect,
     browser_viewport_rect: Rect,
     buttons: Vec<ButtonRegion>,
+    mode_rects: Vec<ModeRegion>,
     page_tab_rects: Vec<PageTabRegion>,
     page_tab_prev_rect: Rect,
     page_tab_next_rect: Rect,
@@ -332,8 +1009,15 @@ struct BrowserApp {
     page_scroll: i32,
     main_view: MainView,
     latest_frame: Option<RenderedFrame>,
+    pending_frame_capture: Option<PendingFrameCapture>,
     last_frame_viewport: Option<(u32, u32)>,
     last_frame_refresh: Instant,
+    last_viewport_mouse_move_forward: Option<Instant>,
+    last_viewport_mouse_move_point: Option<(f32, f32)>,
+    pending_browser_text: String,
+    last_browser_text_input: Option<Instant>,
+    pending_viewport_input_tab: Option<Uuid>,
+    pending_viewport_input: VecDeque<ViewportInputEvent>,
     frame_dirty: bool,
     frame_refresh_budget: u8,
     validation: ValidationState,
@@ -346,12 +1030,18 @@ impl BrowserApp {
 
     fn new_with_data_dir(data_dir: PathBuf) -> Result<Self, String> {
         std::fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
+        let profile_data_dir = data_dir.clone();
         #[cfg(feature = "xilem-shell")]
         let (guard_firewall, guard_policy_source) = load_browser_guard_firewall(&data_dir)?;
+        let persistence_lane = PersistenceLane::new(&data_dir)?;
         let mut app = Self {
             engine: SextantEngine::new(),
             wake: DigitalWake::open(data_dir.join("wake.db")).map_err(|e| e.to_string())?,
             log: CaptainsLog::new(data_dir.join("captains-log.db")).map_err(|e| e.to_string())?,
+            persistence_lane,
+            data_dir,
+            profile_data_dir,
+            incognito_data_dir: None,
             #[cfg(feature = "xilem-shell")]
             consent_vault: init_browser_consent_vault()?,
             #[cfg(feature = "xilem-shell")]
@@ -364,8 +1054,17 @@ impl BrowserApp {
             last_status: "Ready. Type a URL or search, then press Enter.".to_string(),
             last_ok: true,
             defer_user_navigation: false,
+            pre_size_visible_navigation: false,
             pending_user_navigation: None,
             pending_user_action: None,
+            pending_navigation: None,
+            pending_distillation: None,
+            pending_persistence: None,
+            pending_wake_search: None,
+            pending_log_writes: Vec::new(),
+            pending_log_refresh: None,
+            browser_mode: BrowserMode::Assisted,
+            user_render_path: UserRenderPath::FrameBridge,
             perf: BrowserPerf::default(),
             perf_events: Vec::new(),
             last_intent: String::new(),
@@ -438,6 +1137,7 @@ impl BrowserApp {
                 h: 1,
             },
             buttons: Vec::new(),
+            mode_rects: Vec::new(),
             page_tab_rects: Vec::new(),
             page_tab_prev_rect: Rect {
                 x: 0,
@@ -470,8 +1170,15 @@ impl BrowserApp {
             page_scroll: 0,
             main_view: MainView::Browser,
             latest_frame: None,
+            pending_frame_capture: None,
             last_frame_viewport: None,
             last_frame_refresh: Instant::now(),
+            last_viewport_mouse_move_forward: None,
+            last_viewport_mouse_move_point: None,
+            pending_browser_text: String::new(),
+            last_browser_text_input: None,
+            pending_viewport_input_tab: None,
+            pending_viewport_input: VecDeque::new(),
             frame_dirty: false,
             frame_refresh_budget: 0,
             validation: ValidationState::default(),
@@ -484,9 +1191,174 @@ impl BrowserApp {
         window.set_title(&format!("Sextant Browser - {}", self.last_status));
     }
 
+    fn capabilities(&self) -> BrowserCapabilities {
+        self.browser_mode.capabilities()
+    }
+
+    fn ai_status_label(&self) -> &'static str {
+        match self.browser_mode {
+            BrowserMode::Agent => "CONTROL",
+            BrowserMode::Assisted => "ASSIST",
+            BrowserMode::Observe => "OBSERVE",
+            BrowserMode::Direct | BrowserMode::Incognito => "OFF",
+        }
+    }
+
+    fn storage_status_label(&self) -> &'static str {
+        if self.incognito_data_dir.is_some() {
+            "EPHEMERAL"
+        } else {
+            "PROFILE"
+        }
+    }
+
+    fn render_path_label(&self) -> &'static str {
+        self.user_render_path.label()
+    }
+
+    fn render_path_status(&self) -> &'static str {
+        self.user_render_path.status()
+    }
+
+    fn direct_render_gap_label(&self) -> Option<&'static str> {
+        if self.capabilities().direct_render_required
+            && self.user_render_path == UserRenderPath::FrameBridge
+        {
+            Some("direct compositor pending")
+        } else {
+            None
+        }
+    }
+
+    fn set_user_render_path(&mut self, path: UserRenderPath) -> Result<(), String> {
+        if !path.integrated() {
+            self.last_status = format!(
+                "{} render path is proven by sextant-servo-direct, but production shell integration is not complete.",
+                path.label()
+            );
+            self.last_ok = false;
+            self.validation.error_seen = true;
+            return Err(self.last_status.clone());
+        }
+        self.user_render_path = path;
+        self.last_status = format!("User render path set to {}.", path.status());
+        self.last_ok = true;
+        Ok(())
+    }
+
+    fn native_intent_allowed(&self) -> bool {
+        matches!(
+            self.browser_mode,
+            BrowserMode::Agent | BrowserMode::Assisted
+        )
+    }
+
+    fn proof_workflow_allowed(&self) -> bool {
+        self.native_intent_allowed()
+    }
+
+    fn block_mode_control_work(&mut self, label: &str) {
+        self.last_status = format!(
+            "{} mode blocks {}. Switch to Agent or Assisted mode to run this workflow.",
+            self.browser_mode.label(),
+            label
+        );
+        self.last_ok = false;
+        self.pilot_status = "BLOCKED".to_string();
+        self.pilot_result = self.last_status.clone();
+        self.validation.error_seen = true;
+    }
+
+    fn set_browser_mode(&mut self, mode: BrowserMode) {
+        if self.browser_mode == mode {
+            return;
+        }
+        self.flush_pending_browser_text();
+        let previous_mode = self.browser_mode;
+        if mode == BrowserMode::Incognito && previous_mode != BrowserMode::Incognito {
+            if let Err(error) = self.enter_incognito_storage() {
+                self.last_status = format!("Incognito storage setup failed: {}", error);
+                self.last_ok = false;
+                self.validation.error_seen = true;
+                return;
+            }
+        } else if previous_mode == BrowserMode::Incognito && mode != BrowserMode::Incognito {
+            if let Err(error) = self.leave_incognito_storage() {
+                self.last_status = format!("Profile storage restore failed: {}", error);
+                self.last_ok = false;
+                self.validation.error_seen = true;
+                return;
+            }
+        }
+        self.browser_mode = mode;
+        if matches!(mode, BrowserMode::Direct | BrowserMode::Incognito) {
+            self.pending_consent = None;
+            self.wake_results.clear();
+            self.recent_logs.clear();
+            self.pending_user_action = None;
+            self.pending_distillation = None;
+            self.pending_persistence = None;
+            self.pending_wake_search = None;
+            self.pending_log_writes.clear();
+            self.pending_log_refresh = None;
+        } else {
+            self.refresh_logs();
+        }
+        self.last_status = mode.status().to_string();
+        self.last_ok = true;
+    }
+
+    fn enter_incognito_storage(&mut self) -> Result<(), String> {
+        let data_dir =
+            env::temp_dir().join(format!("sextant-browser-incognito-{}", Uuid::new_v4()));
+        self.reopen_persistent_stores(&data_dir)?;
+        self.cleanup_incognito_storage();
+        self.data_dir = data_dir.clone();
+        self.incognito_data_dir = Some(data_dir);
+        self.wake_results.clear();
+        self.recent_logs.clear();
+        Ok(())
+    }
+
+    fn leave_incognito_storage(&mut self) -> Result<(), String> {
+        let profile_data_dir = self.profile_data_dir.clone();
+        self.reopen_persistent_stores(&profile_data_dir)?;
+        let old_incognito_dir = self.incognito_data_dir.take();
+        self.data_dir = profile_data_dir;
+        self.refresh_logs();
+        if let Some(data_dir) = old_incognito_dir {
+            let _ = std::fs::remove_dir_all(data_dir);
+        }
+        Ok(())
+    }
+
+    fn reopen_persistent_stores(&mut self, data_dir: &Path) -> Result<(), String> {
+        std::fs::create_dir_all(data_dir).map_err(|error| error.to_string())?;
+        self.wake =
+            DigitalWake::open(data_dir.join("wake.db")).map_err(|error| error.to_string())?;
+        self.log = CaptainsLog::new(data_dir.join("captains-log.db"))
+            .map_err(|error| error.to_string())?;
+        self.pending_log_writes.clear();
+        self.pending_log_refresh = None;
+        self.persistence_lane = PersistenceLane::new(data_dir)?;
+        Ok(())
+    }
+
+    fn cleanup_incognito_storage(&mut self) {
+        if let Some(data_dir) = self.incognito_data_dir.take() {
+            if self.data_dir == data_dir {
+                let profile_data_dir = self.profile_data_dir.clone();
+                if self.reopen_persistent_stores(&profile_data_dir).is_ok() {
+                    self.data_dir = profile_data_dir;
+                }
+            }
+            let _ = std::fs::remove_dir_all(data_dir);
+        }
+    }
+
     fn layout(&mut self, size: PhysicalSize<u32>) {
         self.window_size = size;
-        let width = size.width.max(900);
+        let width = size.width.max(1);
         let rail_x = right_rail_x(width);
         let main_right = rail_x.saturating_sub(18);
         let margin = 24;
@@ -500,7 +1372,7 @@ impl BrowserApp {
         };
         self.wake_rect = Rect {
             x: rail_x + 20,
-            y: size.height.max(620).saturating_sub(STATUS_BAR_H + 66),
+            y: size.height.max(1).saturating_sub(STATUS_BAR_H + 66),
             w: RAIL_WIDTH.saturating_sub(40),
             h: 36,
         };
@@ -546,7 +1418,29 @@ impl BrowserApp {
             w: 118,
             h: 30,
         };
-        let main_panel = main_panel_rect(rail_x, size.height.max(620));
+        self.mode_rects.clear();
+        let mut mode_x: u32 = 146;
+        let mode_y = 12;
+        for mode in BrowserMode::ALL {
+            let label_w = (mode.label().len() as u32)
+                .saturating_mul(char_advance(1))
+                .saturating_add(22)
+                .max(58);
+            if mode_x.saturating_add(label_w) > main_right.saturating_sub(8) {
+                break;
+            }
+            self.mode_rects.push(ModeRegion {
+                rect: Rect {
+                    x: mode_x,
+                    y: mode_y,
+                    w: label_w,
+                    h: 30,
+                },
+                mode,
+            });
+            mode_x = mode_x.saturating_add(label_w + 6);
+        }
+        let main_panel = main_panel_rect(rail_x, size.height.max(1));
         self.browser_viewport_rect = browser_viewport_rect(main_panel);
         if self.latest_frame.is_some() {
             self.frame_dirty = true;
@@ -830,6 +1724,15 @@ impl BrowserApp {
             self.focus = FocusTarget::Wake;
             return;
         }
+        if let Some(mode) = self
+            .mode_rects
+            .iter()
+            .find(|region| region.rect.contains(x, y))
+            .map(|region| region.mode)
+        {
+            self.set_browser_mode(mode);
+            return;
+        }
         if self.browser_tab_rect.contains(x, y) {
             self.main_view = MainView::Browser;
             return;
@@ -897,7 +1800,7 @@ impl BrowserApp {
         };
 
         if !self.action_enabled(action) {
-            self.last_status = disabled_reason(action).to_string();
+            self.last_status = self.disabled_reason(action);
             self.last_ok = false;
             self.validation.error_seen = true;
             return;
@@ -907,6 +1810,7 @@ impl BrowserApp {
     }
 
     fn switch_to_page_tab(&mut self, tab_id: Uuid) {
+        self.clear_viewport_input_lane();
         match self.engine.switch_to_tab(tab_id) {
             Ok(()) => {
                 self.show_page_tab(tab_id);
@@ -915,7 +1819,7 @@ impl BrowserApp {
                 self.page_scroll = 0;
                 self.begin_frame_warmup();
                 self.last_frame_viewport = None;
-                self.refresh_frame();
+                self.refresh_render_bridge_frame_after_visible_tab_change();
                 self.layout(self.window_size);
                 self.last_status = format!("Switched to tab {}.", short_id(tab_id));
                 self.last_ok = true;
@@ -997,7 +1901,7 @@ impl BrowserApp {
         if self.action_enabled(action) {
             self.run_action(action);
         } else {
-            self.last_status = disabled_reason(action).to_string();
+            self.last_status = self.disabled_reason(action);
             self.last_ok = false;
             self.validation.error_seen = true;
         }
@@ -1008,6 +1912,7 @@ impl BrowserApp {
             return false;
         }
 
+        self.flush_pending_browser_text();
         self.focus = FocusTarget::Browser;
         self.last_status = "Browser viewport focused.".to_string();
         self.last_ok = true;
@@ -1015,16 +1920,16 @@ impl BrowserApp {
         let Some((local_x, local_y)) = self.browser_point(x, y) else {
             return true;
         };
-        let moved = self
-            .engine
-            .enqueue_mouse_move_current_viewport(local_x, local_y)
-            .is_ok();
-        let clicked = self
-            .engine
-            .enqueue_mouse_button_current_viewport(local_x, local_y, state == ElementState::Pressed)
-            .is_ok();
-        self.validation.browser_input_seen |= moved || clicked;
-        self.frame_dirty = true;
+        let moved = self.forward_browser_mouse_move(local_x, local_y, true);
+        let clicked = self.queue_viewport_input(ViewportInputEvent::MouseButton {
+            x: local_x,
+            y: local_y,
+            pressed: state == ElementState::Pressed,
+        });
+        if moved || clicked {
+            self.validation.browser_input_seen = true;
+            self.begin_interaction_frame_warmup();
+        }
         true
     }
 
@@ -1033,53 +1938,225 @@ impl BrowserApp {
             return;
         }
         if let Some((local_x, local_y)) = self.browser_point(x, y) {
-            if self
-                .engine
-                .enqueue_mouse_move_current_viewport(local_x, local_y)
-                .is_ok()
-            {
-                self.validation.browser_input_seen = true;
-            }
+            self.forward_browser_mouse_move(local_x, local_y, false);
         }
+    }
+
+    fn should_forward_browser_mouse_move(&self, local_x: f32, local_y: f32) -> bool {
+        let Some(last_forward) = self.last_viewport_mouse_move_forward else {
+            return true;
+        };
+        if last_forward.elapsed() < VIEWPORT_MOUSE_MOVE_MIN_INTERVAL {
+            return false;
+        }
+        let Some((last_x, last_y)) = self.last_viewport_mouse_move_point else {
+            return true;
+        };
+        (local_x - last_x).abs() >= VIEWPORT_MOUSE_MOVE_MIN_DISTANCE_PX
+            || (local_y - last_y).abs() >= VIEWPORT_MOUSE_MOVE_MIN_DISTANCE_PX
+    }
+
+    fn forward_browser_mouse_move(&mut self, local_x: f32, local_y: f32, force: bool) -> bool {
+        if !force && !self.should_forward_browser_mouse_move(local_x, local_y) {
+            return false;
+        }
+        if !self.queue_viewport_input(ViewportInputEvent::MouseMove {
+            x: local_x,
+            y: local_y,
+        }) {
+            return false;
+        }
+        self.last_viewport_mouse_move_forward = Some(Instant::now());
+        self.last_viewport_mouse_move_point = Some((local_x, local_y));
+        true
     }
 
     fn forward_browser_key(&mut self, event: &KeyEvent) {
         let pressed = event.state == ElementState::Pressed;
         match &event.logical_key {
             Key::Character(value) if value.chars().all(|c| !c.is_control()) => {
-                if self
-                    .engine
-                    .enqueue_key_character_current_viewport(value.to_string(), pressed)
-                    .is_ok()
-                {
-                    self.validation.browser_input_seen = true;
+                if !pressed {
+                    return;
                 }
-                self.frame_dirty = true;
+                self.queue_browser_text(value);
             }
             Key::Named(NamedKey::Space) => {
-                if self
-                    .engine
-                    .enqueue_key_character_current_viewport(" ".to_string(), pressed)
-                    .is_ok()
-                {
-                    self.validation.browser_input_seen = true;
+                if !pressed {
+                    return;
                 }
-                self.frame_dirty = true;
+                self.queue_browser_text(" ");
             }
             Key::Named(named) => {
                 if let Some(key) = browser_key_from_winit(named) {
-                    if self
-                        .engine
-                        .enqueue_key_named_current_viewport(key, pressed)
-                        .is_ok()
-                    {
+                    self.flush_pending_browser_text();
+                    if self.queue_viewport_input(ViewportInputEvent::KeyNamed { key, pressed }) {
                         self.validation.browser_input_seen = true;
+                        self.begin_interaction_frame_warmup();
                     }
-                    self.frame_dirty = true;
                 }
             }
             _ => {}
         }
+    }
+
+    fn queue_browser_text(&mut self, value: &str) {
+        self.pending_browser_text.push_str(value);
+        self.last_browser_text_input = Some(Instant::now());
+        self.validation.browser_input_seen = true;
+        self.begin_interaction_frame_warmup();
+    }
+
+    fn pending_browser_text_due(&self) -> Option<Instant> {
+        if self.pending_browser_text.is_empty() {
+            return None;
+        }
+        self.last_browser_text_input
+            .map(|last_input| last_input + VIEWPORT_TEXT_INPUT_DEBOUNCE)
+    }
+
+    fn flush_pending_browser_text_if_due(&mut self) -> bool {
+        let Some(due) = self.pending_browser_text_due() else {
+            return false;
+        };
+        if Instant::now() < due {
+            return false;
+        }
+        self.flush_pending_browser_text()
+    }
+
+    fn flush_pending_browser_text(&mut self) -> bool {
+        if self.pending_browser_text.is_empty() {
+            return false;
+        }
+        let text = std::mem::take(&mut self.pending_browser_text);
+        self.last_browser_text_input = None;
+        if !self.queue_viewport_input(ViewportInputEvent::Text { text }) {
+            return false;
+        }
+        self.validation.browser_input_seen = true;
+        self.frame_refresh_budget = self
+            .frame_refresh_budget
+            .max(FRAME_INTERACTION_WARMUP_BUDGET);
+        self.last_frame_refresh = Instant::now()
+            .checked_sub(FRAME_REFRESH_DIRTY)
+            .unwrap_or_else(Instant::now);
+        self.frame_dirty = true;
+        true
+    }
+
+    fn queue_viewport_input(&mut self, event: ViewportInputEvent) -> bool {
+        let Some(active_tab_id) = self.active_tab().map(|tab| tab.id) else {
+            return false;
+        };
+        if self.pending_viewport_input_tab != Some(active_tab_id) {
+            self.pending_viewport_input.clear();
+            self.pending_viewport_input_tab = Some(active_tab_id);
+        }
+        match event {
+            ViewportInputEvent::MouseMove { x, y } => {
+                if let Some(ViewportInputEvent::MouseMove {
+                    x: last_x,
+                    y: last_y,
+                }) = self.pending_viewport_input.back_mut()
+                {
+                    *last_x = x;
+                    *last_y = y;
+                } else {
+                    self.pending_viewport_input
+                        .push_back(ViewportInputEvent::MouseMove { x, y });
+                }
+            }
+            ViewportInputEvent::Wheel {
+                delta_x,
+                delta_y,
+                pixel_mode,
+            } => {
+                if let Some(ViewportInputEvent::Wheel {
+                    delta_x: last_delta_x,
+                    delta_y: last_delta_y,
+                    pixel_mode: last_pixel_mode,
+                }) = self.pending_viewport_input.back_mut()
+                {
+                    if *last_pixel_mode == pixel_mode {
+                        *last_delta_x += delta_x;
+                        *last_delta_y += delta_y;
+                    } else {
+                        self.pending_viewport_input
+                            .push_back(ViewportInputEvent::Wheel {
+                                delta_x,
+                                delta_y,
+                                pixel_mode,
+                            });
+                    }
+                } else {
+                    self.pending_viewport_input
+                        .push_back(ViewportInputEvent::Wheel {
+                            delta_x,
+                            delta_y,
+                            pixel_mode,
+                        });
+                }
+            }
+            ViewportInputEvent::Text { text } => {
+                if text.is_empty() {
+                    return false;
+                }
+                if let Some(ViewportInputEvent::Text { text: last_text }) =
+                    self.pending_viewport_input.back_mut()
+                {
+                    last_text.push_str(&text);
+                } else {
+                    self.pending_viewport_input
+                        .push_back(ViewportInputEvent::Text { text });
+                }
+            }
+            other => self.pending_viewport_input.push_back(other),
+        }
+        self.validation.browser_input_seen = true;
+        self.begin_interaction_frame_warmup();
+        true
+    }
+
+    fn clear_viewport_input_lane(&mut self) {
+        self.pending_viewport_input.clear();
+        self.pending_viewport_input_tab = None;
+    }
+
+    fn flush_viewport_input_lane(&mut self) -> bool {
+        let active_tab_id = self.active_tab().map(|tab| tab.id);
+        if self.pending_viewport_input_tab != active_tab_id {
+            self.clear_viewport_input_lane();
+            return false;
+        }
+        let mut flushed = false;
+        while let Some(event) = self.pending_viewport_input.pop_front() {
+            let result = match event {
+                ViewportInputEvent::MouseMove { x, y } => {
+                    self.engine.enqueue_mouse_move_current_viewport(x, y)
+                }
+                ViewportInputEvent::MouseButton { x, y, pressed } => self
+                    .engine
+                    .enqueue_mouse_button_current_viewport(x, y, pressed),
+                ViewportInputEvent::Wheel {
+                    delta_x,
+                    delta_y,
+                    pixel_mode,
+                } => self
+                    .engine
+                    .enqueue_wheel_current_viewport(delta_x, delta_y, pixel_mode),
+                ViewportInputEvent::KeyNamed { key, pressed } => {
+                    self.engine.enqueue_key_named_current_viewport(key, pressed)
+                }
+                ViewportInputEvent::Text { text } => self
+                    .engine
+                    .enqueue_key_character_current_viewport(text, true),
+            };
+            if result.is_ok() {
+                flushed = true;
+            }
+        }
+        self.pending_viewport_input_tab = None;
+        flushed
     }
 
     fn browser_point(&self, x: f64, y: f64) -> Option<(f32, f32)> {
@@ -1093,7 +2170,7 @@ impl BrowserApp {
     }
 
     fn scroll_at(&mut self, x: f64, y: f64, delta: &MouseScrollDelta, size: PhysicalSize<u32>) {
-        let rail_x = right_rail_x(size.width.max(900));
+        let rail_x = right_rail_x(size.width.max(1));
         let tab_strip = Rect {
             x: 0,
             y: CHROME_H + STRIP_H + TAB_H,
@@ -1115,7 +2192,7 @@ impl BrowserApp {
         if self.main_view != MainView::Browser {
             return;
         }
-        let panel = main_panel_rect(rail_x, size.height.max(620));
+        let panel = main_panel_rect(rail_x, size.height.max(1));
         let viewport = browser_viewport_rect(panel);
         if !viewport.contains(x, y) {
             return;
@@ -1127,13 +2204,14 @@ impl BrowserApp {
             MouseScrollDelta::PixelDelta(position) => (position.x, position.y, true),
         };
         if self.latest_frame.is_some()
-            && self
-                .engine
-                .wheel_current_viewport(delta_x, delta_y, pixel_mode)
-                .is_ok()
+            && self.queue_viewport_input(ViewportInputEvent::Wheel {
+                delta_x,
+                delta_y,
+                pixel_mode,
+            })
         {
             self.validation.browser_input_seen = true;
-            self.begin_frame_warmup();
+            self.begin_interaction_frame_warmup();
             return;
         }
         self.page_scroll = (self.page_scroll - delta_y as i32).clamp(0, 4000);
@@ -1156,6 +2234,7 @@ impl BrowserApp {
             return;
         }
 
+        let mut refresh_logs_after = true;
         match action {
             Action::Navigate => self.navigate_input(),
             Action::RunShowcase => self.run_showcase_visible(),
@@ -1166,9 +2245,18 @@ impl BrowserApp {
             Action::CloseTab => self.close_tab(),
             Action::ResetValidation => self.reset_validation(),
             Action::DistillActive => self.distill_active(),
-            Action::SearchWake => self.search_wake(),
+            Action::SearchWake => {
+                if self.defer_user_navigation {
+                    self.start_visible_wake_search();
+                    refresh_logs_after = false;
+                } else {
+                    self.search_wake();
+                }
+            }
         }
-        self.refresh_logs();
+        if refresh_logs_after && !self.defer_user_navigation {
+            self.refresh_logs();
+        }
     }
 
     fn reset_validation(&mut self) {
@@ -1178,6 +2266,10 @@ impl BrowserApp {
     }
 
     fn run_showcase_visible(&mut self) {
+        if !self.proof_workflow_allowed() {
+            self.block_mode_control_work("launch showcase");
+            return;
+        }
         self.last_status = "Running launch showcase workflow.".to_string();
         self.last_ok = true;
         match run_showcase_workflow(self) {
@@ -1213,6 +2305,10 @@ impl BrowserApp {
     }
 
     fn run_real_browsing_visible(&mut self) {
+        if !self.proof_workflow_allowed() {
+            self.block_mode_control_work("real browsing smoke");
+            return;
+        }
         self.last_status = "Running real browsing workflow.".to_string();
         self.last_ok = true;
         match run_real_browsing_workflow(self) {
@@ -1248,6 +2344,10 @@ impl BrowserApp {
     }
 
     fn run_shell_interaction_visible(&mut self) {
+        if !self.proof_workflow_allowed() {
+            self.block_mode_control_work("shell interaction smoke");
+            return;
+        }
         self.last_status = "Running shell interaction smoke.".to_string();
         self.last_ok = true;
         match run_shell_interaction_workflow(self) {
@@ -1314,6 +2414,27 @@ impl BrowserApp {
             self.validation.error_seen = true;
             return;
         };
+
+        if !self.native_intent_allowed() {
+            self.last_intent = intent.clone();
+            self.pilot_status = "BLOCKED".to_string();
+            self.pilot_result = format!(
+                "{} mode blocks native AI intent execution.",
+                self.browser_mode.label()
+            );
+            self.pilot_plan = vec![
+                "Read intent".to_string(),
+                "Stop at active browser mode boundary".to_string(),
+            ];
+            self.pending_consent = None;
+            self.last_status = format!(
+                "{} blocks native intents. Switch to Agent or Assisted mode to run this plan.",
+                self.browser_mode.label()
+            );
+            self.last_ok = false;
+            self.validation.error_seen = true;
+            return;
+        }
 
         self.last_intent = intent.clone();
         self.pilot_status = "PLANNING".to_string();
@@ -1735,6 +2856,197 @@ impl BrowserApp {
         }
     }
 
+    fn start_visible_navigation(&mut self, url: Url) -> bool {
+        if self.pending_navigation.is_some() {
+            self.last_status = "Navigation is already in progress.".to_string();
+            self.last_ok = false;
+            self.validation.error_seen = true;
+            return false;
+        }
+
+        let started = Instant::now();
+        match self.check_navigation_guard(&url, "navigate") {
+            Ok(_) => {}
+            Err(error) => {
+                self.record_perf("navigation", started.elapsed(), "guard blocked");
+                self.last_status = error;
+                self.last_ok = false;
+                self.validation.error_seen = true;
+                return false;
+            }
+        }
+
+        #[cfg(feature = "servo-backend")]
+        {
+            let viewport_size = if self.pre_size_visible_navigation {
+                let viewport = self.browser_viewport_rect;
+                Some((viewport.w.max(1), viewport.h.max(1)))
+            } else {
+                None
+            };
+            match self.engine.navigate_active_tab_async(
+                url.clone(),
+                self.persona_id.clone(),
+                viewport_size,
+            ) {
+                Ok(result_rx) => {
+                    self.perf.frame = None;
+                    self.latest_frame = None;
+                    self.pending_frame_capture = None;
+                    self.last_frame_viewport = None;
+                    self.address_input = url.to_string();
+                    self.page_scroll = 0;
+                    self.pending_navigation = Some(PendingNavigation {
+                        url: url.clone(),
+                        kind: PendingNavigationKind::Open,
+                        result_rx,
+                        started,
+                        viewport_size,
+                    });
+                    self.last_status = PendingNavigationKind::Open.pending_status(&url);
+                    self.last_ok = true;
+                    true
+                }
+                Err(error) => {
+                    self.record_perf("navigation", started.elapsed(), "open start failed");
+                    self.last_status = format!("Open failed: {}", error);
+                    self.last_ok = false;
+                    self.validation.error_seen = true;
+                    let _ =
+                        self.record_log(&format!("navigate {}", url), LogStatus::Failure(error));
+                    false
+                }
+            }
+        }
+
+        #[cfg(not(feature = "servo-backend"))]
+        {
+            self.navigate_to(url);
+            true
+        }
+    }
+
+    fn start_visible_navigation_control(&mut self, kind: PendingNavigationKind) -> bool {
+        if self.pending_navigation.is_some() {
+            self.last_status = "Navigation is already in progress.".to_string();
+            self.last_ok = false;
+            self.validation.error_seen = true;
+            return false;
+        }
+
+        let started = Instant::now();
+        let Some(url) = self.active_tab().and_then(|tab| tab.url.clone()) else {
+            self.last_status = kind.failure_status("active tab has no URL");
+            self.last_ok = false;
+            self.validation.error_seen = true;
+            return false;
+        };
+
+        let result = match kind {
+            PendingNavigationKind::Open => {
+                unreachable!("visible open uses start_visible_navigation")
+            }
+            PendingNavigationKind::Reload => self.engine.reload_active_tab_async(),
+            PendingNavigationKind::Back => self.engine.go_back_active_tab_async(),
+            PendingNavigationKind::Forward => self.engine.go_forward_active_tab_async(),
+        };
+
+        match result {
+            Ok(result_rx) => {
+                self.perf.frame = None;
+                self.latest_frame = None;
+                self.pending_frame_capture = None;
+                self.last_frame_viewport = None;
+                self.pending_navigation = Some(PendingNavigation {
+                    url: url.clone(),
+                    kind,
+                    result_rx,
+                    started,
+                    viewport_size: None,
+                });
+                self.last_status = kind.pending_status(&url);
+                self.last_ok = true;
+                true
+            }
+            Err(error) => {
+                self.record_perf("navigation", started.elapsed(), kind.failure_perf_label());
+                self.last_status = kind.failure_status(&error);
+                self.last_ok = false;
+                self.validation.error_seen = true;
+                let _ = self.record_log(&kind.log_intent(&url), LogStatus::Failure(error));
+                false
+            }
+        }
+    }
+
+    fn collect_pending_navigation(&mut self) -> Option<Duration> {
+        let pending = self.pending_navigation.as_ref()?;
+        match pending.result_rx.try_recv() {
+            Ok(result) => {
+                let pending = self
+                    .pending_navigation
+                    .take()
+                    .expect("pending navigation disappeared");
+                let elapsed = pending.started.elapsed();
+                match result {
+                    Ok(result) => {
+                        let backend_name = backend(result.status.clone()).to_string();
+                        let final_url = result.final_url.clone();
+                        self.engine.apply_async_navigation_result(result);
+                        self.record_perf("navigation", elapsed, pending.kind.perf_label());
+                        self.perf.frame = None;
+                        self.address_input = final_url.to_string();
+                        self.page_scroll = 0;
+                        let current_viewport = self.browser_viewport_rect;
+                        let current_size = (current_viewport.w.max(1), current_viewport.h.max(1));
+                        if pending.viewport_size == Some(current_size) {
+                            self.last_frame_viewport = pending.viewport_size;
+                        } else {
+                            self.last_frame_viewport = None;
+                        }
+                        self.validation.navigation_seen = true;
+                        self.begin_frame_warmup();
+                        self.last_status =
+                            pending
+                                .kind
+                                .success_status(&final_url, &backend_name, elapsed);
+                        self.last_ok = true;
+                        let _ = self
+                            .record_log(&pending.kind.log_intent(&final_url), LogStatus::Success);
+                    }
+                    Err(error) => {
+                        self.record_perf("navigation", elapsed, pending.kind.failure_perf_label());
+                        self.last_status = pending.kind.failure_status(&error);
+                        self.last_ok = false;
+                        self.validation.error_seen = true;
+                        let _ = self.record_log(
+                            &pending.kind.log_intent(&pending.url),
+                            LogStatus::Failure(error),
+                        );
+                    }
+                }
+                Some(elapsed)
+            }
+            Err(mpsc::TryRecvError::Empty) => None,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                let pending = self
+                    .pending_navigation
+                    .take()
+                    .expect("pending navigation disappeared");
+                let elapsed = pending.started.elapsed();
+                self.record_perf("navigation", elapsed, pending.kind.dropped_perf_label());
+                self.last_status = "Navigation worker dropped the result.".to_string();
+                self.last_ok = false;
+                self.validation.error_seen = true;
+                let _ = self.record_log(
+                    &pending.kind.log_intent(&pending.url),
+                    LogStatus::Failure(self.last_status.clone()),
+                );
+                Some(elapsed)
+            }
+        }
+    }
+
     fn guard_decision(&self, url: &Url) -> GuardDecision {
         #[cfg(feature = "xilem-shell")]
         {
@@ -1878,6 +3190,7 @@ impl BrowserApp {
     }
 
     fn new_tab(&mut self) {
+        self.clear_viewport_input_lane();
         let id = self.engine.open_tab();
         self.show_page_tab(id);
         self.address_input = "about:blank".to_string();
@@ -1891,6 +3204,7 @@ impl BrowserApp {
     }
 
     fn close_tab(&mut self) {
+        self.clear_viewport_input_lane();
         let Some(tab) = self.active_tab().cloned() else {
             self.last_status = "No active tab to close.".to_string();
             self.last_ok = false;
@@ -1911,7 +3225,7 @@ impl BrowserApp {
                 self.last_ok = true;
                 self.validation.tab_control_seen = true;
                 self.layout(self.window_size);
-                self.refresh_frame();
+                self.refresh_render_bridge_frame_after_visible_tab_change();
                 let _ = self.record_log("close tab", LogStatus::Success);
             }
             Err(error) => {
@@ -2008,45 +3322,23 @@ impl BrowserApp {
     }
 
     fn distill_active(&mut self) {
+        let capabilities = self.capabilities();
+        if !capabilities.ai_observe_dom {
+            self.last_status = format!(
+                "{} blocks DOM observation/distillation.",
+                self.browser_mode.label()
+            );
+            self.last_ok = false;
+            self.validation.error_seen = true;
+            return;
+        }
+
         let started = Instant::now();
         match self.engine.distill_current_page() {
             Ok(page) => {
                 let distill_elapsed = started.elapsed();
                 self.record_perf("distill", distill_elapsed, "active tab");
-                let wake_started = Instant::now();
-                match self.wake.record(&self.persona_id, &page, None) {
-                    Ok(()) => {
-                        self.record_perf("wake", wake_started.elapsed(), "record page");
-                        self.page_scroll = 0;
-                        self.begin_frame_warmup();
-                        self.wake_query = page.title.clone();
-                        let title = page.title.clone();
-                        self.last_status = format!(
-                            "Distilled '{}' into Wake in {}.",
-                            title,
-                            format_duration(distill_elapsed)
-                        );
-                        self.last_ok = true;
-                        self.validation.distill_seen = true;
-                        let _ = self.record_log("distill active", LogStatus::Success);
-                        self.search_wake();
-                        if self.last_ok {
-                            self.last_status = format!(
-                                "Distilled '{}' into Wake. {}.",
-                                title,
-                                self.perf.summary()
-                            );
-                        }
-                    }
-                    Err(error) => {
-                        self.record_perf("wake", wake_started.elapsed(), "record failed");
-                        self.last_status = format!("Wake record failed: {}", error);
-                        self.last_ok = false;
-                        self.validation.error_seen = true;
-                        let _ = self
-                            .record_log("distill active", LogStatus::Failure(error.to_string()));
-                    }
-                }
+                self.finish_distilled_page(page, distill_elapsed);
             }
             Err(error) => {
                 self.record_perf("distill", started.elapsed(), "active tab failed");
@@ -2058,7 +3350,253 @@ impl BrowserApp {
         }
     }
 
+    fn start_visible_distillation(&mut self) -> bool {
+        if self.pending_distillation.is_some() {
+            self.last_status = "Distillation is already in progress.".to_string();
+            self.last_ok = false;
+            self.validation.error_seen = true;
+            return false;
+        }
+        if !self.capabilities().ai_observe_dom {
+            self.last_status = format!(
+                "{} blocks DOM observation/distillation.",
+                self.browser_mode.label()
+            );
+            self.last_ok = false;
+            self.validation.error_seen = true;
+            return false;
+        }
+
+        let started = Instant::now();
+        match self.engine.distill_active_tab_async() {
+            Ok(result_rx) => {
+                self.pending_distillation = Some(PendingDistillation { result_rx, started });
+                self.last_status = "Distilling active page...".to_string();
+                self.last_ok = true;
+                true
+            }
+            Err(error) => {
+                self.record_perf("distill", started.elapsed(), "active distill start failed");
+                self.last_status = format!("Distill failed: {}", error);
+                self.last_ok = false;
+                self.validation.error_seen = true;
+                let _ = self.record_log("distill active", LogStatus::Failure(error));
+                false
+            }
+        }
+    }
+
+    fn collect_pending_distillation(&mut self) -> Option<Duration> {
+        let pending = self.pending_distillation.as_ref()?;
+        match pending.result_rx.try_recv() {
+            Ok(result) => {
+                let pending = self
+                    .pending_distillation
+                    .take()
+                    .expect("pending distillation disappeared");
+                let elapsed = pending.started.elapsed();
+                match result {
+                    Ok(result) => {
+                        let page = result.page.clone();
+                        self.engine.apply_async_distill_result(result);
+                        self.record_perf("distill", elapsed, "active tab async");
+                        if self.capabilities().ai_observe_dom {
+                            self.start_visible_distill_persistence(page, elapsed);
+                        } else {
+                            self.last_status = format!(
+                                "{} blocks DOM observation/distillation.",
+                                self.browser_mode.label()
+                            );
+                            self.last_ok = false;
+                            self.validation.error_seen = true;
+                        }
+                    }
+                    Err(error) => {
+                        self.record_perf("distill", elapsed, "active tab async failed");
+                        self.last_status = format!("Distill failed: {}", error);
+                        self.last_ok = false;
+                        self.validation.error_seen = true;
+                        let _ = self.record_log("distill active", LogStatus::Failure(error));
+                    }
+                }
+                Some(elapsed)
+            }
+            Err(mpsc::TryRecvError::Empty) => None,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                let pending = self
+                    .pending_distillation
+                    .take()
+                    .expect("pending distillation disappeared");
+                let elapsed = pending.started.elapsed();
+                self.record_perf("distill", elapsed, "active distill worker dropped");
+                self.last_status = "Distillation worker dropped the result.".to_string();
+                self.last_ok = false;
+                self.validation.error_seen = true;
+                let _ = self.record_log(
+                    "distill active",
+                    LogStatus::Failure(self.last_status.clone()),
+                );
+                Some(elapsed)
+            }
+        }
+    }
+
+    fn start_visible_distill_persistence(
+        &mut self,
+        page: DistilledPage,
+        distill_elapsed: Duration,
+    ) {
+        let capabilities = self.capabilities();
+        if !capabilities.write_wake {
+            self.page_scroll = 0;
+            self.begin_frame_warmup();
+            self.wake_query = page.title.clone();
+            self.last_status = format!(
+                "Observed '{}' in {}. Wake writes are disabled in {} mode.",
+                page.title,
+                format_duration(distill_elapsed),
+                self.browser_mode.label()
+            );
+            self.last_ok = true;
+            self.validation.distill_seen = true;
+            return;
+        }
+
+        let page_title = page.title.clone();
+        self.page_scroll = 0;
+        self.begin_frame_warmup();
+        self.wake_query = page_title.clone();
+        self.validation.distill_seen = true;
+        let started = Instant::now();
+        match self
+            .persistence_lane
+            .record_distilled_page(self.persona_id.clone(), page)
+        {
+            Ok(result_rx) => {
+                self.pending_persistence = Some(PendingPersistence {
+                    result_rx,
+                    started,
+                    page_title: page_title.clone(),
+                });
+                self.last_status = format!(
+                    "Distilled '{}' in {}. Recording in Persistence lane...",
+                    page_title,
+                    format_duration(distill_elapsed)
+                );
+                self.last_ok = true;
+            }
+            Err(error) => {
+                self.record_perf("wake", started.elapsed(), "persistence lane start failed");
+                self.last_status = format!("Persistence lane failed: {}", error);
+                self.last_ok = false;
+                self.validation.error_seen = true;
+            }
+        }
+    }
+
+    fn collect_pending_persistence(&mut self) -> Option<Duration> {
+        let pending = self.pending_persistence.as_ref()?;
+        match pending.result_rx.try_recv() {
+            Ok(result) => {
+                let pending = self
+                    .pending_persistence
+                    .take()
+                    .expect("pending persistence disappeared");
+                let elapsed = pending.started.elapsed();
+                match result {
+                    Ok(result) => {
+                        self.record_perf("wake", elapsed, "persistence lane distill");
+                        self.wake_results = result.wake_results;
+                        self.recent_logs = result.recent_logs;
+                        self.validation.wake_seen = !self.wake_results.is_empty();
+                        self.validation.log_seen = !self.recent_logs.is_empty();
+                        self.last_status = format!(
+                            "Distilled '{}' into Wake via Persistence lane. {}.",
+                            pending.page_title,
+                            self.perf.summary()
+                        );
+                        self.last_ok = true;
+                    }
+                    Err(error) => {
+                        self.record_perf("wake", elapsed, "persistence lane failed");
+                        self.last_status = format!("Persistence lane failed: {}", error);
+                        self.last_ok = false;
+                        self.validation.error_seen = true;
+                    }
+                }
+                Some(elapsed)
+            }
+            Err(mpsc::TryRecvError::Empty) => None,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                let pending = self
+                    .pending_persistence
+                    .take()
+                    .expect("pending persistence disappeared");
+                let elapsed = pending.started.elapsed();
+                self.record_perf("wake", elapsed, "persistence lane dropped");
+                self.last_status = "Persistence lane dropped the result.".to_string();
+                self.last_ok = false;
+                self.validation.error_seen = true;
+                Some(elapsed)
+            }
+        }
+    }
+
+    fn finish_distilled_page(&mut self, page: DistilledPage, distill_elapsed: Duration) {
+        let capabilities = self.capabilities();
+        if !capabilities.write_wake {
+            self.page_scroll = 0;
+            self.begin_frame_warmup();
+            self.wake_query = page.title.clone();
+            self.last_status = format!(
+                "Observed '{}' in {}. Wake writes are disabled in {} mode.",
+                page.title,
+                format_duration(distill_elapsed),
+                self.browser_mode.label()
+            );
+            self.last_ok = true;
+            self.validation.distill_seen = true;
+            return;
+        }
+        let wake_started = Instant::now();
+        match self.wake.record(&self.persona_id, &page, None) {
+            Ok(()) => {
+                self.record_perf("wake", wake_started.elapsed(), "record page");
+                self.page_scroll = 0;
+                self.begin_frame_warmup();
+                self.wake_query = page.title.clone();
+                let title = page.title.clone();
+                self.last_status = format!(
+                    "Distilled '{}' into Wake in {}.",
+                    title,
+                    format_duration(distill_elapsed)
+                );
+                self.last_ok = true;
+                self.validation.distill_seen = true;
+                let _ = self.record_log("distill active", LogStatus::Success);
+                self.search_wake();
+                if self.last_ok {
+                    self.last_status =
+                        format!("Distilled '{}' into Wake. {}.", title, self.perf.summary());
+                }
+            }
+            Err(error) => {
+                self.record_perf("wake", wake_started.elapsed(), "record failed");
+                self.last_status = format!("Wake record failed: {}", error);
+                self.last_ok = false;
+                self.validation.error_seen = true;
+                let _ = self.record_log("distill active", LogStatus::Failure(error.to_string()));
+            }
+        }
+    }
+
     fn search_wake(&mut self) {
+        if !self.capabilities().read_wake {
+            self.last_status = format!("{} blocks Wake reads.", self.browser_mode.label());
+            self.last_ok = false;
+            self.validation.error_seen = true;
+            return;
+        }
         let query = self.wake_query.trim().to_string();
         let started = Instant::now();
         match self.wake.search(&self.persona_id, &query) {
@@ -2081,6 +3619,224 @@ impl BrowserApp {
                 self.last_ok = false;
                 self.validation.error_seen = true;
                 let _ = self.record_log("search Wake", LogStatus::Failure(error.to_string()));
+            }
+        }
+    }
+
+    fn start_visible_wake_search(&mut self) -> bool {
+        if self.pending_wake_search.is_some() {
+            self.last_status = "Wake search is already in progress.".to_string();
+            self.last_ok = false;
+            self.validation.error_seen = true;
+            return false;
+        }
+        if !self.capabilities().read_wake {
+            self.last_status = format!("{} blocks Wake reads.", self.browser_mode.label());
+            self.last_ok = false;
+            self.validation.error_seen = true;
+            return false;
+        }
+        let query = self.wake_query.trim().to_string();
+        if query.is_empty() {
+            self.last_status = "Enter a Wake query first.".to_string();
+            self.last_ok = false;
+            self.validation.error_seen = true;
+            return false;
+        }
+
+        let started = Instant::now();
+        match self
+            .persistence_lane
+            .search_wake(self.persona_id.clone(), query.clone())
+        {
+            Ok(result_rx) => {
+                self.pending_wake_search = Some(PendingWakeSearch {
+                    result_rx,
+                    started,
+                    query: query.clone(),
+                });
+                self.last_status = format!("Searching Wake for '{}' in Persistence lane...", query);
+                self.last_ok = true;
+                true
+            }
+            Err(error) => {
+                self.record_perf("wake", started.elapsed(), "persistence search start failed");
+                self.last_status = format!("Wake search failed: {}", error);
+                self.last_ok = false;
+                self.validation.error_seen = true;
+                false
+            }
+        }
+    }
+
+    fn collect_pending_wake_search(&mut self) -> Option<Duration> {
+        let pending = self.pending_wake_search.as_ref()?;
+        match pending.result_rx.try_recv() {
+            Ok(result) => {
+                let pending = self
+                    .pending_wake_search
+                    .take()
+                    .expect("pending Wake search disappeared");
+                let elapsed = pending.started.elapsed();
+                match result {
+                    Ok(result) => {
+                        self.record_perf("wake", elapsed, "persistence lane search");
+                        self.wake_results = result.wake_results;
+                        self.recent_logs = result.recent_logs;
+                        self.validation.wake_seen = !self.wake_results.is_empty();
+                        self.validation.log_seen = !self.recent_logs.is_empty();
+                        self.last_status = format!(
+                            "Wake search found {} result(s) via Persistence lane in {}.",
+                            self.wake_results.len(),
+                            format_duration(elapsed)
+                        );
+                        self.last_ok = true;
+                    }
+                    Err(error) => {
+                        self.record_perf("wake", elapsed, "persistence search failed");
+                        self.last_status = format!("Wake search failed: {}", error);
+                        self.last_ok = false;
+                        self.validation.error_seen = true;
+                    }
+                }
+                Some(elapsed)
+            }
+            Err(mpsc::TryRecvError::Empty) => None,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                let pending = self
+                    .pending_wake_search
+                    .take()
+                    .expect("pending Wake search disappeared");
+                let elapsed = pending.started.elapsed();
+                self.record_perf("wake", elapsed, "persistence search dropped");
+                self.last_status =
+                    format!("Persistence lane dropped Wake search '{}'.", pending.query);
+                self.last_ok = false;
+                self.validation.error_seen = true;
+                Some(elapsed)
+            }
+        }
+    }
+
+    fn collect_pending_log_writes(&mut self) -> bool {
+        let mut changed = false;
+        let mut index = 0;
+        while index < self.pending_log_writes.len() {
+            match self.pending_log_writes[index].result_rx.try_recv() {
+                Ok(result) => {
+                    let pending = self.pending_log_writes.remove(index);
+                    let elapsed = pending.started.elapsed();
+                    match result {
+                        Ok(result) => {
+                            self.record_perf("wake", elapsed, "persistence lane log");
+                            self.recent_logs = result.recent_logs;
+                            self.validation.log_seen = !self.recent_logs.is_empty();
+                            changed = true;
+                        }
+                        Err(error) => {
+                            self.record_perf("wake", elapsed, "persistence log failed");
+                            self.last_status = format!(
+                                "Captain's Log write '{}' failed: {}",
+                                pending.intent, error
+                            );
+                            self.last_ok = false;
+                            self.validation.error_seen = true;
+                            changed = true;
+                        }
+                    }
+                }
+                Err(mpsc::TryRecvError::Empty) => {
+                    index += 1;
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    let pending = self.pending_log_writes.remove(index);
+                    let elapsed = pending.started.elapsed();
+                    self.record_perf("wake", elapsed, "persistence log dropped");
+                    self.last_status =
+                        format!("Persistence lane dropped log write '{}'.", pending.intent);
+                    self.last_ok = false;
+                    self.validation.error_seen = true;
+                    changed = true;
+                }
+            }
+        }
+        changed
+    }
+
+    fn start_visible_log_refresh(&mut self) -> bool {
+        if !self.capabilities().write_log_content {
+            self.recent_logs.clear();
+            self.pending_log_refresh = None;
+            return false;
+        }
+        if !self.pending_log_writes.is_empty() || self.pending_log_refresh.is_some() {
+            return false;
+        }
+
+        let started = Instant::now();
+        match self
+            .persistence_lane
+            .refresh_logs(self.persona_id.clone(), 5)
+        {
+            Ok(result_rx) => {
+                self.pending_log_refresh = Some(PendingLogRefresh { result_rx, started });
+                true
+            }
+            Err(error) => {
+                self.record_perf(
+                    "wake",
+                    started.elapsed(),
+                    "persistence log refresh start failed",
+                );
+                self.last_status = format!("Captain's Log refresh failed: {}", error);
+                self.last_ok = false;
+                self.validation.error_seen = true;
+                false
+            }
+        }
+    }
+
+    fn collect_pending_log_refresh(&mut self) -> bool {
+        let Some(pending) = self.pending_log_refresh.as_ref() else {
+            return false;
+        };
+        match pending.result_rx.try_recv() {
+            Ok(result) => {
+                let pending = self
+                    .pending_log_refresh
+                    .take()
+                    .expect("pending log refresh disappeared");
+                let elapsed = pending.started.elapsed();
+                match result {
+                    Ok(result) => {
+                        self.record_perf("wake", elapsed, "persistence lane log refresh");
+                        self.recent_logs = result.recent_logs;
+                        self.validation.log_seen = !self.recent_logs.is_empty();
+                    }
+                    Err(error) => {
+                        self.record_perf("wake", elapsed, "persistence log refresh failed");
+                        self.last_status = format!("Captain's Log refresh failed: {}", error);
+                        self.last_ok = false;
+                        self.validation.error_seen = true;
+                    }
+                }
+                true
+            }
+            Err(mpsc::TryRecvError::Empty) => false,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                let pending = self
+                    .pending_log_refresh
+                    .take()
+                    .expect("pending log refresh disappeared");
+                self.record_perf(
+                    "wake",
+                    pending.started.elapsed(),
+                    "persistence log refresh dropped",
+                );
+                self.last_status = "Persistence lane dropped Captain's Log refresh.".to_string();
+                self.last_ok = false;
+                self.validation.error_seen = true;
+                true
             }
         }
     }
@@ -2157,31 +3913,51 @@ impl BrowserApp {
             },
             ValidationRow {
                 label: "DISTILL",
-                status: if self.validation.distill_seen || has_page {
+                status: if !self.capabilities().ai_observe_dom {
+                    ValidationStatus::Attention
+                } else if self.validation.distill_seen || has_page {
                     ValidationStatus::Pass
                 } else {
                     ValidationStatus::Waiting
                 },
-                detail: distilled_title
-                    .unwrap_or_else(|| "No distilled page attached yet".to_string()),
+                detail: if !self.capabilities().ai_observe_dom {
+                    format!("{} disables AI page observation", self.browser_mode.label())
+                } else {
+                    distilled_title.unwrap_or_else(|| "No distilled page attached yet".to_string())
+                },
             },
             ValidationRow {
                 label: "WAKE",
-                status: if self.validation.wake_seen || !self.wake_results.is_empty() {
+                status: if !self.capabilities().read_wake {
+                    ValidationStatus::Attention
+                } else if self.validation.wake_seen || !self.wake_results.is_empty() {
                     ValidationStatus::Pass
                 } else {
                     ValidationStatus::Waiting
                 },
-                detail: format!("{} visible result(s)", self.wake_results.len()),
+                detail: if !self.capabilities().read_wake {
+                    format!("{} disables Wake reads", self.browser_mode.label())
+                } else {
+                    format!("{} visible result(s)", self.wake_results.len())
+                },
             },
             ValidationRow {
                 label: "CAPTAIN LOG",
-                status: if self.validation.log_seen || !self.recent_logs.is_empty() {
+                status: if !self.capabilities().write_log_content {
+                    ValidationStatus::Attention
+                } else if self.validation.log_seen || !self.recent_logs.is_empty() {
                     ValidationStatus::Pass
                 } else {
                     ValidationStatus::Waiting
                 },
-                detail: format!("{} recent entry row(s)", self.recent_logs.len()),
+                detail: if !self.capabilities().write_log_content {
+                    format!(
+                        "{} disables content log persistence",
+                        self.browser_mode.label()
+                    )
+                } else {
+                    format!("{} recent entry row(s)", self.recent_logs.len())
+                },
             },
             ValidationRow {
                 label: "TAB CONTROLS",
@@ -2248,7 +4024,7 @@ impl BrowserApp {
     fn action_enabled(&self, action: Action) -> bool {
         match action {
             Action::Navigate => !self.address_input.trim().is_empty(),
-            Action::RunShowcase => true,
+            Action::RunShowcase => self.proof_workflow_allowed(),
             Action::NewTab => true,
             Action::Back => self
                 .active_tab()
@@ -2259,9 +4035,53 @@ impl BrowserApp {
                 .map(|tab| tab.can_go_forward)
                 .unwrap_or(false),
             Action::Reload => self.active_tab().and_then(|tab| tab.url.as_ref()).is_some(),
-            Action::CloseTab | Action::DistillActive => self.active_tab().is_some(),
+            Action::CloseTab => self.active_tab().is_some(),
+            Action::DistillActive => {
+                self.capabilities().ai_observe_dom && self.active_tab().is_some()
+            }
             Action::ResetValidation => true,
-            Action::SearchWake => !self.wake_query.trim().is_empty(),
+            Action::SearchWake => {
+                self.capabilities().read_wake && !self.wake_query.trim().is_empty()
+            }
+        }
+    }
+
+    fn disabled_reason(&self, action: Action) -> String {
+        match action {
+            Action::Navigate => "Enter an address, search phrase, or intent first.".to_string(),
+            Action::RunShowcase => {
+                if !self.proof_workflow_allowed() {
+                    format!(
+                        "{} mode blocks proof workflows. Switch to Agent or Assisted mode.",
+                        self.browser_mode.label()
+                    )
+                } else {
+                    "Showcase is unavailable.".to_string()
+                }
+            }
+            Action::NewTab => "New tab is always available.".to_string(),
+            Action::Back => "Back is unavailable for this tab/backend.".to_string(),
+            Action::Forward => "Forward is unavailable for this tab/backend.".to_string(),
+            Action::Reload => "Active tab has no URL to reload.".to_string(),
+            Action::CloseTab => "No active tab to close.".to_string(),
+            Action::ResetValidation => "Validation reset is always available.".to_string(),
+            Action::DistillActive => {
+                if !self.capabilities().ai_observe_dom {
+                    format!(
+                        "{} mode blocks AI page observation.",
+                        self.browser_mode.label()
+                    )
+                } else {
+                    "Open a page before distilling.".to_string()
+                }
+            }
+            Action::SearchWake => {
+                if !self.capabilities().read_wake {
+                    format!("{} mode blocks Wake reads.", self.browser_mode.label())
+                } else {
+                    "Enter a Wake query first.".to_string()
+                }
+            }
         }
     }
 
@@ -2274,6 +4094,15 @@ impl BrowserApp {
     }
 
     fn refresh_logs(&mut self) {
+        if !self.capabilities().write_log_content {
+            self.recent_logs.clear();
+            self.pending_log_refresh = None;
+            return;
+        }
+        if self.defer_user_navigation {
+            let _ = self.start_visible_log_refresh();
+            return;
+        }
         self.recent_logs = self
             .log
             .get_entries(&self.persona_id, 5)
@@ -2281,6 +4110,53 @@ impl BrowserApp {
     }
 
     fn refresh_frame(&mut self) {
+        self.refresh_frame_for(FrameCapturePurpose::AiObservation);
+    }
+
+    fn refresh_render_bridge_frame(&mut self) {
+        self.refresh_frame_for(FrameCapturePurpose::RenderBridge);
+    }
+
+    fn refresh_render_bridge_frame_after_visible_tab_change(&mut self) {
+        if self.defer_user_navigation {
+            self.drop_pending_frame_capture_for_tab_change();
+            self.start_frame_capture_for(FrameCapturePurpose::RenderBridge);
+        } else {
+            self.refresh_render_bridge_frame();
+        }
+    }
+
+    fn drop_pending_frame_capture_for_tab_change(&mut self) -> bool {
+        self.pending_frame_capture.take().is_some()
+    }
+
+    fn frame_capture_allowed(&self, purpose: FrameCapturePurpose) -> bool {
+        match purpose {
+            FrameCapturePurpose::RenderBridge => true,
+            FrameCapturePurpose::AiObservation => self.capabilities().ai_observe_frame,
+        }
+    }
+
+    fn block_frame_capture(&mut self, purpose: FrameCapturePurpose) {
+        self.last_status = match purpose {
+            FrameCapturePurpose::RenderBridge => {
+                "Servo render bridge frame capture is unavailable.".to_string()
+            }
+            FrameCapturePurpose::AiObservation => format!(
+                "AI frame observation is disabled in {} mode.",
+                self.browser_mode.label()
+            ),
+        };
+        self.last_ok = false;
+        self.validation.error_seen = true;
+    }
+
+    fn refresh_frame_for(&mut self, purpose: FrameCapturePurpose) {
+        if !self.frame_capture_allowed(purpose) {
+            self.block_frame_capture(purpose);
+            return;
+        }
+
         let viewport = self.browser_viewport_rect;
         let viewport_size = (viewport.w.max(1), viewport.h.max(1));
         if self.last_frame_viewport != Some(viewport_size) {
@@ -2290,11 +4166,15 @@ impl BrowserApp {
                 .resize_current_viewport(viewport_size.0, viewport_size.1)
             {
                 Ok(()) => {
-                    self.record_perf("resize", resize_started.elapsed(), "viewport");
+                    self.record_perf("resize", resize_started.elapsed(), purpose.resize_label());
                     self.last_frame_viewport = Some(viewport_size);
                 }
                 Err(error) => {
-                    self.record_perf("resize", resize_started.elapsed(), "viewport failed");
+                    self.record_perf(
+                        "resize",
+                        resize_started.elapsed(),
+                        purpose.resize_failed_label(),
+                    );
                     self.last_frame_refresh = Instant::now();
                     self.frame_refresh_budget = self.frame_refresh_budget.saturating_sub(1);
                     self.frame_dirty = self.frame_refresh_budget > 0;
@@ -2305,13 +4185,13 @@ impl BrowserApp {
                 }
             }
         } else {
-            self.record_perf("resize", Duration::ZERO, "viewport cached");
+            self.record_perf("resize", Duration::ZERO, purpose.resize_label());
         }
 
         let started = Instant::now();
         match self.engine.capture_current_frame() {
             Ok(frame) => {
-                self.record_perf("frame", started.elapsed(), "capture");
+                self.record_perf("frame", started.elapsed(), purpose.capture_label());
                 if frame.width > 0 && frame.height > 0 && !frame.pixels.is_empty() {
                     self.validation.frame_seen = true;
                 }
@@ -2321,7 +4201,7 @@ impl BrowserApp {
                 self.frame_dirty = self.frame_refresh_budget > 0;
             }
             Err(error) => {
-                self.record_perf("frame", started.elapsed(), "capture failed");
+                self.record_perf("frame", started.elapsed(), purpose.capture_failed_label());
                 self.last_frame_refresh = Instant::now();
                 self.frame_refresh_budget = self.frame_refresh_budget.saturating_sub(1);
                 self.frame_dirty = self.frame_refresh_budget > 0;
@@ -2333,8 +4213,14 @@ impl BrowserApp {
     }
 
     fn maybe_refresh_frame(&mut self) -> bool {
+        if self.collect_pending_frame_capture() {
+            return true;
+        }
+
         if self.main_view != MainView::Browser
+            || self.pending_navigation.is_some()
             || (self.latest_frame.is_none() && self.frame_refresh_budget == 0)
+            || self.pending_frame_capture.is_some()
         {
             return false;
         }
@@ -2347,14 +4233,158 @@ impl BrowserApp {
         };
 
         if due {
-            self.refresh_frame();
-            return true;
+            self.start_frame_capture_for(FrameCapturePurpose::RenderBridge);
         }
         false
     }
 
+    fn start_frame_capture_for(&mut self, purpose: FrameCapturePurpose) -> bool {
+        if self.pending_frame_capture.is_some() {
+            return false;
+        }
+
+        if !self.frame_capture_allowed(purpose) {
+            self.block_frame_capture(purpose);
+            return false;
+        }
+
+        let Some(tab_id) = self.active_tab().map(|tab| tab.id) else {
+            return false;
+        };
+        let viewport = self.browser_viewport_rect;
+        let viewport_size = (viewport.w.max(1), viewport.h.max(1));
+        let requested_resize = self.last_frame_viewport != Some(viewport_size);
+        if !requested_resize {
+            self.record_perf("resize", Duration::ZERO, purpose.resize_label());
+        }
+
+        let started = Instant::now();
+        let resize = requested_resize.then_some(viewport_size);
+        match self
+            .engine
+            .capture_tab_frame_with_resize_async(tab_id, resize)
+        {
+            Ok(result_rx) => {
+                self.pending_frame_capture = Some(PendingFrameCapture {
+                    tab_id,
+                    result_rx,
+                    started,
+                    viewport_size,
+                    requested_resize,
+                    purpose,
+                });
+                self.last_frame_refresh = Instant::now();
+                true
+            }
+            Err(error) => {
+                self.record_perf(
+                    "frame",
+                    started.elapsed(),
+                    purpose.capture_start_failed_label(),
+                );
+                self.last_frame_refresh = Instant::now();
+                self.frame_refresh_budget = self.frame_refresh_budget.saturating_sub(1);
+                self.frame_dirty = self.frame_refresh_budget > 0;
+                self.last_status = format!("Servo frame unavailable: {}", error);
+                self.last_ok = false;
+                self.validation.error_seen = true;
+                false
+            }
+        }
+    }
+
+    fn collect_pending_frame_capture(&mut self) -> bool {
+        let Some(pending) = self.pending_frame_capture.as_ref() else {
+            return false;
+        };
+        match pending.result_rx.try_recv() {
+            Ok(result) => {
+                let pending = self
+                    .pending_frame_capture
+                    .take()
+                    .expect("pending frame capture disappeared");
+                if self.active_tab().map(|tab| tab.id) != Some(pending.tab_id) {
+                    return false;
+                }
+                match result {
+                    Ok(capture) => {
+                        if let Some(resize) = capture.resize {
+                            self.record_perf(
+                                "resize",
+                                resize,
+                                pending.purpose.resize_async_label(),
+                            );
+                            let current_viewport = self.browser_viewport_rect;
+                            let current_size =
+                                (current_viewport.w.max(1), current_viewport.h.max(1));
+                            if current_size == pending.viewport_size {
+                                self.last_frame_viewport = Some(pending.viewport_size);
+                            }
+                        } else if pending.requested_resize {
+                            self.record_perf(
+                                "resize",
+                                Duration::ZERO,
+                                pending.purpose.resize_async_missing_label(),
+                            );
+                        }
+                        self.record_perf("frame", capture.capture, pending.purpose.capture_label());
+                        let frame = capture.frame;
+                        if frame.width > 0 && frame.height > 0 && !frame.pixels.is_empty() {
+                            self.validation.frame_seen = true;
+                        }
+                        self.latest_frame = Some(frame);
+                        self.last_frame_refresh = Instant::now();
+                        self.frame_refresh_budget = self.frame_refresh_budget.saturating_sub(1);
+                        self.frame_dirty = self.frame_refresh_budget > 0;
+                    }
+                    Err(error) => {
+                        self.record_perf(
+                            "frame",
+                            pending.started.elapsed(),
+                            pending.purpose.capture_failed_label(),
+                        );
+                        self.last_frame_refresh = Instant::now();
+                        self.frame_refresh_budget = self.frame_refresh_budget.saturating_sub(1);
+                        self.frame_dirty = self.frame_refresh_budget > 0;
+                        self.last_status = format!("Servo frame unavailable: {}", error);
+                        self.last_ok = false;
+                        self.validation.error_seen = true;
+                    }
+                }
+                true
+            }
+            Err(mpsc::TryRecvError::Empty) => false,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                let pending = self
+                    .pending_frame_capture
+                    .take()
+                    .expect("pending frame capture disappeared");
+                self.record_perf(
+                    "frame",
+                    pending.started.elapsed(),
+                    pending.purpose.capture_dropped_label(),
+                );
+                self.last_frame_refresh = Instant::now();
+                self.frame_refresh_budget = self.frame_refresh_budget.saturating_sub(1);
+                self.frame_dirty = self.frame_refresh_budget > 0;
+                self.last_status = "Servo frame capture worker dropped the result.".to_string();
+                self.last_ok = false;
+                self.validation.error_seen = true;
+                true
+            }
+        }
+    }
+
     fn begin_frame_warmup(&mut self) {
         self.frame_refresh_budget = FRAME_WARMUP_BUDGET;
+        self.frame_dirty = true;
+    }
+
+    fn begin_interaction_frame_warmup(&mut self) {
+        self.frame_refresh_budget = self
+            .frame_refresh_budget
+            .max(FRAME_INTERACTION_WARMUP_BUDGET);
+        self.last_frame_refresh = Instant::now();
         self.frame_dirty = true;
     }
 
@@ -2368,7 +4398,10 @@ impl BrowserApp {
         status: LogStatus,
         consent_signature: Option<String>,
     ) -> Result<(), String> {
-        match self.log.record(&LogEntry {
+        if !self.capabilities().write_log_content {
+            return Ok(());
+        }
+        let entry = LogEntry {
             id: Uuid::new_v4(),
             timestamp: Utc::now(),
             persona_id: self.persona_id.clone(),
@@ -2377,12 +4410,28 @@ impl BrowserApp {
             signature: "native-browser-shell".to_string(),
             consent_signature,
             status,
-        }) {
-            Ok(()) => {
-                self.validation.log_seen = true;
-                Ok(())
+        };
+        if self.defer_user_navigation {
+            let started = Instant::now();
+            match self.persistence_lane.record_log(entry) {
+                Ok(result_rx) => {
+                    self.pending_log_writes.push(PendingLogWrite {
+                        result_rx,
+                        started,
+                        intent: intent.to_string(),
+                    });
+                    Ok(())
+                }
+                Err(error) => Err(error),
             }
-            Err(error) => Err(error.to_string()),
+        } else {
+            match self.log.record(&entry) {
+                Ok(()) => {
+                    self.validation.log_seen = true;
+                    Ok(())
+                }
+                Err(error) => Err(error.to_string()),
+            }
         }
     }
 }
@@ -2522,6 +4571,23 @@ fn main() {
             std::process::exit(2);
         }
     };
+    let browser_mode = match parse_browser_mode_arg(&args) {
+        Ok(mode) => mode,
+        Err(error) => {
+            eprintln!("[sextant-browser] failed to parse arguments: {error}");
+            std::process::exit(2);
+        }
+    };
+    let user_render_path = match parse_user_render_path_arg(&args) {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!("[sextant-browser] failed to parse arguments: {error}");
+            std::process::exit(2);
+        }
+    };
+    let pre_size_visible_navigation = args
+        .iter()
+        .any(|arg| arg == "--pre-size-navigation" || arg == "--pre-size-visible-navigation");
     let startup_input = operator_arg_value(&args, "--start");
     let start_showcase = args
         .iter()
@@ -2535,6 +4601,9 @@ fn main() {
         start_showcase,
         start_real_browsing,
         start_shell_interaction,
+        browser_mode,
+        user_render_path,
+        pre_size_visible_navigation,
     ) {
         eprintln!("[sextant-browser] failed: {error}");
         std::process::exit(1);
@@ -2587,6 +4656,9 @@ fn run_visible_app(
     start_showcase: bool,
     start_real_browsing: bool,
     start_shell_interaction: bool,
+    browser_mode: BrowserMode,
+    user_render_path: UserRenderPath,
+    pre_size_visible_navigation: bool,
 ) -> Result<(), String> {
     let event_loop =
         EventLoop::new().map_err(|error| format!("event loop initialization failed: {error}"))?;
@@ -2605,6 +4677,14 @@ fn run_visible_app(
     let mut surface_size = PhysicalSize::new(0, 0);
     let mut app =
         BrowserApp::new().map_err(|error| format!("browser app initialization failed: {error}"))?;
+    if user_render_path != app.user_render_path {
+        app.set_user_render_path(user_render_path)?;
+    }
+    app.pre_size_visible_navigation = pre_size_visible_navigation;
+    app.set_browser_mode(browser_mode);
+    if !app.last_ok {
+        return Err(app.last_status.clone());
+    }
     app.layout(window.inner_size());
     let visible_started = Instant::now();
     let mut visible_startup_work = Duration::ZERO;
@@ -2660,6 +4740,29 @@ fn run_visible_app(
 
     if let Some(smoke) = window_smoke.as_ref() {
         println!("[window-smoke] starting visible browser shell smoke");
+        println!(
+            "[window-smoke] browser mode {} ({})",
+            app.browser_mode.label(),
+            app.browser_mode.status()
+        );
+        println!(
+            "[window-smoke] render path {} ({})",
+            app.render_path_label(),
+            app.render_path_status()
+        );
+        if let Some(gap) = app.direct_render_gap_label() {
+            println!("[window-smoke] render gap {gap}");
+        }
+        println!(
+            "[window-smoke] pre-size navigation {}",
+            app.pre_size_visible_navigation
+        );
+        if let Some(data_dir) = app.incognito_data_dir.as_ref() {
+            println!(
+                "[window-smoke] ephemeral browser data dir {}",
+                data_dir.display()
+            );
+        }
         if let Some(target) = smoke.target.as_ref() {
             pending_start_inputs.push(("window-smoke", target.clone()));
         }
@@ -2686,12 +4789,21 @@ fn run_visible_app(
     let smoke_started = visible_started;
     let mut smoke_first_draw: Option<Duration> = None;
     let mut smoke_first_frame: Option<Duration> = None;
+    let smoke_requires_user_distill = window_smoke
+        .as_ref()
+        .map(|spec| spec.user_distill)
+        .unwrap_or(false);
+    let mut smoke_user_distill_enqueued = false;
+    let mut smoke_user_distill_done = false;
     let mut visible_first_draw_seen = false;
 
-    event_loop
+    let event_loop_result = event_loop
         .run(move |event, elwt| match event {
             Event::WindowEvent { event, .. } => match event {
-                WindowEvent::CloseRequested => elwt.exit(),
+                WindowEvent::CloseRequested => {
+                    app.cleanup_incognito_storage();
+                    elwt.exit();
+                }
                 WindowEvent::Resized(size) => {
                     app.layout(size);
                     window.request_redraw();
@@ -2744,6 +4856,9 @@ fn run_visible_app(
                                     }
                                     return;
                                 }
+                                if smoke_requires_user_distill && !smoke_user_distill_done {
+                                    return;
+                                }
                                 if app.latest_frame.is_some() && smoke_first_frame.is_none() {
                                     smoke_first_frame = Some(smoke_started.elapsed());
                                 }
@@ -2763,6 +4878,7 @@ fn run_visible_app(
                                     fmt_duration(draw_stats.frame_blit),
                                     format_duration(draw_stats.present)
                                 );
+                                println!("[window-smoke] perf {}", app.perf.summary());
                                 if let Some(frame) = app.latest_frame.as_ref() {
                                     println!(
                                         "[window-smoke] latest Servo frame {}x{} ({} pixels)",
@@ -2777,6 +4893,7 @@ fn run_visible_app(
                                         format_duration(first_frame)
                                     );
                                 }
+                                app.cleanup_incognito_storage();
                                 elwt.exit();
                             }
                         }
@@ -2787,6 +4904,7 @@ fn run_visible_app(
                                 if let Ok(mut smoke_error) = smoke_error_for_loop.lock() {
                                     *smoke_error = Some(error.to_string());
                                 }
+                                app.cleanup_incognito_storage();
                                 elwt.exit();
                             }
                         }
@@ -2850,15 +4968,29 @@ fn run_visible_app(
                     let label = deferred_user_navigation_label(action);
                     println!("[window-user] {label}");
                     let started = Instant::now();
+                    let mut started_async = false;
                     match action {
-                        Action::Back => app.back(),
-                        Action::DistillActive => app.distill_active(),
-                        Action::Forward => app.forward(),
-                        Action::Reload => app.reload(),
+                        Action::Back => {
+                            started_async =
+                                app.start_visible_navigation_control(PendingNavigationKind::Back);
+                        }
+                        Action::DistillActive => {
+                            started_async = app.start_visible_distillation();
+                        }
+                        Action::Forward => {
+                            started_async =
+                                app.start_visible_navigation_control(PendingNavigationKind::Forward);
+                        }
+                        Action::Reload => {
+                            started_async =
+                                app.start_visible_navigation_control(PendingNavigationKind::Reload);
+                        }
                         _ => {}
                     }
-                    visible_startup_work += started.elapsed();
-                    app.refresh_logs();
+                    if !started_async {
+                        visible_startup_work += started.elapsed();
+                        app.refresh_logs();
+                    }
                     println!("[window-user] {}", app.last_status);
                     app.update_title(&window);
                     window.request_redraw();
@@ -2868,9 +5000,11 @@ fn run_visible_app(
                 if let Some((source, input)) = active_start_input.take() {
                     println!("[{source}] opening {}", input);
                     let started = Instant::now();
-                    match submit_start_input(&mut app, &input) {
-                        Ok(()) => {
-                            visible_startup_work += started.elapsed();
+                    match start_visible_input(&mut app, &input) {
+                        Ok(started_async) => {
+                            if !started_async {
+                                visible_startup_work += started.elapsed();
+                            }
                             println!("[{source}] {}", app.last_status);
                             app.update_title(&window);
                             window.request_redraw();
@@ -2883,6 +5017,7 @@ fn run_visible_app(
                                 if let Ok(mut smoke_error) = smoke_error_for_loop.lock() {
                                     *smoke_error = Some(error);
                                 }
+                                app.cleanup_incognito_storage();
                                 elwt.exit();
                             } else {
                                 window.set_title(&format!(
@@ -2903,15 +5038,181 @@ fn run_visible_app(
                         if let Ok(mut smoke_error) = smoke_error_for_loop.lock() {
                             *smoke_error = Some(error.to_string());
                         }
+                        app.cleanup_incognito_storage();
                         elwt.exit();
                         return;
                     }
                 }
 
+                let mut input_flushed = false;
+                if app.flush_pending_browser_text_if_due() {
+                    input_flushed = true;
+                }
+                if app.flush_viewport_input_lane() {
+                    input_flushed = true;
+                }
+                if input_flushed {
+                    window.request_redraw();
+                }
+                if let Some(elapsed) = app.collect_pending_navigation() {
+                    visible_startup_work += elapsed;
+                    app.refresh_logs();
+                    app.update_title(&window);
+                    if smoke_requires_user_distill
+                        && !smoke_user_distill_enqueued
+                        && app.last_ok
+                        && app.pending_navigation.is_none()
+                    {
+                        println!(
+                            "[window-user] {}",
+                            deferred_user_navigation_label(Action::DistillActive)
+                        );
+                        let started = Instant::now();
+                        smoke_user_distill_enqueued = true;
+                        if !app.start_visible_distillation() {
+                            visible_startup_work += started.elapsed();
+                            if smoke_mode {
+                                let error =
+                                    format!("window user distill failed: {}", app.last_status);
+                                eprintln!("[window-smoke] {error}");
+                                if let Ok(mut smoke_error) = smoke_error_for_loop.lock() {
+                                    *smoke_error = Some(error);
+                                }
+                                app.cleanup_incognito_storage();
+                                elwt.exit();
+                                return;
+                            }
+                        }
+                        println!("[window-user] {}", app.last_status);
+                    }
+                    window.request_redraw();
+                }
+                if smoke_requires_user_distill
+                    && !smoke_user_distill_enqueued
+                    && active_start_input.is_none()
+                    && pending_start_inputs.is_empty()
+                    && app.pending_navigation.is_none()
+                    && app.last_ok
+                {
+                    println!(
+                        "[window-user] {}",
+                        deferred_user_navigation_label(Action::DistillActive)
+                    );
+                    let started = Instant::now();
+                    smoke_user_distill_enqueued = true;
+                    if !app.start_visible_distillation() {
+                        visible_startup_work += started.elapsed();
+                        if smoke_mode {
+                            let error = format!("window user distill failed: {}", app.last_status);
+                            eprintln!("[window-smoke] {error}");
+                            if let Ok(mut smoke_error) = smoke_error_for_loop.lock() {
+                                *smoke_error = Some(error);
+                            }
+                            app.cleanup_incognito_storage();
+                            elwt.exit();
+                            return;
+                        }
+                    }
+                    println!("[window-user] {}", app.last_status);
+                    window.request_redraw();
+                }
+                if let Some(elapsed) = app.collect_pending_distillation() {
+                    visible_startup_work += elapsed;
+                    if smoke_requires_user_distill {
+                        if app.last_ok {
+                            if app.pending_persistence.is_none() {
+                                smoke_user_distill_done = true;
+                            }
+                        } else if smoke_mode {
+                            let error = format!("window user distill failed: {}", app.last_status);
+                            eprintln!("[window-smoke] {error}");
+                            if let Ok(mut smoke_error) = smoke_error_for_loop.lock() {
+                                *smoke_error = Some(error);
+                            }
+                            app.cleanup_incognito_storage();
+                            elwt.exit();
+                            return;
+                        }
+                    }
+                    println!("[window-user] {}", app.last_status);
+                    app.update_title(&window);
+                    window.request_redraw();
+                }
+                if let Some(elapsed) = app.collect_pending_persistence() {
+                    visible_startup_work += elapsed;
+                    if smoke_requires_user_distill {
+                        if app.last_ok {
+                            smoke_user_distill_done = true;
+                        } else if smoke_mode {
+                            let error =
+                                format!("window user persistence failed: {}", app.last_status);
+                            eprintln!("[window-smoke] {error}");
+                            if let Ok(mut smoke_error) = smoke_error_for_loop.lock() {
+                                *smoke_error = Some(error);
+                            }
+                            app.cleanup_incognito_storage();
+                            elwt.exit();
+                            return;
+                        }
+                    }
+                    println!("[window-user] {}", app.last_status);
+                    app.update_title(&window);
+                    window.request_redraw();
+                }
+                if app.collect_pending_wake_search().is_some() {
+                    println!("[window-user] {}", app.last_status);
+                    app.update_title(&window);
+                    window.request_redraw();
+                }
+                if app.collect_pending_log_writes() {
+                    app.update_title(&window);
+                    window.request_redraw();
+                }
+                if app.collect_pending_log_refresh() {
+                    app.update_title(&window);
+                    window.request_redraw();
+                }
+                if app.collect_pending_frame_capture() {
+                    window.request_redraw();
+                }
                 if app.maybe_refresh_frame() {
                     window.request_redraw();
                 }
-                if app.main_view == MainView::Browser
+                if app.pending_frame_capture.is_some() {
+                    elwt.set_control_flow(ControlFlow::WaitUntil(
+                        Instant::now() + Duration::from_millis(16),
+                    ));
+                } else if app.pending_distillation.is_some() {
+                    elwt.set_control_flow(ControlFlow::WaitUntil(
+                        Instant::now() + Duration::from_millis(16),
+                    ));
+                } else if app.pending_persistence.is_some() {
+                    elwt.set_control_flow(ControlFlow::WaitUntil(
+                        Instant::now() + Duration::from_millis(16),
+                    ));
+                } else if app.pending_wake_search.is_some() {
+                    elwt.set_control_flow(ControlFlow::WaitUntil(
+                        Instant::now() + Duration::from_millis(16),
+                    ));
+                } else if !app.pending_log_writes.is_empty() {
+                    elwt.set_control_flow(ControlFlow::WaitUntil(
+                        Instant::now() + Duration::from_millis(50),
+                    ));
+                } else if app.pending_log_refresh.is_some() {
+                    elwt.set_control_flow(ControlFlow::WaitUntil(
+                        Instant::now() + Duration::from_millis(50),
+                    ));
+                } else if !app.pending_viewport_input.is_empty() {
+                    elwt.set_control_flow(ControlFlow::WaitUntil(
+                        Instant::now() + Duration::from_millis(1),
+                    ));
+                } else if let Some(due) = app.pending_browser_text_due() {
+                    elwt.set_control_flow(ControlFlow::WaitUntil(due));
+                } else if app.pending_navigation.is_some() {
+                    elwt.set_control_flow(ControlFlow::WaitUntil(
+                        Instant::now() + Duration::from_millis(16),
+                    ));
+                } else if app.main_view == MainView::Browser
                     && (app.latest_frame.is_some() || app.frame_refresh_budget > 0)
                 {
                     let delay = if app.frame_dirty {
@@ -2938,7 +5239,9 @@ fn run_visible_app(
             }
             _ => {}
         })
-        .map_err(|error| format!("event loop failed: {error}"))?;
+        .map_err(|error| format!("event loop failed: {error}"));
+
+    event_loop_result?;
 
     if let Ok(mut smoke_error) = smoke_error.lock() {
         if let Some(error) = smoke_error.take() {
@@ -2949,18 +5252,22 @@ fn run_visible_app(
     Ok(())
 }
 
-fn submit_start_input(app: &mut BrowserApp, input: &str) -> Result<(), String> {
+fn start_visible_input(app: &mut BrowserApp, input: &str) -> Result<bool, String> {
     app.address_input = input.to_string();
     if native_intent_body(input).is_some() {
         app.run_native_intent(input);
+        if !app.last_ok {
+            return Err(app.last_status.clone());
+        }
+        return Ok(false);
     } else {
         let url = parse_navigation_target(input)?;
-        app.navigate_to(url);
+        app.start_visible_navigation(url);
     }
     if !app.last_ok {
         return Err(app.last_status.clone());
     }
-    Ok(())
+    Ok(app.pending_navigation.is_some())
 }
 
 fn run_operator_smoke() -> Result<Vec<String>, String> {
@@ -4266,7 +6573,59 @@ fn parse_window_smoke(args: &[String]) -> Result<Option<WindowSmokeSpec>, String
         .filter(|value| !value.starts_with("--"))
         .cloned();
     let timeout = parse_duration_arg(args, "--window-smoke-timeout", WINDOW_SMOKE_DEFAULT_TIMEOUT)?;
-    Ok(Some(WindowSmokeSpec { target, timeout }))
+    let user_distill = args
+        .iter()
+        .any(|arg| arg == "--window-smoke-distill" || arg == "--user-distill");
+    Ok(Some(WindowSmokeSpec {
+        target,
+        timeout,
+        user_distill,
+    }))
+}
+
+fn parse_browser_mode_arg(args: &[String]) -> Result<BrowserMode, String> {
+    let Some(value) = operator_arg_value(args, "--browser-mode") else {
+        return Ok(BrowserMode::Assisted);
+    };
+    parse_browser_mode(&value)
+}
+
+fn parse_user_render_path_arg(args: &[String]) -> Result<UserRenderPath, String> {
+    let Some(value) = operator_arg_value(args, "--render-path")
+        .or_else(|| operator_arg_value(args, "--user-render-path"))
+    else {
+        return Ok(UserRenderPath::FrameBridge);
+    };
+    parse_user_render_path(&value)
+}
+
+fn parse_browser_mode(value: &str) -> Result<BrowserMode, String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "agent" => Ok(BrowserMode::Agent),
+        "assist" | "assisted" => Ok(BrowserMode::Assisted),
+        "observe" => Ok(BrowserMode::Observe),
+        "direct" => Ok(BrowserMode::Direct),
+        "incog" | "incognito" => Ok(BrowserMode::Incognito),
+        _ => Err(format!(
+            "unknown browser mode '{}'; expected agent, assisted, observe, direct, or incognito",
+            value
+        )),
+    }
+}
+
+fn parse_user_render_path(value: &str) -> Result<UserRenderPath, String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "bridge" | "frame-bridge" | "frame_bridge" | "render-bridge" | "render_bridge" => {
+            Ok(UserRenderPath::FrameBridge)
+        }
+        "direct" | "direct-servo" | "direct_servo" | "servo-direct" | "servo_direct" => {
+            Ok(UserRenderPath::DirectServo)
+        }
+        _ => Err(format!(
+            "unknown user render path '{}'; expected bridge or direct",
+            value
+        )),
+    }
 }
 
 fn parse_duration_arg(args: &[String], flag: &str, default: Duration) -> Result<Duration, String> {
@@ -4937,6 +7296,173 @@ mod tests {
     }
 
     #[test]
+    fn visible_distillation_can_complete_from_worker() -> Result<(), String> {
+        let data_dir =
+            env::temp_dir().join(format!("sextant-browser-async-distill-{}", Uuid::new_v4()));
+        let mut app = BrowserApp::new_with_data_dir(data_dir.clone())?;
+        let url = Url::parse(
+            "data:text/html,<title>Async Distill</title><main><h1>Async Distill Ready</h1></main>",
+        )
+        .map_err(|error| error.to_string())?;
+
+        app.navigate_to(url);
+        app.distill_active();
+        assert!(
+            app.last_ok,
+            "sync setup distill failed: {}",
+            app.last_status
+        );
+        app.last_status.clear();
+        assert!(app.start_visible_distillation());
+        assert!(app.pending_distillation.is_some());
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while app.pending_distillation.is_some() && Instant::now() < deadline {
+            let _ = app.collect_pending_distillation();
+            thread::sleep(Duration::from_millis(10));
+        }
+        while app.pending_persistence.is_some() && Instant::now() < deadline {
+            let _ = app.collect_pending_persistence();
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        assert!(
+            app.pending_distillation.is_none(),
+            "async distillation did not complete"
+        );
+        assert!(
+            app.pending_persistence.is_none(),
+            "persistence lane did not complete"
+        );
+        assert!(app.last_ok, "async distill failed: {}", app.last_status);
+        assert!(app.perf.distill.is_some());
+        assert!(app.perf.wake.is_some());
+        let page = app
+            .active_tab()
+            .and_then(|tab| tab.distilled_page.as_ref())
+            .ok_or_else(|| "async distill did not attach page".to_string())?;
+        assert!(page.content.contains("Async Distill Ready"));
+        assert!(!app.wake_results.is_empty());
+        assert!(!app.recent_logs.is_empty());
+
+        let _ = std::fs::remove_dir_all(data_dir);
+        Ok(())
+    }
+
+    #[test]
+    fn visible_wake_search_can_complete_from_persistence_lane() -> Result<(), String> {
+        let data_dir =
+            env::temp_dir().join(format!("sextant-browser-async-wake-{}", Uuid::new_v4()));
+        let mut app = BrowserApp::new_with_data_dir(data_dir.clone())?;
+        let url = Url::parse(
+            "data:text/html,<title>Async Wake</title><main><h1>Async Wake Needle</h1></main>",
+        )
+        .map_err(|error| error.to_string())?;
+
+        app.navigate_to(url);
+        app.distill_active();
+        assert!(
+            app.last_ok,
+            "sync setup distill failed: {}",
+            app.last_status
+        );
+        app.wake_results.clear();
+        app.recent_logs.clear();
+        app.wake_query = "Needle".to_string();
+
+        assert!(app.start_visible_wake_search());
+        assert!(app.pending_wake_search.is_some());
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while app.pending_wake_search.is_some() && Instant::now() < deadline {
+            let _ = app.collect_pending_wake_search();
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        assert!(
+            app.pending_wake_search.is_none(),
+            "Wake search lane did not complete"
+        );
+        assert!(app.last_ok, "Wake search failed: {}", app.last_status);
+        assert!(app.perf.wake.is_some());
+        assert!(!app.wake_results.is_empty());
+        assert!(app
+            .recent_logs
+            .iter()
+            .any(|entry| entry.intent.contains("search Wake 'Needle'")));
+
+        let _ = std::fs::remove_dir_all(data_dir);
+        Ok(())
+    }
+
+    #[test]
+    fn visible_log_write_can_complete_from_persistence_lane() -> Result<(), String> {
+        let data_dir =
+            env::temp_dir().join(format!("sextant-browser-async-log-{}", Uuid::new_v4()));
+        let mut app = BrowserApp::new_with_data_dir(data_dir.clone())?;
+        app.defer_user_navigation = true;
+
+        app.record_log("visible log lane", LogStatus::Success)?;
+        assert_eq!(app.pending_log_writes.len(), 1);
+        assert!(app.recent_logs.is_empty());
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !app.pending_log_writes.is_empty() && Instant::now() < deadline {
+            let _ = app.collect_pending_log_writes();
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        assert!(
+            app.pending_log_writes.is_empty(),
+            "log lane did not complete"
+        );
+        assert!(app.validation.log_seen);
+        assert!(app
+            .recent_logs
+            .iter()
+            .any(|entry| entry.intent == "visible log lane"));
+
+        let _ = std::fs::remove_dir_all(data_dir);
+        Ok(())
+    }
+
+    #[test]
+    fn visible_log_refresh_can_complete_from_persistence_lane() -> Result<(), String> {
+        let data_dir = env::temp_dir().join(format!(
+            "sextant-browser-async-log-refresh-{}",
+            Uuid::new_v4()
+        ));
+        let mut app = BrowserApp::new_with_data_dir(data_dir.clone())?;
+
+        app.record_log("visible log refresh lane", LogStatus::Success)?;
+        app.defer_user_navigation = true;
+        app.recent_logs.clear();
+        app.validation.log_seen = false;
+
+        app.refresh_logs();
+        assert!(app.pending_log_refresh.is_some());
+        assert!(app.recent_logs.is_empty());
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while app.pending_log_refresh.is_some() && Instant::now() < deadline {
+            let _ = app.collect_pending_log_refresh();
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        assert!(
+            app.pending_log_refresh.is_none(),
+            "log refresh lane did not complete"
+        );
+        assert!(app.validation.log_seen);
+        assert!(app
+            .recent_logs
+            .iter()
+            .any(|entry| entry.intent == "visible log refresh lane"));
+
+        let _ = std::fs::remove_dir_all(data_dir);
+        Ok(())
+    }
+
+    #[test]
     fn perf_tab_switches_to_performance_view() -> Result<(), String> {
         let data_dir = env::temp_dir().join(format!("sextant-browser-perf-tab-{}", Uuid::new_v4()));
         let mut app = BrowserApp::new_with_data_dir(data_dir.clone())?;
@@ -4993,6 +7519,59 @@ mod tests {
     }
 
     #[test]
+    fn visible_navigation_control_requires_tab_url() -> Result<(), String> {
+        let data_dir = env::temp_dir().join(format!(
+            "sextant-browser-control-url-required-{}",
+            Uuid::new_v4()
+        ));
+        let mut app = BrowserApp::new_with_data_dir(data_dir.clone())?;
+
+        assert!(!app.start_visible_navigation_control(PendingNavigationKind::Reload));
+        assert!(app.pending_navigation.is_none());
+        assert!(app.last_status.contains("active tab has no URL"));
+        assert!(!app.last_ok);
+
+        let _ = std::fs::remove_dir_all(data_dir);
+        Ok(())
+    }
+
+    #[test]
+    fn visible_reload_can_complete_from_navigation_worker() -> Result<(), String> {
+        let data_dir =
+            env::temp_dir().join(format!("sextant-browser-async-reload-{}", Uuid::new_v4()));
+        let mut app = BrowserApp::new_with_data_dir(data_dir.clone())?;
+
+        app.navigate_to(
+            Url::parse("data:text/html,<title>Async Reload</title><main>ready</main>")
+                .map_err(|error| error.to_string())?,
+        );
+        assert!(app.last_ok, "setup navigation failed: {}", app.last_status);
+
+        assert!(app.start_visible_navigation_control(PendingNavigationKind::Reload));
+        assert!(matches!(
+            app.pending_navigation.as_ref().map(|pending| pending.kind),
+            Some(PendingNavigationKind::Reload)
+        ));
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while app.pending_navigation.is_some() && Instant::now() < deadline {
+            let _ = app.collect_pending_navigation();
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        assert!(
+            app.pending_navigation.is_none(),
+            "async reload did not complete"
+        );
+        assert!(app.last_ok, "async reload failed: {}", app.last_status);
+        assert!(app.last_status.contains("Reloaded active tab"));
+        assert!(app.perf.navigation.is_some());
+
+        let _ = std::fs::remove_dir_all(data_dir);
+        Ok(())
+    }
+
+    #[test]
     fn visible_navigation_can_defer_user_distill() -> Result<(), String> {
         let data_dir = env::temp_dir().join(format!(
             "sextant-browser-deferred-distill-{}",
@@ -5043,7 +7622,444 @@ mod tests {
 
         assert!(app.validation.browser_input_seen);
         assert!(app.frame_dirty);
-        assert!(app.frame_refresh_budget > 0);
+        assert_eq!(app.frame_refresh_budget, FRAME_INTERACTION_WARMUP_BUDGET);
+
+        let _ = std::fs::remove_dir_all(data_dir);
+        Ok(())
+    }
+
+    #[test]
+    fn viewport_mouse_move_forwarding_is_throttled() -> Result<(), String> {
+        let data_dir =
+            env::temp_dir().join(format!("sextant-browser-mouse-throttle-{}", Uuid::new_v4()));
+        let mut app = BrowserApp::new_with_data_dir(data_dir.clone())?;
+
+        assert!(app.should_forward_browser_mouse_move(20.0, 20.0));
+        app.last_viewport_mouse_move_forward = Some(Instant::now());
+        app.last_viewport_mouse_move_point = Some((20.0, 20.0));
+
+        assert!(!app.should_forward_browser_mouse_move(120.0, 120.0));
+        app.last_viewport_mouse_move_forward =
+            Some(Instant::now() - VIEWPORT_MOUSE_MOVE_MIN_INTERVAL - Duration::from_millis(1));
+        assert!(!app.should_forward_browser_mouse_move(
+            20.0 + VIEWPORT_MOUSE_MOVE_MIN_DISTANCE_PX / 2.0,
+            20.0
+        ));
+        assert!(
+            app.should_forward_browser_mouse_move(20.0 + VIEWPORT_MOUSE_MOVE_MIN_DISTANCE_PX, 20.0)
+        );
+
+        let _ = std::fs::remove_dir_all(data_dir);
+        Ok(())
+    }
+
+    #[test]
+    fn viewport_text_input_is_debounced_before_servo_flush() -> Result<(), String> {
+        let data_dir =
+            env::temp_dir().join(format!("sextant-browser-key-debounce-{}", Uuid::new_v4()));
+        let mut app = BrowserApp::new_with_data_dir(data_dir.clone())?;
+
+        app.queue_browser_text("a");
+        app.queue_browser_text("b");
+
+        assert_eq!(app.pending_browser_text, "ab");
+        assert!(app.pending_browser_text_due().is_some());
+        assert!(!app.flush_pending_browser_text_if_due());
+        app.last_browser_text_input =
+            Some(Instant::now() - VIEWPORT_TEXT_INPUT_DEBOUNCE - Duration::from_millis(1));
+        assert!(app.pending_browser_text_due().is_some());
+
+        let _ = std::fs::remove_dir_all(data_dir);
+        Ok(())
+    }
+
+    #[test]
+    fn viewport_input_lane_coalesces_before_engine_enqueue() -> Result<(), String> {
+        let data_dir =
+            env::temp_dir().join(format!("sextant-browser-input-lane-{}", Uuid::new_v4()));
+        let mut app = BrowserApp::new_with_data_dir(data_dir.clone())?;
+
+        assert!(app.queue_viewport_input(ViewportInputEvent::MouseMove { x: 10.0, y: 12.0 }));
+        assert!(app.queue_viewport_input(ViewportInputEvent::MouseMove { x: 20.0, y: 24.0 }));
+        assert!(app.queue_viewport_input(ViewportInputEvent::Wheel {
+            delta_x: 1.0,
+            delta_y: 2.0,
+            pixel_mode: false,
+        }));
+        assert!(app.queue_viewport_input(ViewportInputEvent::Wheel {
+            delta_x: 3.0,
+            delta_y: 4.0,
+            pixel_mode: false,
+        }));
+        assert!(app.queue_viewport_input(ViewportInputEvent::Text {
+            text: "a".to_string(),
+        }));
+        assert!(app.queue_viewport_input(ViewportInputEvent::Text {
+            text: "b".to_string(),
+        }));
+
+        assert_eq!(app.pending_viewport_input.len(), 3);
+        match app.pending_viewport_input.get(0) {
+            Some(ViewportInputEvent::MouseMove { x, y }) => assert_eq!((*x, *y), (20.0, 24.0)),
+            _ => panic!("expected coalesced mouse move"),
+        }
+        match app.pending_viewport_input.get(1) {
+            Some(ViewportInputEvent::Wheel {
+                delta_x, delta_y, ..
+            }) => assert_eq!((*delta_x, *delta_y), (4.0, 6.0)),
+            _ => panic!("expected coalesced wheel"),
+        }
+        match app.pending_viewport_input.get(2) {
+            Some(ViewportInputEvent::Text { text }) => assert_eq!(text, "ab"),
+            _ => panic!("expected coalesced text"),
+        }
+        assert!(app.validation.browser_input_seen);
+        assert!(app.frame_dirty);
+
+        let _ = std::fs::remove_dir_all(data_dir);
+        Ok(())
+    }
+
+    #[test]
+    fn viewport_input_lane_drops_stale_tab_input() -> Result<(), String> {
+        let data_dir = env::temp_dir().join(format!(
+            "sextant-browser-input-lane-stale-tab-{}",
+            Uuid::new_v4()
+        ));
+        let mut app = BrowserApp::new_with_data_dir(data_dir.clone())?;
+        let first_tab_id = app.active_tab().map(|tab| tab.id).unwrap();
+
+        assert!(app.queue_viewport_input(ViewportInputEvent::MouseMove { x: 10.0, y: 12.0 }));
+        assert_eq!(app.pending_viewport_input_tab, Some(first_tab_id));
+        assert_eq!(app.pending_viewport_input.len(), 1);
+
+        let second_tab_id = app.engine.open_tab();
+        app.engine.switch_to_tab(second_tab_id)?;
+
+        assert!(!app.flush_viewport_input_lane());
+        assert!(app.pending_viewport_input.is_empty());
+        assert!(app.pending_viewport_input_tab.is_none());
+
+        let _ = std::fs::remove_dir_all(data_dir);
+        Ok(())
+    }
+
+    #[test]
+    fn tab_changes_drop_stale_pending_frame_capture() -> Result<(), String> {
+        let data_dir = env::temp_dir().join(format!(
+            "sextant-browser-stale-frame-capture-{}",
+            Uuid::new_v4()
+        ));
+        let mut app = BrowserApp::new_with_data_dir(data_dir.clone())?;
+        let tab_id = app.active_tab().map(|tab| tab.id).unwrap();
+        let (_reply_tx, result_rx) = mpsc::channel();
+
+        app.pending_frame_capture = Some(PendingFrameCapture {
+            tab_id,
+            result_rx,
+            started: Instant::now(),
+            viewport_size: (640, 480),
+            requested_resize: true,
+            purpose: FrameCapturePurpose::RenderBridge,
+        });
+
+        assert!(app.drop_pending_frame_capture_for_tab_change());
+        assert!(app.pending_frame_capture.is_none());
+        assert!(!app.drop_pending_frame_capture_for_tab_change());
+
+        let _ = std::fs::remove_dir_all(data_dir);
+        Ok(())
+    }
+
+    #[test]
+    fn small_window_browser_viewport_stays_inside_window() -> Result<(), String> {
+        let data_dir =
+            env::temp_dir().join(format!("sextant-browser-small-window-{}", Uuid::new_v4()));
+        let mut app = BrowserApp::new_with_data_dir(data_dir.clone())?;
+        let size = PhysicalSize::new(520, 520);
+
+        app.layout(size);
+
+        let viewport = app.browser_viewport_rect;
+        assert!(
+            viewport.x.saturating_add(viewport.w) <= size.width,
+            "viewport should not overflow window width: {:?}",
+            viewport
+        );
+        assert!(
+            viewport.y.saturating_add(viewport.h) <= size.height.saturating_sub(STATUS_BAR_H),
+            "viewport should not overflow visible status area: {:?}",
+            viewport
+        );
+        assert_eq!(right_rail_x(size.width), size.width);
+
+        let _ = std::fs::remove_dir_all(data_dir);
+        Ok(())
+    }
+
+    #[test]
+    fn browser_modes_gate_ai_observation_and_persistence() -> Result<(), String> {
+        let data_dir = env::temp_dir().join(format!("sextant-browser-modes-{}", Uuid::new_v4()));
+        let mut app = BrowserApp::new_with_data_dir(data_dir.clone())?;
+
+        assert!(app.capabilities().ai_observe_dom);
+        assert!(app.action_enabled(Action::DistillActive));
+        assert!(app.native_intent_allowed());
+
+        app.set_browser_mode(BrowserMode::Direct);
+        assert!(!app.capabilities().ai_observe_dom);
+        assert!(!app.capabilities().write_wake);
+        assert!(!app.capabilities().write_log_content);
+        assert!(!app.action_enabled(Action::DistillActive));
+        assert!(!app.action_enabled(Action::SearchWake));
+        assert!(!app.native_intent_allowed());
+        assert!(!app.action_enabled(Action::RunShowcase));
+        assert_eq!(app.ai_status_label(), "OFF");
+        assert_eq!(app.storage_status_label(), "PROFILE");
+        assert!(app
+            .disabled_reason(Action::DistillActive)
+            .contains("blocks AI page observation"));
+        assert!(app
+            .disabled_reason(Action::RunShowcase)
+            .contains("blocks proof workflows"));
+        assert!(app.frame_capture_allowed(FrameCapturePurpose::RenderBridge));
+        assert!(!app.frame_capture_allowed(FrameCapturePurpose::AiObservation));
+        app.record_log("direct mode log", LogStatus::Success)?;
+        assert!(!app.validation.log_seen);
+
+        app.set_browser_mode(BrowserMode::Agent);
+        assert!(app.capabilities().ai_control);
+        assert!(app.capabilities().write_wake);
+        assert!(app.capabilities().write_log_content);
+        assert!(app.frame_capture_allowed(FrameCapturePurpose::AiObservation));
+        assert!(app.action_enabled(Action::RunShowcase));
+        assert_eq!(app.ai_status_label(), "CONTROL");
+
+        let _ = std::fs::remove_dir_all(data_dir);
+        Ok(())
+    }
+
+    #[test]
+    fn validation_rows_explain_mode_disabled_features() -> Result<(), String> {
+        let data_dir = env::temp_dir().join(format!(
+            "sextant-browser-mode-validation-{}",
+            Uuid::new_v4()
+        ));
+        let mut app = BrowserApp::new_with_data_dir(data_dir.clone())?;
+
+        app.set_browser_mode(BrowserMode::Incognito);
+        assert_eq!(app.storage_status_label(), "EPHEMERAL");
+        let rows = app.validation_rows();
+
+        let distill = rows.iter().find(|row| row.label == "DISTILL").unwrap();
+        assert!(matches!(distill.status, ValidationStatus::Attention));
+        assert!(distill.detail.contains("disables AI page observation"));
+
+        let wake = rows.iter().find(|row| row.label == "WAKE").unwrap();
+        assert!(matches!(wake.status, ValidationStatus::Attention));
+        assert!(wake.detail.contains("disables Wake reads"));
+
+        let log = rows.iter().find(|row| row.label == "CAPTAIN LOG").unwrap();
+        assert!(matches!(log.status, ValidationStatus::Attention));
+        assert!(log.detail.contains("disables content log persistence"));
+
+        app.cleanup_incognito_storage();
+        let _ = std::fs::remove_dir_all(data_dir);
+        Ok(())
+    }
+
+    #[test]
+    fn native_intents_stop_at_non_control_mode_boundary() -> Result<(), String> {
+        let data_dir = env::temp_dir().join(format!(
+            "sextant-browser-intent-mode-block-{}",
+            Uuid::new_v4()
+        ));
+        let mut app = BrowserApp::new_with_data_dir(data_dir.clone())?;
+
+        for mode in [
+            BrowserMode::Observe,
+            BrowserMode::Direct,
+            BrowserMode::Incognito,
+        ] {
+            app.set_browser_mode(mode);
+            app.run_native_intent("intent: open https://example.com and distill");
+            assert!(!app.last_ok);
+            assert_eq!(app.pilot_status, "BLOCKED");
+            assert!(app.last_status.contains("blocks native intents"));
+        }
+
+        app.set_browser_mode(BrowserMode::Assisted);
+        assert!(app.native_intent_allowed());
+
+        let _ = std::fs::remove_dir_all(data_dir);
+        Ok(())
+    }
+
+    #[test]
+    fn proof_workflows_stop_at_non_control_mode_boundary() -> Result<(), String> {
+        let data_dir = env::temp_dir().join(format!(
+            "sextant-browser-proof-mode-block-{}",
+            Uuid::new_v4()
+        ));
+        let mut app = BrowserApp::new_with_data_dir(data_dir.clone())?;
+
+        for (mode, label) in [
+            (BrowserMode::Observe, "launch showcase"),
+            (BrowserMode::Direct, "real browsing smoke"),
+            (BrowserMode::Incognito, "shell interaction smoke"),
+        ] {
+            app.set_browser_mode(mode);
+            match label {
+                "launch showcase" => app.run_showcase_visible(),
+                "real browsing smoke" => app.run_real_browsing_visible(),
+                "shell interaction smoke" => app.run_shell_interaction_visible(),
+                _ => unreachable!(),
+            }
+            assert!(!app.last_ok);
+            assert_eq!(app.pilot_status, "BLOCKED");
+            assert!(app.last_status.contains(label));
+        }
+
+        let _ = std::fs::remove_dir_all(data_dir);
+        Ok(())
+    }
+
+    #[test]
+    fn parses_visible_browser_mode_argument() {
+        assert_eq!(parse_browser_mode("agent").unwrap(), BrowserMode::Agent);
+        assert_eq!(parse_browser_mode("ASSIST").unwrap(), BrowserMode::Assisted);
+        assert_eq!(parse_browser_mode("observe").unwrap(), BrowserMode::Observe);
+        assert_eq!(parse_browser_mode("direct").unwrap(), BrowserMode::Direct);
+        assert_eq!(
+            parse_browser_mode("incognito").unwrap(),
+            BrowserMode::Incognito
+        );
+        assert!(parse_browser_mode("mystery").is_err());
+
+        let args = vec![
+            "sextant-browser".to_string(),
+            "--browser-mode".to_string(),
+            "direct".to_string(),
+        ];
+        assert_eq!(parse_browser_mode_arg(&args).unwrap(), BrowserMode::Direct);
+        assert_eq!(parse_browser_mode_arg(&[]).unwrap(), BrowserMode::Assisted);
+    }
+
+    #[test]
+    fn parses_visible_user_render_path_argument() {
+        assert_eq!(
+            parse_user_render_path("bridge").unwrap(),
+            UserRenderPath::FrameBridge
+        );
+        assert_eq!(
+            parse_user_render_path("servo-direct").unwrap(),
+            UserRenderPath::DirectServo
+        );
+        assert!(parse_user_render_path("magic").is_err());
+
+        let args = vec![
+            "sextant-browser".to_string(),
+            "--render-path".to_string(),
+            "direct".to_string(),
+        ];
+        assert_eq!(
+            parse_user_render_path_arg(&args).unwrap(),
+            UserRenderPath::DirectServo
+        );
+        assert_eq!(
+            parse_user_render_path_arg(&[]).unwrap(),
+            UserRenderPath::FrameBridge
+        );
+    }
+
+    #[test]
+    fn direct_render_modes_report_bridge_gap_until_integrated() -> Result<(), String> {
+        let data_dir =
+            env::temp_dir().join(format!("sextant-browser-render-gap-{}", Uuid::new_v4()));
+        let mut app = BrowserApp::new_with_data_dir(data_dir.clone())?;
+        assert_eq!(app.render_path_label(), "BRIDGE");
+        assert!(app.direct_render_gap_label().is_none());
+
+        app.set_browser_mode(BrowserMode::Direct);
+        assert_eq!(
+            app.direct_render_gap_label(),
+            Some("direct compositor pending")
+        );
+
+        let error = app
+            .set_user_render_path(UserRenderPath::DirectServo)
+            .unwrap_err();
+        assert!(error.contains("production shell integration is not complete"));
+        assert_eq!(app.render_path_label(), "BRIDGE");
+        let _ = std::fs::remove_dir_all(data_dir);
+        Ok(())
+    }
+
+    #[test]
+    fn visible_navigation_can_pre_size_viewport_when_requested() -> Result<(), String> {
+        let data_dir = env::temp_dir().join(format!("sextant-browser-pre-size-{}", Uuid::new_v4()));
+        let mut app = BrowserApp::new_with_data_dir(data_dir.clone())?;
+        app.layout(PhysicalSize::new(1180, 760));
+        app.pre_size_visible_navigation = true;
+        let url = Url::parse("https://example.com").map_err(|error| error.to_string())?;
+
+        assert!(app.start_visible_navigation(url));
+        let expected = {
+            let viewport = app.browser_viewport_rect;
+            Some((viewport.w.max(1), viewport.h.max(1)))
+        };
+        assert_eq!(
+            app.pending_navigation
+                .as_ref()
+                .and_then(|pending| pending.viewport_size),
+            expected
+        );
+        let _ = std::fs::remove_dir_all(data_dir);
+        Ok(())
+    }
+
+    #[test]
+    fn parses_window_smoke_user_distill_argument() {
+        let args = vec![
+            "sextant-browser".to_string(),
+            "--window-smoke".to_string(),
+            "https://example.com".to_string(),
+            "--window-smoke-distill".to_string(),
+            "--window-smoke-timeout".to_string(),
+            "30".to_string(),
+        ];
+        let spec = parse_window_smoke(&args).unwrap().unwrap();
+
+        assert_eq!(spec.target.as_deref(), Some("https://example.com"));
+        assert_eq!(spec.timeout, Duration::from_secs(30));
+        assert!(spec.user_distill);
+    }
+
+    #[test]
+    fn runtime_incognito_switch_uses_ephemeral_storage_and_restores_profile() -> Result<(), String>
+    {
+        let data_dir = env::temp_dir().join(format!(
+            "sextant-browser-runtime-incognito-{}",
+            Uuid::new_v4()
+        ));
+        let mut app = BrowserApp::new_with_data_dir(data_dir.clone())?;
+        let profile_data_dir = app.profile_data_dir.clone();
+
+        app.set_browser_mode(BrowserMode::Incognito);
+        assert_eq!(app.browser_mode, BrowserMode::Incognito);
+        let incognito_data_dir = app
+            .incognito_data_dir
+            .clone()
+            .ok_or_else(|| "incognito mode did not allocate an ephemeral data dir".to_string())?;
+        assert!(incognito_data_dir.to_string_lossy().contains("incognito"));
+        assert_ne!(app.data_dir, profile_data_dir);
+        assert!(incognito_data_dir.exists());
+
+        app.set_browser_mode(BrowserMode::Direct);
+        assert_eq!(app.browser_mode, BrowserMode::Direct);
+        assert_eq!(app.data_dir, profile_data_dir);
+        assert!(app.incognito_data_dir.is_none());
+        assert!(!incognito_data_dir.exists());
 
         let _ = std::fs::remove_dir_all(data_dir);
         Ok(())
@@ -5318,14 +8334,6 @@ fn display_backend(app: &BrowserApp, tab: &Tab) -> &'static str {
     }
 }
 
-fn render_mode_label() -> &'static str {
-    if cfg!(feature = "servo-backend") {
-        "LIVE"
-    } else {
-        "SIM"
-    }
-}
-
 fn render_action_label() -> &'static str {
     if cfg!(feature = "servo-backend") {
         "Opened"
@@ -5457,6 +8465,16 @@ fn draw_top_bar(buffer: &mut [u32], width: u32, height: u32, app: &BrowserApp) {
     );
     draw_text(buffer, width, height, 24, 14, "SEXTANT", TEXT, 1);
     draw_text(buffer, width, height, 24, 34, "SERVO", TEXT_DIM, 1);
+    for region in &app.mode_rects {
+        draw_pill(
+            buffer,
+            width,
+            height,
+            region.rect,
+            region.mode.label(),
+            region.mode == app.browser_mode,
+        );
+    }
     let tabs = app.engine.get_tabs();
     let tab_label = format!("TABS {}", tabs.len());
     draw_text(
@@ -5595,8 +8613,16 @@ fn draw_controls(buffer: &mut [u32], width: u32, height: u32, app: &BrowserApp) 
         height,
         rail_x.saturating_sub(184),
         CHROME_H + STRIP_H + 14,
-        "AI READY",
-        STATUS_OK,
+        if app.capabilities().ai_observe_dom {
+            "AI READY"
+        } else {
+            "AI OFF"
+        },
+        if app.capabilities().ai_observe_dom {
+            STATUS_OK
+        } else {
+            TEXT_DIM
+        },
         1,
     );
 }
@@ -5931,12 +8957,12 @@ fn draw_page_panel(
             .map(short_url)
             .unwrap_or_else(|| "about:blank".to_string());
         let status = format!(
-            "TAB {} | BACK {} | FORWARD {} | RENDER {} {}",
+            "TAB {} | BACK {} | FORWARD {} | ENGINE {} | RENDER {}",
             short_id(tab.id),
             tab.can_go_back,
             tab.can_go_forward,
             display_backend(app, tab),
-            render_mode_label()
+            app.render_path_label()
         );
         draw_text(
             buffer,
@@ -7056,9 +10082,12 @@ fn draw_status_bar(buffer: &mut [u32], width: u32, height: u32, app: &BrowserApp
         .unwrap_or_else(|| "NO TAB".to_string());
     let validation_total = app.validation_rows().len();
     let status = format!(
-        "RENDER {} {}    {}    WAKE RESULTS {}    LOG ENTRIES {}    VALIDATION {}/{}    PRIVACY LOCAL",
+        "MODE {}    AI {}    STORAGE {}    ENGINE {}    RENDER {}    {}    WAKE RESULTS {}    LOG ENTRIES {}    VALIDATION {}/{}",
+        app.browser_mode.label(),
+        app.ai_status_label(),
+        app.storage_status_label(),
         backend,
-        render_mode_label(),
+        app.render_path_label(),
         app.perf.summary(),
         app.wake_results.len(),
         app.recent_logs.len(),
@@ -7250,23 +10279,13 @@ fn draw_button(
     );
 }
 
-fn disabled_reason(action: Action) -> &'static str {
-    match action {
-        Action::Navigate => "Enter an address, search phrase, or intent first.",
-        Action::RunShowcase => "Showcase is always available.",
-        Action::NewTab => "New tab is always available.",
-        Action::Back => "Back is unavailable for this tab/backend.",
-        Action::Forward => "Forward is unavailable for this tab/backend.",
-        Action::Reload => "Active tab has no URL to reload.",
-        Action::CloseTab => "No active tab to close.",
-        Action::ResetValidation => "Validation reset is always available.",
-        Action::DistillActive => "Open a page before distilling.",
-        Action::SearchWake => "Enter a Wake query first.",
-    }
-}
-
 fn right_rail_x(width: u32) -> u32 {
-    width.saturating_sub(RAIL_WIDTH)
+    let min_main_width = 420;
+    if width >= min_main_width + RAIL_WIDTH {
+        width.saturating_sub(RAIL_WIDTH)
+    } else {
+        width
+    }
 }
 
 fn main_panel_rect(rail_x: u32, height: u32) -> Rect {
@@ -7276,16 +10295,18 @@ fn main_panel_rect(rail_x: u32, height: u32) -> Rect {
         x: 24,
         y: top,
         w: rail_x.saturating_sub(48),
-        h: bottom_limit.saturating_sub(top).max(180),
+        h: bottom_limit.saturating_sub(top),
     }
 }
 
 fn browser_viewport_rect(panel: Rect) -> Rect {
+    let header_h = panel.h.min(126);
+    let bottom_pad = if panel.h > header_h { 16 } else { 0 };
     Rect {
         x: panel.x + 18,
-        y: panel.y + 126,
+        y: panel.y + header_h,
         w: panel.w.saturating_sub(36),
-        h: panel.h.saturating_sub(142),
+        h: panel.h.saturating_sub(header_h + bottom_pad),
     }
 }
 

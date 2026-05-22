@@ -9605,8 +9605,10 @@ dependencies = [
  "chrono",
  "dirs",
  "masonry",
+ "rustls 0.23.38",
  "serde",
  "serde_json",
+ "servo",
  "sextant-airgap",
  "sextant-bio",
  "sextant-engine",
@@ -9630,6 +9632,7 @@ dependencies = [
  "vello",
  "wgpu",
  "winit 0.29.15",
+ "winit 0.30.13",
  "xilem",
 ]
 

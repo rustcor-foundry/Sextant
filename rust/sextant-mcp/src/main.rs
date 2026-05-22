@@ -37,6 +37,7 @@ fn run() -> Result<(), String> {
             serde_json::to_string_pretty(&json!({
                 "server": server_info(),
                 "capabilities": server_capabilities(),
+                "browserCapabilities": browser_capabilities(),
                 "tools": tools(),
                 "resources": resources(),
             }))
@@ -109,6 +110,51 @@ fn run() -> Result<(), String> {
             .and_then(Value::as_bool)
             .unwrap_or(false)
         {
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+    if let Some(arguments) = browser_render_path_baseline_cli_arguments(&args)? {
+        let result = run_browser_render_path_baseline_tool(arguments)?;
+        if args.iter().any(|arg| arg == "--json") {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&result).map_err(|error| error.to_string())?
+            );
+        } else {
+            println!("{}", tool_text(&result));
+        }
+        if tool_result_failed(&result) {
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+    if let Some(arguments) = browser_direct_present_smoke_cli_arguments(&args)? {
+        let result = run_browser_direct_present_smoke_tool(arguments)?;
+        if args.iter().any(|arg| arg == "--json") {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&result).map_err(|error| error.to_string())?
+            );
+        } else {
+            println!("{}", tool_text(&result));
+        }
+        if tool_result_failed(&result) {
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+    if let Some(arguments) = browser_window_smoke_cli_arguments(&args)? {
+        let result = run_browser_window_smoke_tool(arguments)?;
+        if args.iter().any(|arg| arg == "--json") {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&result).map_err(|error| error.to_string())?
+            );
+        } else {
+            println!("{}", tool_text(&result));
+        }
+        if tool_result_failed(&result) {
             std::process::exit(1);
         }
         return Ok(());
@@ -298,7 +344,8 @@ fn handle_message(message: Value) -> Option<Value> {
                     "protocolVersion": PROTOCOL_VERSION,
                     "capabilities": server_capabilities(),
                     "serverInfo": server_info(),
-                    "instructions": "Sextant exposes local browser automation through the native sextant-browser operator bridge. Start with browser_capabilities, then use browser_real_browsing_smoke, browser_perception_probe, browser_perf_probe, browser_intent_run, browser_operator_probe, or browser_operator_run for bounded real browsing checks.",
+                    "instructions": "Sextant exposes local browser automation through the native sextant-browser operator bridge and a separate direct Servo presentation proof. Start with browser_capabilities, then use browser_direct_present_smoke for direct compositor proof, or browser_real_browsing_smoke, browser_perception_probe, browser_perf_probe, browser_intent_run, browser_operator_probe, or browser_operator_run for bounded real browsing checks.",
+                    "browserModes": browser_modes(),
                 }),
             )
         }),
@@ -346,6 +393,8 @@ fn handle_tool_call(id: Value, params: Option<Value>) -> Value {
         "browser_launch_preflight" => Ok(browser_launch_preflight_tool(arguments)),
         "browser_hardening_preflight" => Ok(browser_hardening_preflight_tool(arguments)),
         "browser_real_browsing_smoke" => Ok(browser_real_browsing_smoke_tool(arguments)),
+        "browser_render_path_baseline" => run_browser_render_path_baseline_tool(arguments),
+        "browser_direct_present_smoke" => run_browser_direct_present_smoke_tool(arguments),
         "browser_window_smoke" => run_browser_window_smoke_tool(arguments),
         "browser_intent_run" => {
             let Some(intent) = required_string(&arguments, "intent") else {
@@ -575,6 +624,38 @@ fn tools() -> Value {
             "inputSchema": timeout_schema(),
         },
         {
+            "name": "browser_direct_present_smoke",
+            "title": "Browser Direct Present Smoke",
+            "description": "Run the experimental direct Servo presentation proof using Servo WindowRenderingContext and present(), bypassing the production frame-capture bridge.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": "Optional URL to load in the direct Servo presentation proof. Defaults to https://example.com."
+                    },
+                    "timeout_seconds": window_timeout_property(),
+                },
+                "required": [],
+            },
+        },
+        {
+            "name": "browser_render_path_baseline",
+            "title": "Browser Render Path Baseline",
+            "description": "Compare direct Servo presentation proof timing against the production bridge-backed visible browser smoke for the same target.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": "Optional URL to load in both render-path checks. Defaults to https://example.com."
+                    },
+                    "timeout_seconds": window_timeout_property(),
+                },
+                "required": [],
+            },
+        },
+        {
             "name": "browser_window_smoke",
             "title": "Browser Window Smoke",
             "description": "Launch the visible sextant-browser shell, optionally navigate to a target, draw once, and exit.",
@@ -596,6 +677,16 @@ fn tools() -> Value {
                     "shell_interaction": {
                         "type": "boolean",
                         "description": "When true, click through native chrome controls before the visible shell draw check."
+                    },
+                    "user_distill": {
+                        "type": "boolean",
+                        "description": "When true, queue a user-visible DISTILL action through the event-loop async path before the draw check exits."
+                    },
+                    "mode": browser_mode_property(),
+                    "render_path": render_path_property(),
+                    "pre_size_navigation": {
+                        "type": "boolean",
+                        "description": "When true, pass the visible viewport size into Servo navigation before the first bridge capture. Experimental and site-dependent."
                     },
                     "timeout_seconds": window_timeout_property(),
                 },
@@ -830,6 +921,22 @@ fn window_timeout_property() -> Value {
     })
 }
 
+fn browser_mode_property() -> Value {
+    json!({
+        "type": "string",
+        "enum": ["agent", "assisted", "observe", "direct", "incognito"],
+        "description": "Optional visible browser mode for a user-facing shell run. Defaults to assisted."
+    })
+}
+
+fn render_path_property() -> Value {
+    json!({
+        "type": "string",
+        "enum": ["bridge", "direct"],
+        "description": "Optional production user render path. `bridge` is currently integrated; `direct` is parsed by sextant-browser but intentionally rejected until production integration lands."
+    })
+}
+
 fn resources() -> Value {
     json!([
         {
@@ -874,9 +981,15 @@ fn resource_text(uri: &str) -> Option<String> {
                 "- Guard policy: canonical `guard-policy.json` read/write tools for persona firewall overlays",
                 "- Perception probes: bounded `--perception-probe` path for page type, semantic counts, key nodes, source metadata, and timings",
                 "- Performance probes: bounded `--perf-probe` and `--perf-baseline` timing paths for navigation, distillation, Wake, viewport resize, and frame capture",
+                "- Direct presentation proof: bounded `browser_direct_present_smoke` path for Servo `WindowRenderingContext` + `present()` without the production frame-capture bridge",
+                "- Render-path baseline: bounded `browser_render_path_baseline` path comparing direct-present timing with the production bridge-backed visible smoke",
                 "- Intent automation: bounded `--intent-run` mode for native Intent Bar workflows",
                 "- Authorized intent automation: bounded `--consent-run` mode for Captain's Key consent/resume workflows",
                 "- Visible shell checks: bounded `--window-smoke` launch/draw/navigation mode",
+                "- Browser modes: Agent, Assisted, Observe, Direct, and Incognito",
+                "- Mode boundary: Direct and Incognito block AI DOM/frame observation, Wake reads/writes, Captain's Log content persistence, and MCP exposure",
+                "- Render boundary: `sextant-browser` still uses the temporary frame-capture render bridge for user display; `sextant-servo-direct` proves direct Servo presentation separately until the compositor path is integrated into the production shell",
+                "- Viewport input lane: visible mouse, wheel, and text input is queued/coalesced before engine enqueue, then Servo prioritizes that input ahead of pending frame capture work",
                 "- Persistence: Digital Wake and Captain's Log under the browser data directory",
                 "- Current MCP posture: local stdio server, no network listener, tool calls audited to Captain's Log when the data store is available",
             ]
@@ -895,6 +1008,8 @@ fn resource_text(uri: &str) -> Option<String> {
                 "Use `browser_guard_policy_read` and `browser_guard_policy_write` when an agent needs to inspect or update the canonical persona firewall overlay.",
                 "Use `browser_perception_probe` when an agent needs a structured semantic read of a target page.",
                 "Use `browser_perf_probe` or `browser_perf_baseline` when tuning normal-browsing performance.",
+                "Use `browser_direct_present_smoke` when validating whether Servo can present directly to a native window without the current frame-capture bridge.",
+                "Use `browser_render_path_baseline` when comparing direct Servo presentation timing against the production bridge path for one URL.",
                 "Use `browser_intent_run` for Intent Bar workflows such as opening and distilling a page.",
                 "Use `browser_authorized_intent_run` for sensitive Intent Bar workflows that should authorize pending consent and resume the bounded browser plan.",
                 "Use `browser_operator_probe` for page-level navigation and distillation checks.",
@@ -926,12 +1041,16 @@ fn resource_text(uri: &str) -> Option<String> {
                 "- Local guard policy management reads and writes the canonical browser `guard-policy.json` overlay.",
                 "- Page perception is routed through `sextant-browser --perception-probe` and returned as structured `perception` output.",
                 "- Normal-browsing performance timing is routed through `sextant-browser --perf-probe` and `sextant-browser --perf-baseline`.",
+                "- Direct Servo presentation timing is routed through `sextant-servo-direct --smoke` and returned as structured `directPresent` output.",
+                "- Render-path comparisons run direct Servo presentation plus production bridge-backed Direct-mode visible smoke and return structured `renderPathBaseline` output.",
                 "- Launch showcase checks are routed through `sextant-browser --showcase-run`.",
                 "- Launch preflight runs the bounded browser commands in sequence and reports each result.",
                 "- Hardening preflight runs launch-critical checks plus real-browsing and visible shell-interaction proofs.",
                 "- Intent work is routed through `sextant-browser --intent-run`.",
                 "- Authorized sensitive intent work is routed through `sextant-browser --consent-run`.",
                 "- Visible shell validation is routed through `sextant-browser --window-smoke`.",
+                "- Browser modes are advertised as scope boundaries: Agent has full control/observation/persistence, Assisted observes with human-first control, Observe observes without persistence, Direct is the user performance path with AI observation disabled, and Incognito is the human-only path with AI observation and content persistence disabled.",
+                "- Current production visible rendering still uses the temporary frame-capture render bridge in every mode; AI frame observation is a separate gated capability. The experimental direct-present proof is exposed separately until production shell integration lands.",
                 "- Operator tools are bounded by `timeout_seconds` and return captured stdout/stderr.",
                 "- Tool calls are recorded with the `sextant-mcp-stdio` signature when Captain's Log is writable.",
                 "- Long-lived shared browser sessions are intentionally deferred until the browser runtime is extracted into reusable session code.",
@@ -942,6 +1061,172 @@ fn resource_text(uri: &str) -> Option<String> {
     }
 }
 
+fn browser_modes() -> Value {
+    json!([
+        {
+            "id": "agent",
+            "label": "AGENT",
+            "order": 1,
+            "description": "AI can observe, control, persist, and expose browser tools.",
+            "capabilities": {
+                "aiControl": true,
+                "aiObserveDom": true,
+                "aiObserveFrame": true,
+                "readWake": true,
+                "writeWake": true,
+                "writeLogContent": true,
+                "exposeMcpTools": true,
+                "directRenderRequired": false,
+            }
+        },
+        {
+            "id": "assisted",
+            "label": "ASSIST",
+            "order": 2,
+            "description": "Human-first browsing with AI sidecar observation and consent-gated actions.",
+            "capabilities": {
+                "aiControl": false,
+                "aiObserveDom": true,
+                "aiObserveFrame": true,
+                "readWake": true,
+                "writeWake": true,
+                "writeLogContent": true,
+                "exposeMcpTools": true,
+                "directRenderRequired": false,
+            }
+        },
+        {
+            "id": "observe",
+            "label": "OBSERVE",
+            "order": 3,
+            "description": "AI can observe the page but cannot act or persist page content.",
+            "capabilities": {
+                "aiControl": false,
+                "aiObserveDom": true,
+                "aiObserveFrame": true,
+                "readWake": true,
+                "writeWake": false,
+                "writeLogContent": false,
+                "exposeMcpTools": true,
+                "directRenderRequired": false,
+            }
+        },
+        {
+            "id": "direct",
+            "label": "DIRECT",
+            "order": 4,
+            "description": "Human performance path. AI observation, persistence, and MCP exposure are disabled.",
+            "capabilities": {
+                "aiControl": false,
+                "aiObserveDom": false,
+                "aiObserveFrame": false,
+                "readWake": false,
+                "writeWake": false,
+                "writeLogContent": false,
+                "exposeMcpTools": false,
+                "directRenderRequired": true,
+            }
+        },
+        {
+            "id": "incognito",
+            "label": "INCOG",
+            "order": 5,
+            "description": "Human-only private path. AI observation and content persistence are disabled.",
+            "capabilities": {
+                "aiControl": false,
+                "aiObserveDom": false,
+                "aiObserveFrame": false,
+                "readWake": false,
+                "writeWake": false,
+                "writeLogContent": false,
+                "exposeMcpTools": false,
+                "directRenderRequired": true,
+            }
+        }
+    ])
+}
+
+fn browser_runtime_loops() -> Value {
+    json!({
+        "userInteractionLoop": {
+            "status": "implemented",
+            "owner": "winit event loop",
+            "responsibilities": [
+                "window input",
+                "chrome drawing",
+                "visible navigation polling",
+                "viewport input-lane flushing",
+                "pending text flush",
+                "render-bridge frame polling"
+            ]
+        },
+        "viewportInputLane": {
+            "status": "implemented",
+            "owner": "sextant-browser shell queue plus Servo service scheduler",
+            "responsibilities": [
+                "coalesce mouse moves before engine enqueue",
+                "merge adjacent wheel deltas before engine enqueue",
+                "batch printable text before engine enqueue",
+                "prioritize queued viewport input ahead of pending frame captures inside the Servo service"
+            ],
+            "modeBoundary": "available in every browser mode as the normal user interaction path"
+        },
+        "servoServiceLoop": {
+            "status": "implemented",
+            "owner": "sextant-engine Servo service thread",
+            "responsibilities": [
+                "Servo WebView sessions",
+                "navigation",
+                "DOM evaluation",
+                "prioritized input command delivery",
+                "frame capture"
+            ]
+        },
+        "renderBridgeLoop": {
+            "status": "temporary",
+            "owner": "sextant-browser visible frame worker",
+            "responsibilities": [
+                "resize Servo viewport",
+                "capture RenderedFrame pixels",
+                "feed softbuffer blit path"
+            ],
+            "modeBoundary": "available in every mode for user display until direct Servo compositor rendering replaces it"
+        },
+        "directPresentationLoop": {
+            "status": "experimental proof",
+            "owner": "sextant-servo-direct",
+            "responsibilities": [
+                "create Servo WindowRenderingContext",
+                "paint WebView directly",
+                "present through Servo rendering context without frame readback"
+            ],
+            "modeBoundary": "not integrated into production browser modes yet; intended replacement for the render bridge in Direct and Incognito"
+        },
+        "aiObservationLoop": {
+            "status": "baseline",
+            "owner": "operator/Pilot/MCP proof paths",
+            "responsibilities": [
+                "DOM distillation",
+                "AI frame observation",
+                "Wake reads/writes when permitted",
+                "Captain's Log content persistence when permitted"
+            ],
+            "modeBoundary": "disabled in Direct and Incognito"
+        },
+        "persistenceLoop": {
+            "status": "baseline",
+            "owner": "Digital Wake and Captain's Log",
+            "responsibilities": [
+                "Wake search",
+                "Wake page records",
+                "MCP audit records",
+                "consent signatures"
+            ],
+            "modeBoundary": "content persistence disabled in Observe, Direct, and Incognito; MCP tool audit remains local server-side"
+        }
+    })
+}
+
 fn browser_capabilities() -> Value {
     json!({
         "browser": {
@@ -949,11 +1234,24 @@ fn browser_capabilities() -> Value {
             "compatibilityAlias": "sextant-hull-lite",
             "defaultEngine": "servo-backed native browser",
             "fallbackEngine": "reader/fetch/distill build via --no-default-features",
+            "defaultMode": "assisted",
+            "modes": browser_modes(),
+            "runtimeLoops": browser_runtime_loops(),
+            "renderingBoundary": {
+                "userDisplay": "temporary frame-capture render bridge",
+                "aiObservation": "separate capability-gated DOM/frame observation path",
+                "directCompositor": "experimental proof via sextant-servo-direct",
+                "directPresentSmoke": true,
+                "renderPathBaseline": true,
+                "directAndIncognito": "AI observation and content persistence disabled; render bridge remains only for user display until direct compositor integration lands"
+            },
             "operatorBridge": {
                 "smoke": true,
                 "launchPreflight": true,
                 "hardeningPreflight": true,
                 "realBrowsingSmoke": true,
+                "directPresentSmoke": true,
+                "renderPathBaseline": true,
                 "guardProbe": true,
                 "perfProbe": true,
                 "perfBaseline": true,
@@ -971,6 +1269,9 @@ fn browser_capabilities() -> Value {
                 "showcaseSeeding": true,
                 "realBrowsingSeeding": true,
                 "shellInteractionSeeding": true,
+                "modeSelection": ["agent", "assisted", "observe", "direct", "incognito"],
+                "controlWorkModes": ["agent", "assisted"],
+                "nonControlModes": ["observe", "direct", "incognito"],
                 "timeoutSecondsDefault": 15,
             }
         },
@@ -984,6 +1285,8 @@ fn browser_capabilities() -> Value {
                 "browser_launch_preflight",
                 "browser_hardening_preflight",
                 "browser_real_browsing_smoke",
+                "browser_direct_present_smoke",
+                "browser_render_path_baseline",
                 "browser_guard_probe",
                 "browser_guard_policy_read",
                 "browser_guard_policy_write",
@@ -1037,6 +1340,18 @@ fn tool_text(result: &Value) -> String {
         .to_string()
 }
 
+fn tool_result_failed(result: &Value) -> bool {
+    result
+        .get("isError")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        || result
+            .get("structuredContent")
+            .and_then(|structured| structured.get("success"))
+            .and_then(Value::as_bool)
+            == Some(false)
+}
+
 fn required_string(arguments: &Value, key: &str) -> Option<String> {
     arguments
         .get(key)
@@ -1051,6 +1366,124 @@ fn operator_timeout(arguments: &Value) -> u64 {
 
 fn window_smoke_timeout(arguments: &Value) -> u64 {
     timeout_seconds(arguments, 15, 120)
+}
+
+fn optional_browser_mode(arguments: &Value) -> Result<Option<String>, String> {
+    let Some(mode) = arguments.get("mode").and_then(Value::as_str) else {
+        return Ok(None);
+    };
+    let normalized = match mode.trim().to_ascii_lowercase().as_str() {
+        "agent" => "agent",
+        "assist" | "assisted" => "assisted",
+        "observe" => "observe",
+        "direct" => "direct",
+        "incog" | "incognito" => "incognito",
+        _ => {
+            return Err(format!(
+                "mode must be one of agent, assisted, observe, direct, or incognito; got {mode}"
+            ));
+        }
+    };
+    Ok(Some(normalized.to_string()))
+}
+
+fn optional_render_path(arguments: &Value) -> Result<Option<String>, String> {
+    let Some(path) = arguments.get("render_path").and_then(Value::as_str) else {
+        return Ok(None);
+    };
+    let normalized = match path.trim().to_ascii_lowercase().as_str() {
+        "bridge" | "frame-bridge" | "frame_bridge" | "render-bridge" | "render_bridge" => "bridge",
+        "direct" | "direct-servo" | "direct_servo" | "servo-direct" | "servo_direct" => "direct",
+        _ => {
+            return Err(format!("render_path must be bridge or direct; got {path}"));
+        }
+    };
+    Ok(Some(normalized.to_string()))
+}
+
+fn window_smoke_mode_boundary_error(arguments: &Value, mode: Option<&str>) -> Option<String> {
+    if browser_mode_allows_control_work(mode) {
+        return None;
+    }
+
+    let blocked_work = if arguments
+        .get("showcase")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        Some("showcase seeding")
+    } else if arguments
+        .get("real_browsing")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        Some("real-browsing seeding")
+    } else if arguments
+        .get("shell_interaction")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        Some("shell-interaction seeding")
+    } else if required_string(arguments, "target")
+        .as_deref()
+        .map(is_native_intent_target)
+        .unwrap_or(false)
+    {
+        Some("native intent target")
+    } else if arguments
+        .get("user_distill")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        && matches!(mode.unwrap_or("assisted"), "direct" | "incognito")
+    {
+        Some("user-visible distillation")
+    } else {
+        None
+    };
+
+    blocked_work.map(|work| {
+        format!(
+            "browser_window_smoke mode '{}' blocks {}; use agent or assisted mode for browser-control proof workflows",
+            mode.unwrap_or("assisted"),
+            work
+        )
+    })
+}
+
+fn browser_mode_allows_control_work(mode: Option<&str>) -> bool {
+    matches!(mode.unwrap_or("assisted"), "agent" | "assisted")
+}
+
+fn is_native_intent_target(target: &str) -> bool {
+    let trimmed = target.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+
+    for prefix in [
+        "intent:",
+        "pilot:",
+        "research:",
+        "summarize:",
+        "summarise:",
+        "remember:",
+    ] {
+        if trimmed.len() >= prefix.len() && trimmed[..prefix.len()].eq_ignore_ascii_case(prefix) {
+            return true;
+        }
+    }
+
+    let lower = trimmed.to_ascii_lowercase();
+    lower.starts_with("research ")
+        || lower.starts_with("summarize ")
+        || lower.starts_with("summarise ")
+        || lower.starts_with("remember ")
+        || lower.starts_with("distill ")
+        || (lower.starts_with("open ")
+            && (lower.contains(" and distill")
+                || lower.contains(" and remember")
+                || lower.contains(" and summarize")
+                || lower.contains(" and summarise")))
 }
 
 fn timeout_seconds(arguments: &Value, default: u64, max: u64) -> u64 {
@@ -1083,6 +1516,114 @@ fn operator_arg_value(args: &[String], flag: &str) -> Option<String> {
     args.windows(2)
         .find(|pair| pair[0] == flag)
         .map(|pair| pair[1].clone())
+}
+
+fn browser_window_smoke_cli_arguments(args: &[String]) -> Result<Option<Value>, String> {
+    let Some(window_smoke_index) = args.iter().position(|arg| arg == "--window-smoke") else {
+        return Ok(None);
+    };
+
+    let mut arguments = json!({});
+    if let Some(target) = operator_arg_value(args, "--target").or_else(|| {
+        args.get(window_smoke_index + 1)
+            .filter(|value| !value.starts_with("--"))
+            .cloned()
+    }) {
+        arguments["target"] = Value::String(target);
+    }
+
+    let window_timeout = parse_cli_timeout(args, "--window-smoke-timeout", 15)?;
+    arguments["timeout_seconds"] = Value::from(parse_cli_timeout(
+        args,
+        "--timeout-seconds",
+        window_timeout,
+    )?);
+
+    if let Some(mode) =
+        operator_arg_value(args, "--mode").or_else(|| operator_arg_value(args, "--browser-mode"))
+    {
+        if let Some(mode) = optional_browser_mode(&json!({ "mode": mode }))? {
+            arguments["mode"] = Value::String(mode);
+        }
+    }
+
+    if let Some(render_path) = operator_arg_value(args, "--render-path")
+        .or_else(|| operator_arg_value(args, "--user-render-path"))
+    {
+        if let Some(render_path) = optional_render_path(&json!({ "render_path": render_path }))? {
+            arguments["render_path"] = Value::String(render_path);
+        }
+    }
+
+    if args
+        .iter()
+        .any(|arg| arg == "--showcase" || arg == "--start-showcase")
+    {
+        arguments["showcase"] = Value::Bool(true);
+    }
+    if args
+        .iter()
+        .any(|arg| arg == "--real-browsing" || arg == "--start-real-browsing")
+    {
+        arguments["real_browsing"] = Value::Bool(true);
+    }
+    if args
+        .iter()
+        .any(|arg| arg == "--shell-interaction" || arg == "--start-shell-interaction")
+    {
+        arguments["shell_interaction"] = Value::Bool(true);
+    }
+    if args
+        .iter()
+        .any(|arg| arg == "--user-distill" || arg == "--window-smoke-distill")
+    {
+        arguments["user_distill"] = Value::Bool(true);
+    }
+    if args
+        .iter()
+        .any(|arg| arg == "--pre-size-navigation" || arg == "--pre-size-visible-navigation")
+    {
+        arguments["pre_size_navigation"] = Value::Bool(true);
+    }
+
+    Ok(Some(arguments))
+}
+
+fn browser_render_path_baseline_cli_arguments(args: &[String]) -> Result<Option<Value>, String> {
+    let Some(baseline_index) = args.iter().position(|arg| arg == "--render-path-baseline") else {
+        return Ok(None);
+    };
+
+    let mut arguments = json!({});
+    if let Some(target) = operator_arg_value(args, "--target").or_else(|| {
+        args.get(baseline_index + 1)
+            .filter(|value| !value.starts_with("--"))
+            .cloned()
+    }) {
+        arguments["target"] = Value::String(target);
+    }
+    arguments["timeout_seconds"] = Value::from(parse_cli_timeout(args, "--timeout-seconds", 45)?);
+    Ok(Some(arguments))
+}
+
+fn browser_direct_present_smoke_cli_arguments(args: &[String]) -> Result<Option<Value>, String> {
+    let Some(smoke_index) = args
+        .iter()
+        .position(|arg| arg == "--direct-present-smoke" || arg == "--servo-direct-smoke")
+    else {
+        return Ok(None);
+    };
+
+    let mut arguments = json!({});
+    if let Some(target) = operator_arg_value(args, "--target").or_else(|| {
+        args.get(smoke_index + 1)
+            .filter(|value| !value.starts_with("--"))
+            .cloned()
+    }) {
+        arguments["target"] = Value::String(target);
+    }
+    arguments["timeout_seconds"] = Value::from(parse_cli_timeout(args, "--timeout-seconds", 45)?);
+    Ok(Some(arguments))
 }
 
 fn operator_run_args(arguments: &Value, target: String) -> Result<Vec<String>, String> {
@@ -1380,7 +1921,24 @@ fn firewall_policy_summary(policy: &FirewallPolicy) -> Value {
 
 fn run_browser_window_smoke_tool(arguments: Value) -> Result<Value, String> {
     let timeout_seconds = window_smoke_timeout(&arguments);
+    let mode = optional_browser_mode(&arguments)?;
+    let render_path = optional_render_path(&arguments)?;
+    if let Some(error) = window_smoke_mode_boundary_error(&arguments, mode.as_deref()) {
+        let _ = record_audit(
+            "browser_window_smoke",
+            LogStatus::Failure(error.clone()),
+            json!({ "arguments": arguments }),
+        );
+        return Ok(tool_error(&error));
+    }
+
     let mut full_args = Vec::new();
+    if let Some(mode) = mode {
+        full_args.extend(["--browser-mode".to_string(), mode]);
+    }
+    if let Some(render_path) = render_path {
+        full_args.extend(["--render-path".to_string(), render_path]);
+    }
     if arguments
         .get("showcase")
         .and_then(Value::as_bool)
@@ -1401,6 +1959,20 @@ fn run_browser_window_smoke_tool(arguments: Value) -> Result<Value, String> {
         .unwrap_or(false)
     {
         full_args.push("--start-shell-interaction".to_string());
+    }
+    if arguments
+        .get("user_distill")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        full_args.push("--window-smoke-distill".to_string());
+    }
+    if arguments
+        .get("pre_size_navigation")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        full_args.push("--pre-size-navigation".to_string());
     }
     full_args.push("--window-smoke".to_string());
     if let Some(target) = required_string(&arguments, "target") {
@@ -1444,12 +2016,14 @@ fn run_browser_window_smoke_tool(arguments: Value) -> Result<Value, String> {
 
     let report_source = command_report_source(&stdout, &stderr);
     let report = window_report_lines(&report_source);
+    let window_smoke = window_smoke_summary(&report);
     let structured = json!({
         "success": success,
         "exitCode": exit_code,
         "stdout": stdout,
         "stderr": stderr,
         "windowSmokeReport": report,
+        "windowSmoke": window_smoke,
         "command": {
             "binary": "sextant-browser",
             "args": full_args,
@@ -1473,6 +2047,252 @@ fn run_browser_window_smoke_tool(arguments: Value) -> Result<Value, String> {
         result["isError"] = Value::Bool(true);
     }
     Ok(result)
+}
+
+fn run_browser_direct_present_smoke_tool(arguments: Value) -> Result<Value, String> {
+    let timeout_seconds = window_smoke_timeout(&arguments).max(1);
+    let target =
+        required_string(&arguments, "target").unwrap_or_else(|| "https://example.com".to_string());
+    let full_args = vec![
+        "--smoke".to_string(),
+        "--url".to_string(),
+        target,
+        "--timeout-seconds".to_string(),
+        timeout_seconds.to_string(),
+    ];
+
+    let output = match run_direct_servo_command(&full_args) {
+        Ok(output) => output,
+        Err(error) => {
+            let _ = record_audit(
+                "browser_direct_present_smoke",
+                LogStatus::Failure(error.clone()),
+                json!({ "arguments": arguments }),
+            );
+            return Ok(tool_direct_command_launch_error(&full_args, &error));
+        }
+    };
+
+    let stdout = strip_ansi(&String::from_utf8_lossy(&output.stdout))
+        .trim()
+        .to_string();
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr))
+        .trim()
+        .to_string();
+    let exit_code = output.status.code();
+    let success = output.status.success();
+    let status = if success {
+        LogStatus::Success
+    } else {
+        LogStatus::Failure(format!("exit code {:?}", exit_code))
+    };
+    let _ = record_audit(
+        "browser_direct_present_smoke",
+        status,
+        json!({ "arguments": arguments }),
+    );
+
+    let report_source = command_report_source(&stdout, &stderr);
+    let report = direct_present_report_lines(&report_source);
+    let direct_present = direct_present_summary(&report);
+    let structured = json!({
+        "success": success,
+        "exitCode": exit_code,
+        "stdout": stdout,
+        "stderr": stderr,
+        "directPresentReport": report,
+        "directPresent": direct_present,
+        "command": {
+            "binary": "sextant-servo-direct",
+            "args": full_args,
+        }
+    });
+
+    let text = command_result_text(
+        success,
+        exit_code,
+        structured.get("directPresentReport"),
+        "sextant-servo-direct direct present smoke",
+    );
+    let mut result = json!({
+        "content": [{
+            "type": "text",
+            "text": text,
+        }],
+        "structuredContent": structured,
+    });
+    if !success {
+        result["isError"] = Value::Bool(true);
+    }
+    Ok(result)
+}
+
+fn run_browser_render_path_baseline_tool(arguments: Value) -> Result<Value, String> {
+    let timeout_seconds = window_smoke_timeout(&arguments).max(1);
+    let target =
+        required_string(&arguments, "target").unwrap_or_else(|| "https://example.com".to_string());
+
+    let direct_result = run_browser_direct_present_smoke_tool(json!({
+        "target": target.clone(),
+        "timeout_seconds": timeout_seconds,
+    }))?;
+    let bridge_result = run_browser_window_smoke_tool(json!({
+        "target": target.clone(),
+        "timeout_seconds": timeout_seconds,
+        "mode": "direct",
+        "render_path": "bridge",
+    }))?;
+    let pre_sized_bridge_result = run_browser_window_smoke_tool(json!({
+        "target": target.clone(),
+        "timeout_seconds": timeout_seconds,
+        "mode": "direct",
+        "render_path": "bridge",
+        "pre_size_navigation": true,
+    }))?;
+
+    let direct_failed = tool_result_failed(&direct_result);
+    let bridge_failed = tool_result_failed(&bridge_result);
+    let pre_sized_bridge_failed = tool_result_failed(&pre_sized_bridge_result);
+    let success = !direct_failed && !bridge_failed && !pre_sized_bridge_failed;
+    let direct_present = direct_result
+        .get("structuredContent")
+        .and_then(|structured| structured.get("directPresent"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    let window_smoke = bridge_result
+        .get("structuredContent")
+        .and_then(|structured| structured.get("windowSmoke"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    let pre_sized_window_smoke = pre_sized_bridge_result
+        .get("structuredContent")
+        .and_then(|structured| structured.get("windowSmoke"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    let baseline =
+        render_path_baseline_summary(&direct_present, &window_smoke, &pre_sized_window_smoke);
+    let _ = record_audit(
+        "browser_render_path_baseline",
+        if success {
+            LogStatus::Success
+        } else {
+            LogStatus::Failure("one or more render-path checks failed".to_string())
+        },
+        json!({ "arguments": arguments }),
+    );
+
+    let text = render_path_baseline_text(
+        &baseline,
+        &direct_result,
+        &bridge_result,
+        &pre_sized_bridge_result,
+    );
+    let mut result = json!({
+        "content": [{
+            "type": "text",
+            "text": text,
+        }],
+        "structuredContent": {
+            "success": success,
+            "target": target,
+            "renderPathBaseline": baseline,
+            "directPresentResult": direct_result.get("structuredContent").cloned().unwrap_or(Value::Null),
+            "bridgeWindowSmokeResult": bridge_result.get("structuredContent").cloned().unwrap_or(Value::Null),
+            "preSizedBridgeWindowSmokeResult": pre_sized_bridge_result.get("structuredContent").cloned().unwrap_or(Value::Null),
+        },
+    });
+    if !success {
+        result["isError"] = Value::Bool(true);
+    }
+    Ok(result)
+}
+
+fn render_path_baseline_summary(
+    direct_present: &Value,
+    window_smoke: &Value,
+    pre_sized_window_smoke: &Value,
+) -> Value {
+    let direct_ms = direct_present.get("firstPresentMs").and_then(Value::as_u64);
+    let bridge_first_frame_ms = window_smoke.get("firstFrameMs").and_then(Value::as_u64);
+    let bridge_frame_ms = window_smoke.get("frameMs").and_then(Value::as_u64);
+    let bridge_resize_ms = window_smoke.get("resizeMs").and_then(Value::as_u64);
+    let pre_sized_first_frame_ms = pre_sized_window_smoke
+        .get("firstFrameMs")
+        .and_then(Value::as_u64);
+    let pre_sized_navigation_ms = pre_sized_window_smoke
+        .get("navigationMs")
+        .and_then(Value::as_u64);
+    let pre_sized_resize_ms = pre_sized_window_smoke
+        .get("resizeMs")
+        .and_then(Value::as_u64);
+    let pre_sized_frame_ms = pre_sized_window_smoke
+        .get("frameMs")
+        .and_then(Value::as_u64);
+    let gap_ms = match (bridge_first_frame_ms, direct_ms) {
+        (Some(bridge), Some(direct)) => Value::from(bridge as i64 - direct as i64),
+        _ => Value::Null,
+    };
+    let pre_sized_gap_ms = match (pre_sized_first_frame_ms, bridge_first_frame_ms) {
+        (Some(pre_sized), Some(bridge)) => Value::from(pre_sized as i64 - bridge as i64),
+        _ => Value::Null,
+    };
+
+    json!({
+        "directFirstPresentMs": direct_ms.map(Value::from).unwrap_or(Value::Null),
+        "bridgeFirstFrameMs": bridge_first_frame_ms.map(Value::from).unwrap_or(Value::Null),
+        "bridgeFrameMs": bridge_frame_ms.map(Value::from).unwrap_or(Value::Null),
+        "bridgeResizeMs": bridge_resize_ms.map(Value::from).unwrap_or(Value::Null),
+        "firstFrameGapMs": gap_ms,
+        "preSizedBridgeFirstFrameMs": pre_sized_first_frame_ms.map(Value::from).unwrap_or(Value::Null),
+        "preSizedBridgeNavigationMs": pre_sized_navigation_ms.map(Value::from).unwrap_or(Value::Null),
+        "preSizedBridgeResizeMs": pre_sized_resize_ms.map(Value::from).unwrap_or(Value::Null),
+        "preSizedBridgeFrameMs": pre_sized_frame_ms.map(Value::from).unwrap_or(Value::Null),
+        "preSizedVsDefaultGapMs": pre_sized_gap_ms,
+        "bridgeRenderPath": window_smoke.get("renderPath").cloned().unwrap_or(Value::Null),
+        "bridgeRenderGap": window_smoke.get("renderGap").cloned().unwrap_or(Value::Null),
+        "directFrameReadback": direct_present.get("frameReadback").cloned().unwrap_or(Value::Null),
+        "directProductionIntegrated": direct_present.get("productionIntegrated").cloned().unwrap_or(Value::Null),
+    })
+}
+
+fn render_path_baseline_text(
+    baseline: &Value,
+    direct_result: &Value,
+    bridge_result: &Value,
+    pre_sized_bridge_result: &Value,
+) -> String {
+    let mut lines = Vec::new();
+    lines.push(format!(
+        "[render-path-baseline] direct first present {} | bridge first frame {} | gap {}",
+        format_optional_ms(baseline.get("directFirstPresentMs")),
+        format_optional_ms(baseline.get("bridgeFirstFrameMs")),
+        format_optional_ms(baseline.get("firstFrameGapMs"))
+    ));
+    lines.push(format!(
+        "[render-path-baseline] pre-sized bridge first frame {} | vs default {}",
+        format_optional_ms(baseline.get("preSizedBridgeFirstFrameMs")),
+        format_optional_ms(baseline.get("preSizedVsDefaultGapMs"))
+    ));
+    if let Some(gap) = baseline.get("bridgeRenderGap").and_then(Value::as_str) {
+        lines.push(format!("[render-path-baseline] bridge render gap {gap}"));
+    }
+    if tool_result_failed(direct_result) {
+        lines.push("[render-path-baseline] direct-present check failed".to_string());
+    }
+    if tool_result_failed(bridge_result) {
+        lines.push("[render-path-baseline] bridge window-smoke check failed".to_string());
+    }
+    if tool_result_failed(pre_sized_bridge_result) {
+        lines.push("[render-path-baseline] pre-sized bridge window-smoke check failed".to_string());
+    }
+    lines.join("\n")
+}
+
+fn format_optional_ms(value: Option<&Value>) -> String {
+    match value.and_then(Value::as_i64) {
+        Some(ms) => format!("{ms}ms"),
+        None => "pending".to_string(),
+    }
 }
 
 fn browser_launch_preflight_tool(arguments: Value) -> Value {
@@ -2147,10 +2967,177 @@ fn window_report_lines(stdout: &str) -> Vec<String> {
         .filter(|line| {
             line.starts_with("[window-smoke]")
                 || line.starts_with("[window-start]")
+                || line.starts_with("[window-user]")
                 || line.starts_with("[sextant-browser]")
         })
         .map(str::to_string)
         .collect()
+}
+
+fn direct_present_report_lines(stdout: &str) -> Vec<String> {
+    stdout
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with("[servo-direct]"))
+        .map(str::to_string)
+        .collect()
+}
+
+fn direct_present_summary(report: &[String]) -> Value {
+    let mut summary = json!({
+        "target": Value::Null,
+        "firstPresentMs": Value::Null,
+        "renderingContext": "Servo WindowRenderingContext",
+        "frameReadback": false,
+        "productionIntegrated": false,
+    });
+
+    for line in report {
+        if let Some(value) = line.split("opening ").nth(1) {
+            if let Some((target, _)) = value.split_once(" with Servo WindowRenderingContext") {
+                summary["target"] = Value::String(target.trim().to_string());
+            }
+        } else if let Some(value) = line.split("first direct present in ").nth(1) {
+            summary["firstPresentMs"] = duration_token_to_value(value.trim());
+        }
+    }
+
+    summary
+}
+
+fn window_smoke_summary(report: &[String]) -> Value {
+    let mut summary = json!({
+        "mode": Value::Null,
+        "modeStatus": Value::Null,
+        "storage": "profile",
+        "ephemeralDataDir": Value::Null,
+        "renderPath": Value::Null,
+        "renderPathStatus": Value::Null,
+        "renderGap": Value::Null,
+        "preSizeNavigation": Value::Null,
+        "firstDrawMs": Value::Null,
+        "startupWorkMs": Value::Null,
+        "drawTotalMs": Value::Null,
+        "frameBlitMs": Value::Null,
+        "presentMs": Value::Null,
+        "navigationMs": Value::Null,
+        "distillMs": Value::Null,
+        "wakeMs": Value::Null,
+        "resizeMs": Value::Null,
+        "frameMs": Value::Null,
+        "latestFrameWidth": Value::Null,
+        "latestFrameHeight": Value::Null,
+        "latestFramePixels": Value::Null,
+        "firstFrameMs": Value::Null,
+    });
+
+    for line in report {
+        if let Some((mode, status)) = window_mode_line(line) {
+            summary["mode"] = Value::String(mode);
+            summary["modeStatus"] = Value::String(status);
+        } else if let Some((path, status)) = window_render_path_line(line) {
+            summary["renderPath"] = Value::String(path);
+            summary["renderPathStatus"] = Value::String(status);
+        } else if let Some(gap) = line.split("render gap ").nth(1) {
+            summary["renderGap"] = Value::String(gap.trim().to_string());
+        } else if let Some(value) = line.split("pre-size navigation ").nth(1) {
+            summary["preSizeNavigation"] = Value::Bool(value.trim() == "true");
+        } else if let Some(path) = line.split("ephemeral browser data dir ").nth(1) {
+            summary["storage"] = Value::String("ephemeral".to_string());
+            summary["ephemeralDataDir"] = Value::String(path.trim().to_string());
+        } else if let Some(value) = line.split("visible shell draw passed in ").nth(1) {
+            summary["firstDrawMs"] = duration_token_to_value(value.trim());
+        } else if let Some(value) = line.split("startup/navigation work ").nth(1) {
+            summary["startupWorkMs"] = duration_token_to_value(value.trim());
+        } else if let Some(value) = line.split("draw cost total ").nth(1) {
+            apply_window_draw_costs(&mut summary, value);
+        } else if let Some(value) = line.split("perf ").nth(1) {
+            apply_window_perf_summary(&mut summary, value);
+        } else if let Some(frame) = window_latest_frame(line) {
+            summary["latestFrameWidth"] = Value::from(frame.0);
+            summary["latestFrameHeight"] = Value::from(frame.1);
+            summary["latestFramePixels"] = Value::from(frame.2);
+        } else if let Some(value) = line.split("first Servo frame in ").nth(1) {
+            summary["firstFrameMs"] = duration_token_to_value(value.trim());
+        }
+    }
+
+    summary
+}
+
+fn window_render_path_line(line: &str) -> Option<(String, String)> {
+    let value = line.split("render path ").nth(1)?;
+    let (path, rest) = value.split_once(" (")?;
+    Some((
+        path.trim().to_string(),
+        rest.trim_end_matches(')').trim().to_string(),
+    ))
+}
+
+fn window_mode_line(line: &str) -> Option<(String, String)> {
+    let value = line.split("browser mode ").nth(1)?;
+    let (mode, rest) = value.split_once(" (")?;
+    Some((
+        mode.trim().to_string(),
+        rest.trim_end_matches(')').trim().to_string(),
+    ))
+}
+
+fn apply_window_draw_costs(summary: &mut Value, value: &str) {
+    for part in value.split('|') {
+        let part = part.trim();
+        if let Some(duration) = part.strip_prefix("frame blit ") {
+            summary["frameBlitMs"] = duration_token_to_value(duration.trim());
+        } else if let Some(duration) = part.strip_prefix("present ") {
+            summary["presentMs"] = duration_token_to_value(duration.trim());
+        } else {
+            summary["drawTotalMs"] = duration_token_to_value(part);
+        }
+    }
+}
+
+fn apply_window_perf_summary(summary: &mut Value, value: &str) {
+    for part in value.split('|') {
+        let mut pieces = part.split_whitespace();
+        let Some(name) = pieces.next() else {
+            continue;
+        };
+        let Some(duration) = pieces.next() else {
+            continue;
+        };
+        let key = match name {
+            "nav" => "navigationMs",
+            "distill" => "distillMs",
+            "wake" => "wakeMs",
+            "resize" => "resizeMs",
+            "frame" => "frameMs",
+            _ => continue,
+        };
+        summary[key] = duration_token_to_value(duration);
+    }
+}
+
+fn window_latest_frame(line: &str) -> Option<(u64, u64, u64)> {
+    let value = line.split("latest Servo frame ").nth(1)?;
+    let (size, rest) = value.split_once(" (")?;
+    let (width, height) = size.split_once('x')?;
+    let pixels = rest
+        .trim_end_matches(')')
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()?;
+    Some((
+        width.trim().parse().ok()?,
+        height.trim().parse().ok()?,
+        pixels,
+    ))
+}
+
+fn duration_token_to_value(value: &str) -> Value {
+    parse_perf_duration_ms(value)
+        .map(Value::from)
+        .unwrap_or(Value::Null)
 }
 
 fn command_report_source(stdout: &str, stderr: &str) -> String {
@@ -2175,6 +3162,24 @@ fn tool_command_launch_error(args: &[String], error: &str) -> Value {
             "error": error,
             "command": {
                 "binary": "sextant-browser",
+                "args": args,
+            }
+        },
+    })
+}
+
+fn tool_direct_command_launch_error(args: &[String], error: &str) -> Value {
+    json!({
+        "content": [{
+            "type": "text",
+            "text": format!("failed to launch sextant-servo-direct command: {error}"),
+        }],
+        "isError": true,
+        "structuredContent": {
+            "success": false,
+            "error": error,
+            "command": {
+                "binary": "sextant-servo-direct",
                 "args": args,
             }
         },
@@ -2253,6 +3258,32 @@ fn run_browser_command(args: &[String]) -> Result<Output, String> {
     }
 }
 
+fn run_direct_servo_command(args: &[String]) -> Result<Output, String> {
+    let runner = DirectServoRunner::locate()?;
+    match runner {
+        DirectServoRunner::Binary(path) => Command::new(path)
+            .args(args)
+            .output()
+            .map_err(|error| error.to_string()),
+        DirectServoRunner::Cargo { workspace } => {
+            let mut cargo_args = vec![
+                "run".to_string(),
+                "-p".to_string(),
+                "sextant-hull".to_string(),
+                "--bin".to_string(),
+                "sextant-servo-direct".to_string(),
+                "--".to_string(),
+            ];
+            cargo_args.extend(args.iter().cloned());
+            Command::new("cargo")
+                .current_dir(workspace)
+                .args(cargo_args)
+                .output()
+                .map_err(|error| error.to_string())
+        }
+    }
+}
+
 enum BrowserRunner {
     Binary(PathBuf),
     Cargo { workspace: PathBuf },
@@ -2289,6 +3320,45 @@ impl BrowserRunner {
         }
 
         Err("could not find sextant-browser binary or Rust workspace".to_string())
+    }
+}
+
+enum DirectServoRunner {
+    Binary(PathBuf),
+    Cargo { workspace: PathBuf },
+}
+
+impl DirectServoRunner {
+    fn locate() -> Result<Self, String> {
+        let prefer_installed_binary = env::var("SEXTANT_MCP_USE_INSTALLED_BROWSER")
+            .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+            .unwrap_or(false);
+
+        if !prefer_installed_binary {
+            if let Some(workspace) = find_rust_workspace() {
+                return Ok(Self::Cargo { workspace });
+            }
+        }
+
+        if let Ok(exe) = env::current_exe() {
+            if let Some(parent) = exe.parent() {
+                let name = if cfg!(windows) {
+                    "sextant-servo-direct.exe"
+                } else {
+                    "sextant-servo-direct"
+                };
+                let sibling = parent.join(name);
+                if sibling.is_file() {
+                    return Ok(Self::Binary(sibling));
+                }
+            }
+        }
+
+        if let Some(workspace) = find_rust_workspace() {
+            return Ok(Self::Cargo { workspace });
+        }
+
+        Err("could not find sextant-servo-direct binary or Rust workspace".to_string())
     }
 }
 
@@ -2411,6 +3481,8 @@ mod tests {
 
         assert!(names.contains(&"browser_capabilities"));
         assert!(names.contains(&"browser_authorized_intent_run"));
+        assert!(names.contains(&"browser_direct_present_smoke"));
+        assert!(names.contains(&"browser_render_path_baseline"));
         assert!(names.contains(&"browser_guard_probe"));
         assert!(names.contains(&"browser_guard_policy_read"));
         assert!(names.contains(&"browser_guard_policy_write"));
@@ -2424,6 +3496,21 @@ mod tests {
         assert!(names.contains(&"browser_real_browsing_smoke"));
         assert!(names.contains(&"browser_showcase_run"));
         assert!(names.contains(&"browser_window_smoke"));
+
+        let window_smoke = tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool.get("name").and_then(Value::as_str) == Some("browser_window_smoke"))
+            .unwrap();
+        assert_eq!(
+            window_smoke["inputSchema"]["properties"]["mode"]["enum"][3],
+            "direct"
+        );
+        assert_eq!(
+            window_smoke["inputSchema"]["properties"]["render_path"]["enum"][0],
+            "bridge"
+        );
     }
 
     #[test]
@@ -2461,9 +3548,226 @@ mod tests {
         assert!(resource_text("sextant://browser/capabilities")
             .unwrap()
             .contains("sextant-browser"));
+        assert!(resource_text("sextant://browser/capabilities")
+            .unwrap()
+            .contains("Direct and Incognito block AI DOM/frame observation"));
         assert!(resource_text("sextant://browser/operator-workflow")
             .unwrap()
             .contains("browser_authorized_intent_run"));
+    }
+
+    #[test]
+    fn capabilities_advertise_browser_modes_and_loop_boundaries() {
+        let capabilities = browser_capabilities();
+        let modes = capabilities["browser"]["modes"].as_array().unwrap();
+
+        assert_eq!(modes.len(), 5);
+        assert_eq!(modes[0]["id"], "agent");
+        assert_eq!(modes[1]["id"], "assisted");
+        assert_eq!(modes[2]["id"], "observe");
+        assert_eq!(modes[3]["id"], "direct");
+        assert_eq!(modes[4]["id"], "incognito");
+        assert_eq!(
+            modes[3]["capabilities"]["aiObserveFrame"],
+            Value::Bool(false)
+        );
+        assert_eq!(
+            modes[3]["capabilities"]["directRenderRequired"],
+            Value::Bool(true)
+        );
+        assert_eq!(
+            capabilities["browser"]["runtimeLoops"]["renderBridgeLoop"]["status"],
+            "temporary"
+        );
+        assert_eq!(
+            capabilities["browser"]["runtimeLoops"]["viewportInputLane"]["status"],
+            "implemented"
+        );
+        assert_eq!(
+            capabilities["browser"]["runtimeLoops"]["directPresentationLoop"]["status"],
+            "experimental proof"
+        );
+        assert_eq!(
+            capabilities["browser"]["renderingBoundary"]["directCompositor"],
+            "experimental proof via sextant-servo-direct"
+        );
+        assert_eq!(
+            capabilities["browser"]["operatorBridge"]["directPresentSmoke"],
+            Value::Bool(true)
+        );
+        assert_eq!(
+            capabilities["browser"]["operatorBridge"]["renderPathBaseline"],
+            Value::Bool(true)
+        );
+        assert_eq!(
+            capabilities["browser"]["runtimeLoops"]["aiObservationLoop"]["modeBoundary"],
+            "disabled in Direct and Incognito"
+        );
+        assert_eq!(
+            capabilities["browser"]["visibleShellSmoke"]["modeSelection"][4],
+            "incognito"
+        );
+        assert_eq!(
+            capabilities["browser"]["visibleShellSmoke"]["controlWorkModes"][1],
+            "assisted"
+        );
+    }
+
+    #[test]
+    fn normalizes_optional_browser_mode_arguments() {
+        assert_eq!(
+            optional_browser_mode(&json!({"mode": "DIRECT"})).unwrap(),
+            Some("direct".to_string())
+        );
+        assert_eq!(
+            optional_browser_mode(&json!({"mode": "incog"})).unwrap(),
+            Some("incognito".to_string())
+        );
+        assert_eq!(optional_browser_mode(&json!({})).unwrap(), None);
+        assert!(optional_browser_mode(&json!({"mode": "mystery"})).is_err());
+    }
+
+    #[test]
+    fn parses_window_smoke_cli_arguments() {
+        let args = vec![
+            "sextant-mcp".to_string(),
+            "--window-smoke".to_string(),
+            "https://example.com".to_string(),
+            "--mode".to_string(),
+            "incog".to_string(),
+            "--timeout-seconds".to_string(),
+            "30".to_string(),
+            "--render-path".to_string(),
+            "bridge".to_string(),
+        ];
+        let arguments = browser_window_smoke_cli_arguments(&args).unwrap().unwrap();
+
+        assert_eq!(arguments["target"], "https://example.com");
+        assert_eq!(arguments["mode"], "incognito");
+        assert_eq!(arguments["render_path"], "bridge");
+        assert_eq!(arguments["timeout_seconds"], 30);
+    }
+
+    #[test]
+    fn parses_window_smoke_cli_workflow_flags() {
+        let args = vec![
+            "sextant-mcp".to_string(),
+            "--window-smoke".to_string(),
+            "--start-showcase".to_string(),
+            "--browser-mode".to_string(),
+            "direct".to_string(),
+            "--window-smoke-timeout".to_string(),
+            "12".to_string(),
+            "--user-distill".to_string(),
+            "--pre-size-navigation".to_string(),
+        ];
+        let arguments = browser_window_smoke_cli_arguments(&args).unwrap().unwrap();
+
+        assert_eq!(arguments["showcase"], Value::Bool(true));
+        assert_eq!(arguments["user_distill"], Value::Bool(true));
+        assert_eq!(arguments["pre_size_navigation"], Value::Bool(true));
+        assert_eq!(arguments["mode"], "direct");
+        assert_eq!(arguments["timeout_seconds"], 12);
+        assert!(arguments.get("target").is_none());
+    }
+
+    #[test]
+    fn ignores_window_smoke_cli_arguments_when_absent() {
+        let args = vec![
+            "sextant-mcp".to_string(),
+            "--perf-probe".to_string(),
+            "https://example.com".to_string(),
+        ];
+
+        assert!(browser_window_smoke_cli_arguments(&args).unwrap().is_none());
+    }
+
+    #[test]
+    fn parses_direct_present_smoke_cli_arguments() {
+        let args = vec![
+            "sextant-mcp".to_string(),
+            "--direct-present-smoke".to_string(),
+            "https://example.com".to_string(),
+            "--timeout-seconds".to_string(),
+            "30".to_string(),
+        ];
+        let arguments = browser_direct_present_smoke_cli_arguments(&args)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(arguments["target"], "https://example.com");
+        assert_eq!(arguments["timeout_seconds"], 30);
+    }
+
+    #[test]
+    fn parses_render_path_baseline_cli_arguments() {
+        let args = vec![
+            "sextant-mcp".to_string(),
+            "--render-path-baseline".to_string(),
+            "https://example.com".to_string(),
+            "--timeout-seconds".to_string(),
+            "30".to_string(),
+        ];
+        let arguments = browser_render_path_baseline_cli_arguments(&args)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(arguments["target"], "https://example.com");
+        assert_eq!(arguments["timeout_seconds"], 30);
+    }
+
+    #[test]
+    fn detects_native_intent_window_smoke_targets() {
+        assert!(is_native_intent_target(
+            "intent: open https://example.com and distill"
+        ));
+        assert!(is_native_intent_target(
+            "open https://example.com and remember"
+        ));
+        assert!(is_native_intent_target("research Rust ownership docs"));
+        assert!(!is_native_intent_target("https://example.com"));
+        assert!(!is_native_intent_target("plain web search"));
+    }
+
+    #[test]
+    fn window_smoke_blocks_control_work_in_non_control_modes() {
+        let showcase = json!({"mode": "direct", "showcase": true});
+        let intent = json!({
+            "mode": "incognito",
+            "target": "intent: open https://example.com and distill"
+        });
+        let normal_page = json!({"mode": "direct", "target": "https://example.com"});
+        let assisted_showcase = json!({"mode": "assisted", "showcase": true});
+        let observe_distill = json!({"mode": "observe", "user_distill": true});
+        let direct_distill = json!({"mode": "direct", "user_distill": true});
+
+        assert!(window_smoke_mode_boundary_error(&showcase, Some("direct"))
+            .unwrap()
+            .contains("showcase seeding"));
+        assert!(window_smoke_mode_boundary_error(&intent, Some("incognito"))
+            .unwrap()
+            .contains("native intent target"));
+        assert!(window_smoke_mode_boundary_error(&normal_page, Some("direct")).is_none());
+        assert!(window_smoke_mode_boundary_error(&assisted_showcase, Some("assisted")).is_none());
+        assert!(window_smoke_mode_boundary_error(&observe_distill, Some("observe")).is_none());
+        assert!(
+            window_smoke_mode_boundary_error(&direct_distill, Some("direct"))
+                .unwrap()
+                .contains("user-visible distillation")
+        );
+    }
+
+    #[test]
+    fn browser_window_smoke_rejects_disallowed_mode_work_before_launch() {
+        let result = run_browser_window_smoke_tool(json!({
+            "mode": "direct",
+            "showcase": true,
+            "timeout_seconds": 30
+        }))
+        .unwrap();
+
+        assert_eq!(result["isError"], Value::Bool(true));
+        assert!(tool_text(&result).contains("mode 'direct' blocks showcase seeding"));
     }
 
     #[test]
@@ -2492,6 +3796,19 @@ mod tests {
     }
 
     #[test]
+    fn initialize_advertises_browser_modes() {
+        let response = handle_message(json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize"
+        }))
+        .unwrap();
+
+        assert_eq!(response["result"]["browserModes"][0]["id"], "agent");
+        assert_eq!(response["result"]["browserModes"][4]["id"], "incognito");
+    }
+
+    #[test]
     fn launch_errors_include_structured_command() {
         let result = tool_command_launch_error(
             &[
@@ -2512,15 +3829,108 @@ mod tests {
     #[test]
     fn extracts_window_smoke_lines() {
         let output =
-            "noise\n[window-start] running launch showcase\n[window-smoke] visible shell draw passed\n[sextant-browser] failed: window start failed\n[operator-run] ignored";
+            "noise\n[window-start] running launch showcase\n[window-user] Distilling active page...\n[window-smoke] visible shell draw passed\n[sextant-browser] failed: window start failed\n[operator-run] ignored";
         assert_eq!(
             window_report_lines(output),
             vec![
                 "[window-start] running launch showcase",
+                "[window-user] Distilling active page...",
                 "[window-smoke] visible shell draw passed",
                 "[sextant-browser] failed: window start failed"
             ]
         );
+    }
+
+    #[test]
+    fn parses_window_smoke_summary() {
+        let report = vec![
+            "[window-smoke] browser mode INCOG (Incognito Mode: human-only, no AI observation or content persistence.)".to_string(),
+            "[window-smoke] render path BRIDGE (temporary frame-capture render bridge feeding Softbuffer)".to_string(),
+            "[window-smoke] render gap direct compositor pending".to_string(),
+            "[window-smoke] pre-size navigation true".to_string(),
+            "[window-smoke] ephemeral browser data dir C:\\Temp\\sextant-browser-incognito-123".to_string(),
+            "[window-smoke] visible shell draw passed in 38ms".to_string(),
+            "[window-smoke] startup/navigation work 414ms".to_string(),
+            "[window-smoke] draw cost total 30ms | frame blit 9ms | present 0ms".to_string(),
+            "[window-smoke] perf nav 414ms | distill pending | wake pending | resize 390ms | frame 438ms".to_string(),
+            "[window-smoke] latest Servo frame 776x292 (226592 pixels)".to_string(),
+            "[window-smoke] first Servo frame in 950ms".to_string(),
+        ];
+
+        let summary = window_smoke_summary(&report);
+
+        assert_eq!(summary["mode"], "INCOG");
+        assert_eq!(summary["renderPath"], "BRIDGE");
+        assert_eq!(
+            summary["renderPathStatus"],
+            "temporary frame-capture render bridge feeding Softbuffer"
+        );
+        assert_eq!(summary["renderGap"], "direct compositor pending");
+        assert_eq!(summary["preSizeNavigation"], Value::Bool(true));
+        assert_eq!(summary["storage"], "ephemeral");
+        assert_eq!(
+            summary["ephemeralDataDir"],
+            "C:\\Temp\\sextant-browser-incognito-123"
+        );
+        assert_eq!(summary["firstDrawMs"], Value::from(38));
+        assert_eq!(summary["startupWorkMs"], Value::from(414));
+        assert_eq!(summary["drawTotalMs"], Value::from(30));
+        assert_eq!(summary["frameBlitMs"], Value::from(9));
+        assert_eq!(summary["presentMs"], Value::from(0));
+        assert_eq!(summary["navigationMs"], Value::from(414));
+        assert_eq!(summary["distillMs"], Value::Null);
+        assert_eq!(summary["latestFrameWidth"], Value::from(776));
+        assert_eq!(summary["latestFrameHeight"], Value::from(292));
+        assert_eq!(summary["latestFramePixels"], Value::from(226592));
+        assert_eq!(summary["firstFrameMs"], Value::from(950));
+    }
+
+    #[test]
+    fn parses_direct_present_summary() {
+        let output = "[servo-direct] opening https://example.com/ with Servo WindowRenderingContext\nnoise\n[servo-direct] first direct present in 127ms";
+        let report = direct_present_report_lines(output);
+        let summary = direct_present_summary(&report);
+
+        assert_eq!(report.len(), 2);
+        assert_eq!(summary["target"], "https://example.com/");
+        assert_eq!(summary["firstPresentMs"], Value::from(127));
+        assert_eq!(summary["frameReadback"], Value::Bool(false));
+        assert_eq!(summary["productionIntegrated"], Value::Bool(false));
+    }
+
+    #[test]
+    fn summarizes_render_path_baseline() {
+        let direct = json!({
+            "firstPresentMs": 149,
+            "frameReadback": false,
+            "productionIntegrated": false,
+        });
+        let bridge = json!({
+            "firstFrameMs": 1000,
+            "frameMs": 40,
+            "resizeMs": 408,
+            "renderPath": "BRIDGE",
+            "renderGap": "direct compositor pending",
+        });
+        let pre_sized_bridge = json!({
+            "firstFrameMs": 1200,
+            "navigationMs": 980,
+            "frameMs": 35,
+            "resizeMs": 0,
+        });
+
+        let summary = render_path_baseline_summary(&direct, &bridge, &pre_sized_bridge);
+
+        assert_eq!(summary["directFirstPresentMs"], 149);
+        assert_eq!(summary["bridgeFirstFrameMs"], 1000);
+        assert_eq!(summary["bridgeFrameMs"], 40);
+        assert_eq!(summary["bridgeResizeMs"], 408);
+        assert_eq!(summary["firstFrameGapMs"], 851);
+        assert_eq!(summary["preSizedBridgeFirstFrameMs"], 1200);
+        assert_eq!(summary["preSizedBridgeResizeMs"], 0);
+        assert_eq!(summary["preSizedVsDefaultGapMs"], 200);
+        assert_eq!(summary["bridgeRenderPath"], "BRIDGE");
+        assert_eq!(summary["directFrameReadback"], Value::Bool(false));
     }
 
     #[test]
