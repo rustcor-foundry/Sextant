@@ -2852,6 +2852,7 @@ fn perception_report(report: &[String]) -> Value {
 
 fn live_dom_timing_report(value: &str, raw: &str) -> Value {
     let mut timing = json!({
+        "queueMs": Value::Null,
         "evalMs": Value::Null,
         "parseMs": Value::Null,
         "scriptMs": Value::Null,
@@ -2862,6 +2863,7 @@ fn live_dom_timing_report(value: &str, raw: &str) -> Value {
             continue;
         };
         let key = match name {
+            "queue" => "queueMs",
             "eval" => "evalMs",
             "parse" => "parseMs",
             "script" => "scriptMs",
@@ -4060,7 +4062,7 @@ mod tests {
             "[perception-probe] perception counts: headings=1 links=1 inputs=1 images=0 text=0 buttons=1".to_string(),
             "[perception-probe] perception node 1: INPUT | input[name=q] | Search".to_string(),
             "[perception-probe] perception source: servo-live-dom".to_string(),
-            "[perception-probe] perception live-dom timing: eval=1278ms parse=5ms script=74ms".to_string(),
+            "[perception-probe] perception live-dom timing: queue=12ms eval=1278ms parse=5ms script=74ms".to_string(),
             "[perception-probe] perception live-dom status: load_before=Loading load_after=Complete".to_string(),
         ]);
 
@@ -4074,6 +4076,7 @@ mod tests {
         assert_eq!(report["nodes"][0]["selector"], "input[name=q]");
         assert_eq!(report["nodes"][0]["text"], "Search");
         assert_eq!(report["source"], "servo-live-dom");
+        assert_eq!(report["liveDomTiming"]["queueMs"], 12);
         assert_eq!(report["liveDomTiming"]["evalMs"], 1278);
         assert_eq!(report["liveDomTiming"]["parseMs"], 5);
         assert_eq!(report["liveDomTiming"]["scriptMs"], 74);

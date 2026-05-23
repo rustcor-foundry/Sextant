@@ -6590,6 +6590,11 @@ fn push_perception_report(report: &mut Vec<String>, page: &sextant_engine::Disti
         report.push(format!("perception source: {source}"));
     }
     if let Some(eval_ms) = page.metadata.get("live_dom_eval_ms") {
+        let queue_ms = page
+            .metadata
+            .get("live_dom_queue_ms")
+            .map(String::as_str)
+            .unwrap_or("unknown");
         let parse_ms = page
             .metadata
             .get("live_dom_parse_ms")
@@ -6601,8 +6606,8 @@ fn push_perception_report(report: &mut Vec<String>, page: &sextant_engine::Disti
             .map(String::as_str)
             .unwrap_or("unknown");
         report.push(format!(
-            "perception live-dom timing: eval={}ms parse={}ms script={}ms",
-            eval_ms, parse_ms, script_ms
+            "perception live-dom timing: queue={}ms eval={}ms parse={}ms script={}ms",
+            queue_ms, eval_ms, parse_ms, script_ms
         ));
     }
     if let Some(load_before) = page.metadata.get("live_dom_load_status_before") {

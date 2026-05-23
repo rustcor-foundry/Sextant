@@ -109,6 +109,7 @@ mod servo_runtime {
         },
         DistillTab {
             tab_id: Uuid,
+            enqueued_at: Instant,
             reply_tx: mpsc::Sender<Result<ServoDomSnapshot, String>>,
         },
         CaptureFrame {
@@ -406,7 +407,11 @@ mod servo_runtime {
         }
 
         pub fn distill_tab(&self, tab_id: Uuid) -> Result<ServoDomSnapshot, String> {
-            self.request(|reply_tx| ServoCommand::DistillTab { tab_id, reply_tx })
+            self.request(|reply_tx| ServoCommand::DistillTab {
+                tab_id,
+                enqueued_at: Instant::now(),
+                reply_tx,
+            })
         }
 
         pub fn capture_frame(&self, tab_id: Uuid) -> Result<ServoFrameSnapshot, String> {
@@ -669,7 +674,12 @@ mod servo_runtime {
                     });
                     let _ = reply_tx.send(result);
                 }
-                ServoCommand::DistillTab { tab_id, reply_tx } => {
+                ServoCommand::DistillTab {
+                    tab_id,
+                    enqueued_at,
+                    reply_tx,
+                } => {
+                    let queue_elapsed = enqueued_at.elapsed();
                     let result = run_servo_command(|| {
                         ensure_session(&mut runtime, tab_id)?;
                         let mut session = runtime
@@ -678,7 +688,11 @@ mod servo_runtime {
                             .ok_or_else(|| "Servo session was not created".to_string())?;
                         let result = distill_live_dom(&mut runtime.servo, &mut session);
                         runtime.sessions.insert(tab_id, session);
-                        let page = result?;
+                        let mut page = result?;
+                        page.metadata.insert(
+                            "live_dom_queue_ms".to_string(),
+                            queue_elapsed.as_millis().to_string(),
+                        );
                         Ok(ServoDomSnapshot { page })
                     });
                     let _ = reply_tx.send(result);
@@ -2100,7 +2114,11 @@ mod servo_runtime {
 
         fn distill_command(tab_id: Uuid) -> ServoCommand {
             let (reply_tx, _reply_rx) = mpsc::channel();
-            ServoCommand::DistillTab { tab_id, reply_tx }
+            ServoCommand::DistillTab {
+                tab_id,
+                enqueued_at: Instant::now(),
+                reply_tx,
+            }
         }
 
         fn key_text_command(tab_id: Uuid, text: &str) -> ServoCommand {
