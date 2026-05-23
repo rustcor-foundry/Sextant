@@ -142,7 +142,7 @@ The visible browser also has a `SHOWCASE` control in the main toolbar. Use it du
 
 `--perception-probe <url-or-search>` runs the same native page pass, then reports page perception: classified page type, semantic counts, key semantic nodes, distillation source, live DOM timings split into Servo service queue wait, Servo evaluate wait, Rust parse, and in-page script time, plus before/after Servo load status. `sextant-mcp --perception-probe <url-or-search>` and MCP tool `browser_perception_probe` expose the same report as structured `perception` output for Codex and Claude.
 
-`--perf-probe <url-or-search>` is the same timed page pass labeled for performance work, plus a second warm frame capture to separate first-capture resize cost from steady-state readback. `--perf-baseline` runs a small representative set of simple and heavier pages so normal browsing tuning has a repeatable baseline.
+`--perf-probe <url-or-search>` is the same timed page pass labeled for performance work, plus tiny before/after Servo eval probes and a second warm frame capture to separate first-capture resize cost from steady-state readback. `--perf-baseline` runs a small representative set of simple and heavier pages so normal browsing tuning has a repeatable baseline.
 
 `sextant-mcp --perf-probe <url-or-search>` and MCP tool `browser_perf_probe` expose the same timing path to Codex and Claude. Use `browser_perf_baseline` for the built-in page set through MCP.
 

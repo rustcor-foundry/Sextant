@@ -1713,6 +1713,7 @@ fn run_browser_operator_tool(
     let perf_timings = perf_timing_samples(&report);
     let perf_summary = perf_timing_summary(&perf_timings);
     let perception = perception_report(&report);
+    let eval_probe = eval_probe_report(&report);
     let guard = guard_report(&report);
     let structured = json!({
         "success": success,
@@ -1723,6 +1724,7 @@ fn run_browser_operator_tool(
         "perfTimings": perf_timings,
         "perfSummary": perf_summary,
         "perception": perception,
+        "evalProbe": eval_probe,
         "guard": guard,
         "command": {
             "binary": "sextant-browser",
@@ -2894,6 +2896,69 @@ fn live_dom_status_report(value: &str, raw: &str) -> Value {
         status[key] = Value::String(raw_status.to_string());
     }
     status
+}
+
+fn eval_probe_report(report: &[String]) -> Value {
+    let mut samples = Vec::new();
+    for line in report {
+        if let Some((label, value)) = eval_probe_timing_line(line) {
+            samples.push(eval_probe_timing_report(label, value.trim(), line));
+        } else if let Some((label, value)) = eval_probe_failure_line(line) {
+            samples.push(json!({
+                "label": label,
+                "error": value.trim(),
+                "raw": line,
+            }));
+        }
+    }
+    if samples.is_empty() {
+        Value::Null
+    } else {
+        json!({ "samples": samples })
+    }
+}
+
+fn eval_probe_timing_line(line: &str) -> Option<(&str, &str)> {
+    let value = line.split("eval probe ").nth(1)?;
+    let (label, timing) = value.split_once(':')?;
+    if label.ends_with(" failed") {
+        return None;
+    }
+    Some((label.trim(), timing))
+}
+
+fn eval_probe_failure_line(line: &str) -> Option<(&str, &str)> {
+    let value = line.split("eval probe ").nth(1)?;
+    let (label, error) = value.split_once(" failed:")?;
+    Some((label.trim(), error))
+}
+
+fn eval_probe_timing_report(label: &str, value: &str, raw: &str) -> Value {
+    let mut probe = json!({
+        "label": label,
+        "queueMs": Value::Null,
+        "evalMs": Value::Null,
+        "scriptMs": Value::Null,
+        "loadBefore": Value::Null,
+        "loadAfter": Value::Null,
+        "value": Value::Null,
+        "raw": raw,
+    });
+    for part in value.split_whitespace() {
+        let Some((name, raw_value)) = part.split_once('=') else {
+            continue;
+        };
+        match name {
+            "queue" => probe["queueMs"] = duration_token_to_value(raw_value),
+            "eval" => probe["evalMs"] = duration_token_to_value(raw_value),
+            "script" => probe["scriptMs"] = duration_token_to_value(raw_value),
+            "load_before" => probe["loadBefore"] = Value::String(raw_value.to_string()),
+            "load_after" => probe["loadAfter"] = Value::String(raw_value.to_string()),
+            "value" => probe["value"] = Value::String(raw_value.to_string()),
+            _ => {}
+        }
+    }
+    probe
 }
 
 fn guard_report(report: &[String]) -> Value {
@@ -4082,6 +4147,24 @@ mod tests {
         assert_eq!(report["liveDomTiming"]["scriptMs"], 74);
         assert_eq!(report["liveDomStatus"]["loadBefore"], "Loading");
         assert_eq!(report["liveDomStatus"]["loadAfter"], "Complete");
+    }
+
+    #[test]
+    fn parses_eval_probe_report() {
+        let report = eval_probe_report(&[
+            "[perf-probe] eval probe before distillation: queue=0ms eval=32ms script=1ms load_before=HeadParsed load_after=Complete value=interactive:42".to_string(),
+            "[perf-probe] eval probe after distillation: queue=0ms eval=12ms script=0ms load_before=Complete load_after=Complete value=complete:42".to_string(),
+        ]);
+
+        assert_eq!(report["samples"][0]["label"], "before distillation");
+        assert_eq!(report["samples"][0]["queueMs"], 0);
+        assert_eq!(report["samples"][0]["evalMs"], 32);
+        assert_eq!(report["samples"][0]["scriptMs"], 1);
+        assert_eq!(report["samples"][0]["loadBefore"], "HeadParsed");
+        assert_eq!(report["samples"][0]["loadAfter"], "Complete");
+        assert_eq!(report["samples"][0]["value"], "interactive:42");
+        assert_eq!(report["samples"][1]["label"], "after distillation");
+        assert_eq!(report["samples"][1]["evalMs"], 12);
     }
 
     #[test]

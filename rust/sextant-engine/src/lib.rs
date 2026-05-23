@@ -21,9 +21,9 @@ use uuid::Uuid;
 #[cfg(feature = "servo-backend")]
 mod servo_runtime {
     use super::{
-        collapse_whitespace, AsyncFrameCapture, BrowserInteraction, BrowserInteractionResult,
-        DistilledPage, EngineBackend, EngineStatus, NodeType, RenderedFrame, SandboxProfile,
-        SemanticNode,
+        collapse_whitespace, AsyncFrameCapture, BrowserEvalProbe, BrowserInteraction,
+        BrowserInteractionResult, DistilledPage, EngineBackend, EngineStatus, NodeType,
+        RenderedFrame, SandboxProfile, SemanticNode,
     };
     use dpi::PhysicalSize;
     use servo::{
@@ -112,6 +112,11 @@ mod servo_runtime {
             enqueued_at: Instant,
             reply_tx: mpsc::Sender<Result<ServoDomSnapshot, String>>,
         },
+        EvalProbeTab {
+            tab_id: Uuid,
+            enqueued_at: Instant,
+            reply_tx: mpsc::Sender<Result<BrowserEvalProbe, String>>,
+        },
         CaptureFrame {
             tab_id: Uuid,
             reply_tx: mpsc::Sender<Result<ServoFrameSnapshot, String>>,
@@ -182,6 +187,7 @@ mod servo_runtime {
             matches!(
                 self,
                 ServoCommand::DistillTab { .. }
+                    | ServoCommand::EvalProbeTab { .. }
                     | ServoCommand::CaptureFrame { .. }
                     | ServoCommand::ResizeAndCaptureFrame { .. }
             )
@@ -414,6 +420,14 @@ mod servo_runtime {
             })
         }
 
+        pub fn eval_probe_tab(&self, tab_id: Uuid) -> Result<BrowserEvalProbe, String> {
+            self.request(|reply_tx| ServoCommand::EvalProbeTab {
+                tab_id,
+                enqueued_at: Instant::now(),
+                reply_tx,
+            })
+        }
+
         pub fn capture_frame(&self, tab_id: Uuid) -> Result<ServoFrameSnapshot, String> {
             self.request(|reply_tx| ServoCommand::CaptureFrame { tab_id, reply_tx })
         }
@@ -600,6 +614,9 @@ mod servo_runtime {
                         ServoCommand::DistillTab { reply_tx, .. } => {
                             let _ = reply_tx.send(Err(error.clone()));
                         }
+                        ServoCommand::EvalProbeTab { reply_tx, .. } => {
+                            let _ = reply_tx.send(Err(error.clone()));
+                        }
                         ServoCommand::CaptureFrame { reply_tx, .. } => {
                             let _ = reply_tx.send(Err(error.clone()));
                         }
@@ -694,6 +711,25 @@ mod servo_runtime {
                             queue_elapsed.as_millis().to_string(),
                         );
                         Ok(ServoDomSnapshot { page })
+                    });
+                    let _ = reply_tx.send(result);
+                }
+                ServoCommand::EvalProbeTab {
+                    tab_id,
+                    enqueued_at,
+                    reply_tx,
+                } => {
+                    let queue_elapsed = enqueued_at.elapsed();
+                    let result = run_servo_command(|| {
+                        ensure_session(&mut runtime, tab_id)?;
+                        let mut session = runtime
+                            .sessions
+                            .remove(&tab_id)
+                            .ok_or_else(|| "Servo session was not created".to_string())?;
+                        let result =
+                            eval_probe_tab(&mut runtime.servo, &mut session, queue_elapsed);
+                        runtime.sessions.insert(tab_id, session);
+                        result
                     });
                     let _ = reply_tx.send(result);
                 }
@@ -2031,6 +2067,53 @@ mod servo_runtime {
         Ok(page)
     }
 
+    fn eval_probe_tab(
+        servo: &mut Servo,
+        session: &mut ServoTabSession,
+        queue_elapsed: Duration,
+    ) -> Result<BrowserEvalProbe, String> {
+        let load_status_before = format!("{:?}", session.webview.load_status());
+        let script = r#"
+(() => {
+  const now = () => (window.performance && performance.now) ? performance.now() : Date.now();
+  const started = now();
+  const value = `${document.readyState || ''}:${(document.title || '').length}`;
+  const scriptElapsedMs = Math.max(0, Math.round(now() - started));
+  return {
+    value,
+    timings: {
+      scriptMs: scriptElapsedMs
+    }
+  };
+})()
+"#;
+        let eval_started = Instant::now();
+        let result = evaluate_javascript_sync(servo, &session.webview, script, NAVIGATION_TIMEOUT)?;
+        let eval_elapsed = eval_started.elapsed();
+        let load_status_after = format!("{:?}", session.webview.load_status());
+        let object = extract_object(&result, "eval probe result")?;
+        let script_ms = object
+            .get("timings")
+            .and_then(|value| extract_object(value, "eval probe timings").ok())
+            .and_then(|timings| timings.get("scriptMs"))
+            .and_then(extract_string)
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(0);
+        let value = object
+            .get("value")
+            .and_then(extract_string)
+            .unwrap_or_default();
+
+        Ok(BrowserEvalProbe {
+            queue_ms: queue_elapsed.as_millis() as u64,
+            eval_ms: eval_elapsed.as_millis() as u64,
+            script_ms,
+            load_status_before,
+            load_status_after,
+            value,
+        })
+    }
+
     #[cfg(target_os = "windows")]
     fn prime_windows_angle_runtime() -> Result<(), String> {
         let mut current_path = env::var_os("PATH").unwrap_or_default();
@@ -2121,6 +2204,15 @@ mod servo_runtime {
             }
         }
 
+        fn eval_probe_command(tab_id: Uuid) -> ServoCommand {
+            let (reply_tx, _reply_rx) = mpsc::channel();
+            ServoCommand::EvalProbeTab {
+                tab_id,
+                enqueued_at: Instant::now(),
+                reply_tx,
+            }
+        }
+
         fn key_text_command(tab_id: Uuid, text: &str) -> ServoCommand {
             let (reply_tx, _reply_rx) = mpsc::channel();
             ServoCommand::KeyCharacter {
@@ -2155,6 +2247,22 @@ mod servo_runtime {
 
             let command = next_servo_command(&command_rx, &mut pending_commands).unwrap();
             assert!(matches!(command, ServoCommand::DistillTab { .. }));
+        }
+
+        #[test]
+        fn service_scheduler_prioritizes_input_over_queued_eval_probe() {
+            let (command_tx, command_rx) = mpsc::channel();
+            let tab_id = Uuid::new_v4();
+            command_tx.send(eval_probe_command(tab_id)).unwrap();
+            command_tx.send(key_text_command(tab_id, "a")).unwrap();
+            let mut pending_commands = VecDeque::new();
+
+            let command = next_servo_command(&command_rx, &mut pending_commands).unwrap();
+            assert!(matches!(command, ServoCommand::KeyCharacter { .. }));
+            assert_eq!(pending_commands.len(), 1);
+
+            let command = next_servo_command(&command_rx, &mut pending_commands).unwrap();
+            assert!(matches!(command, ServoCommand::EvalProbeTab { .. }));
         }
 
         #[test]
@@ -2289,6 +2397,16 @@ pub struct RenderedFrame {
     pub width: u32,
     pub height: u32,
     pub pixels: Vec<u32>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct BrowserEvalProbe {
+    pub queue_ms: u64,
+    pub eval_ms: u64,
+    pub script_ms: u64,
+    pub load_status_before: String,
+    pub load_status_after: String,
+    pub value: String,
 }
 
 #[derive(Debug, Clone)]
@@ -4165,6 +4283,19 @@ impl SextantEngine {
         self.interact_current_page(BrowserInteraction::SubmitSelector {
             selector: selector.into(),
         })
+    }
+
+    pub fn eval_probe_tab(&mut self, tab_id: Uuid) -> Result<BrowserEvalProbe, String> {
+        #[cfg(feature = "servo-backend")]
+        {
+            self.servo_service.eval_probe_tab(tab_id)
+        }
+
+        #[cfg(not(feature = "servo-backend"))]
+        {
+            let _ = tab_id;
+            Err("Servo backend is not enabled in this build.".to_string())
+        }
     }
 
     pub fn interact_tab(

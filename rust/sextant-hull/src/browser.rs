@@ -6424,6 +6424,7 @@ fn run_page_probe(target: &str, repeat_frame_capture: bool) -> Result<Vec<String
     }
     report.push(app.last_status.clone());
     push_perf_report(&mut report, "after navigation", &app);
+    push_eval_probe_report(&mut report, &mut app, "before distillation");
 
     app.distill_active();
     if !app.last_ok {
@@ -6452,6 +6453,7 @@ fn run_page_probe(target: &str, repeat_frame_capture: bool) -> Result<Vec<String
         counts.text
     ));
     push_perception_report(&mut report, page);
+    push_eval_probe_report(&mut report, &mut app, "after distillation");
 
     if app.wake_results.is_empty() {
         return Err("probe Wake search returned no result after distillation".to_string());
@@ -6620,6 +6622,27 @@ fn push_perception_report(report: &mut Vec<String>, page: &sextant_engine::Disti
             "perception live-dom status: load_before={} load_after={}",
             load_before, load_after
         ));
+    }
+}
+
+fn push_eval_probe_report(report: &mut Vec<String>, app: &mut BrowserApp, label: &str) {
+    let Some(tab_id) = app.active_tab().map(|tab| tab.id) else {
+        return;
+    };
+    match app.engine.eval_probe_tab(tab_id) {
+        Ok(probe) => report.push(format!(
+            "eval probe {label}: queue={}ms eval={}ms script={}ms load_before={} load_after={} value={}",
+            probe.queue_ms,
+            probe.eval_ms,
+            probe.script_ms,
+            probe.load_status_before,
+            probe.load_status_after,
+            truncate(&probe.value, 48)
+        )),
+        Err(error) => report.push(format!(
+            "eval probe {label} failed: {}",
+            truncate(&error, 120)
+        )),
     }
 }
 
