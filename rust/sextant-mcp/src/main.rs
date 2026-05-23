@@ -2816,6 +2816,7 @@ fn perception_report(report: &[String]) -> Value {
     let mut nodes = Vec::new();
     let mut source = Value::Null;
     let mut live_dom_timing = Value::Null;
+    let mut live_dom_status = Value::Null;
 
     for line in report {
         if let Some(value) = line.split("perception summary:").nth(1) {
@@ -2834,6 +2835,8 @@ fn perception_report(report: &[String]) -> Value {
             source = Value::String(value.trim().to_string());
         } else if let Some(value) = line.split("perception live-dom timing:").nth(1) {
             live_dom_timing = live_dom_timing_report(value.trim(), line);
+        } else if let Some(value) = line.split("perception live-dom status:").nth(1) {
+            live_dom_status = live_dom_status_report(value.trim(), line);
         }
     }
 
@@ -2843,6 +2846,7 @@ fn perception_report(report: &[String]) -> Value {
         "nodes": nodes,
         "source": source,
         "liveDomTiming": live_dom_timing,
+        "liveDomStatus": live_dom_status,
     })
 }
 
@@ -2868,6 +2872,26 @@ fn live_dom_timing_report(value: &str, raw: &str) -> Value {
             .unwrap_or(Value::Null);
     }
     timing
+}
+
+fn live_dom_status_report(value: &str, raw: &str) -> Value {
+    let mut status = json!({
+        "loadBefore": Value::Null,
+        "loadAfter": Value::Null,
+        "raw": raw,
+    });
+    for part in value.split_whitespace() {
+        let Some((name, raw_status)) = part.split_once('=') else {
+            continue;
+        };
+        let key = match name {
+            "load_before" => "loadBefore",
+            "load_after" => "loadAfter",
+            _ => continue,
+        };
+        status[key] = Value::String(raw_status.to_string());
+    }
+    status
 }
 
 fn guard_report(report: &[String]) -> Value {
@@ -4037,6 +4061,7 @@ mod tests {
             "[perception-probe] perception node 1: INPUT | input[name=q] | Search".to_string(),
             "[perception-probe] perception source: servo-live-dom".to_string(),
             "[perception-probe] perception live-dom timing: eval=1278ms parse=5ms script=74ms".to_string(),
+            "[perception-probe] perception live-dom status: load_before=Loading load_after=Complete".to_string(),
         ]);
 
         assert_eq!(
@@ -4052,6 +4077,8 @@ mod tests {
         assert_eq!(report["liveDomTiming"]["evalMs"], 1278);
         assert_eq!(report["liveDomTiming"]["parseMs"], 5);
         assert_eq!(report["liveDomTiming"]["scriptMs"], 74);
+        assert_eq!(report["liveDomStatus"]["loadBefore"], "Loading");
+        assert_eq!(report["liveDomStatus"]["loadAfter"], "Complete");
     }
 
     #[test]

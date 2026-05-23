@@ -1898,6 +1898,7 @@ mod servo_runtime {
             .webview
             .url()
             .ok_or_else(|| "Servo tab has no active URL to distill.".to_string())?;
+        let load_status_before = format!("{:?}", session.webview.load_status());
         let script = r#"
 (() => {
   const now = () => (window.performance && performance.now) ? performance.now() : Date.now();
@@ -1993,9 +1994,16 @@ mod servo_runtime {
         let snapshot =
             evaluate_javascript_sync(servo, &session.webview, script, NAVIGATION_TIMEOUT)?;
         let eval_elapsed = eval_started.elapsed();
+        let load_status_after = format!("{:?}", session.webview.load_status());
         let parse_started = Instant::now();
         let mut page = distilled_page_from_dom_snapshot(current_url, snapshot)?;
         let parse_elapsed = parse_started.elapsed();
+        page.metadata.insert(
+            "live_dom_load_status_before".to_string(),
+            load_status_before,
+        );
+        page.metadata
+            .insert("live_dom_load_status_after".to_string(), load_status_after);
         page.metadata.insert(
             "live_dom_eval_ms".to_string(),
             eval_elapsed.as_millis().to_string(),

@@ -6605,6 +6605,17 @@ fn push_perception_report(report: &mut Vec<String>, page: &sextant_engine::Disti
             eval_ms, parse_ms, script_ms
         ));
     }
+    if let Some(load_before) = page.metadata.get("live_dom_load_status_before") {
+        let load_after = page
+            .metadata
+            .get("live_dom_load_status_after")
+            .map(String::as_str)
+            .unwrap_or("unknown");
+        report.push(format!(
+            "perception live-dom status: load_before={} load_after={}",
+            load_before, load_after
+        ));
+    }
 }
 
 fn distill_operator_page(app: &mut BrowserApp) -> Result<sextant_engine::DistilledPage, String> {
