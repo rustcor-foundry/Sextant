@@ -144,7 +144,7 @@ The visible browser also has a `SHOWCASE` control in the main toolbar. Use it du
 
 `--perf-probe <url-or-search>` is the same timed page pass labeled for performance work, plus tiny before/after Servo eval probes and a second warm frame capture to separate first-capture resize cost from steady-state readback. `--perf-baseline` runs a small representative set of simple and heavier pages so normal browsing tuning has a repeatable baseline.
 
-`sextant-mcp --perf-probe <url-or-search>` and MCP tool `browser_perf_probe` expose the same timing path to Codex and Claude. Use `browser_perf_baseline` for the built-in page set through MCP.
+`sextant-mcp --perf-probe <url-or-search>` and MCP tool `browser_perf_probe` expose the same timing path to Codex and Claude. Structured output keeps `perfSummary.slowestPhase` for the normal navigation/distill/Wake/resize/frame phases and adds `perfSummary.slowestObservedPhase` plus `maxEvalProbeMs` when diagnostic eval probes expose a slower Servo eval window. Use `browser_perf_baseline` for the built-in page set through MCP.
 
 `--operator-run <url-or-search>` adds a tiny scripted layer for native browser interaction. Supported steps are `--fill <selector> <value>`, `--click <selector>`, `--submit <selector>`, and `--expect <text>`.
 

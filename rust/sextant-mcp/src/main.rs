@@ -1711,9 +1711,10 @@ fn run_browser_operator_tool(
     let report_source = command_report_source(&stdout, &stderr);
     let report = operator_report_lines(&report_source);
     let perf_timings = perf_timing_samples(&report);
-    let perf_summary = perf_timing_summary(&perf_timings);
+    let mut perf_summary = perf_timing_summary(&perf_timings);
     let perception = perception_report(&report);
     let eval_probe = eval_probe_report(&report);
+    add_eval_probe_to_perf_summary(&mut perf_summary, &eval_probe);
     let guard = guard_report(&report);
     let structured = json!({
         "success": success,
@@ -2961,6 +2962,64 @@ fn eval_probe_timing_report(label: &str, value: &str, raw: &str) -> Value {
     probe
 }
 
+fn add_eval_probe_to_perf_summary(summary: &mut Value, eval_probe: &Value) {
+    summary["maxEvalProbeMs"] = Value::Null;
+    summary["slowestObservedPhase"] = summary.get("slowestPhase").cloned().unwrap_or(Value::Null);
+
+    let Some(samples) = eval_probe.get("samples").and_then(Value::as_array) else {
+        return;
+    };
+
+    let mut slowest_eval: Option<(u64, String, String)> = None;
+    for sample in samples {
+        let Some(duration_ms) = sample.get("evalMs").and_then(Value::as_u64) else {
+            continue;
+        };
+        if slowest_eval
+            .as_ref()
+            .map(|(current_ms, _, _)| duration_ms > *current_ms)
+            .unwrap_or(true)
+        {
+            slowest_eval = Some((
+                duration_ms,
+                sample
+                    .get("label")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                sample
+                    .get("raw")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+            ));
+        }
+    }
+
+    let Some((duration_ms, label, raw)) = slowest_eval else {
+        return;
+    };
+    summary["maxEvalProbeMs"] = Value::from(duration_ms);
+
+    let current_slowest_ms = summary
+        .get("slowestObservedPhase")
+        .and_then(|phase| phase.get("durationMs"))
+        .and_then(Value::as_u64);
+    if current_slowest_ms
+        .map(|current_ms| duration_ms > current_ms)
+        .unwrap_or(true)
+    {
+        summary["slowestObservedPhase"] = json!({
+            "field": "evalProbeMs",
+            "phase": "eval-probe",
+            "durationMs": duration_ms,
+            "label": label,
+            "target": Value::Null,
+            "raw": raw,
+        });
+    }
+}
+
 fn guard_report(report: &[String]) -> Value {
     let mut persona = Value::Null;
     let mut policy = Value::Null;
@@ -4165,6 +4224,29 @@ mod tests {
         assert_eq!(report["samples"][0]["value"], "interactive:42");
         assert_eq!(report["samples"][1]["label"], "after distillation");
         assert_eq!(report["samples"][1]["evalMs"], 12);
+    }
+
+    #[test]
+    fn eval_probe_updates_observed_perf_summary() {
+        let samples = perf_timing_samples(&[
+            "[perf-probe] perf after navigation: nav 409ms | distill pending | wake pending | resize pending | frame pending".to_string(),
+            "[perf-probe] perf after distillation: nav 409ms | distill 199ms | wake 5ms | resize pending | frame pending".to_string(),
+        ]);
+        let mut summary = perf_timing_summary(&samples);
+        let eval_probe = eval_probe_report(&[
+            "[perf-probe] eval probe before distillation: queue=0ms eval=1368ms script=0ms load_before=HeadParsed load_after=HeadParsed value=interactive:37".to_string(),
+            "[perf-probe] eval probe after distillation: queue=0ms eval=596ms script=0ms load_before=HeadParsed load_after=Complete value=complete:37".to_string(),
+        ]);
+        add_eval_probe_to_perf_summary(&mut summary, &eval_probe);
+
+        assert_eq!(summary["maxEvalProbeMs"], 1368);
+        assert_eq!(summary["slowestPhase"]["phase"], "navigation");
+        assert_eq!(summary["slowestObservedPhase"]["phase"], "eval-probe");
+        assert_eq!(summary["slowestObservedPhase"]["durationMs"], 1368);
+        assert_eq!(
+            summary["slowestObservedPhase"]["label"],
+            "before distillation"
+        );
     }
 
     #[test]
