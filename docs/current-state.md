@@ -178,11 +178,13 @@ The active native browser hull is intentionally plain, but it now has real brows
 - native operator bridge commands for automated smoke/probe runs before manual click-through
 - local trust-boundary reporting and navigation enforcement for persona, JSON policy overlays, air-gap, firewall, and privacy redaction in-window and through MCP
 - normal-browsing timing telemetry for navigation, distillation, Wake search, viewport resize, and Servo frame capture in the status bar and operator probe output
-- visible-window smoke timing telemetry for startup work, first shell draw, final draw cost, Servo frame blit, Softbuffer present, latest PERF summary, and first Servo frame, with targeted smokes proving a real captured page frame instead of only a chrome redraw
+- visible-window smoke timing telemetry for startup work, first shell draw, final draw cost, Servo frame blit, Softbuffer present, latest PERF summary, slowest/top perf events, and first Servo frame, with targeted smokes proving a real captured page frame instead of only a chrome redraw
 - visible user-triggered DISTILL now queues an async engine worker and polls completion from the event loop; operator/proof distillation remains synchronous for deterministic checks
 - MCP/window smoke can exercise that async user DISTILL path with `user_distill` / `--window-smoke-distill` and returns structured `distillMs` and `wakeMs`
 - visible async DISTILL now hands Wake record/search and Captain's Log write to a dedicated Persistence lane worker; visible Wake searches, ordinary visible Log writes, and visible recent-log refreshes use the same lane, and the UI loop only polls completion and applies returned Wake/Log rows
 - render-bridge telemetry now splits Servo resize from actual frame capture/readback; the first corrected assisted smoke showed resize around 18ms and frame readback around 36ms, which means the earlier 300-400ms frame numbers were mostly a measurement/round-trip artifact
+- async visible navigation now carries sub-phase timings for firewall, Servo navigation/control, Servo inspect, and reader fallback; window smoke and MCP expose the slowest/top perf events so bridge resize, navigation, and capture costs can be compared without scraping the whole log
+- the visible browser now hints Servo's initial runtime viewport from the real browser viewport and returns the first real bridge frame with async navigation; the latest `https://example.com` visible smoke first-framed in about 520ms with bridge resize at 0ms and frame capture around 23ms
 - page perception reporting for distilled semantic maps in-window and through MCP
 - bounded `--window-smoke` mode for visible shell launch/draw checks before manual browsing
 - visible launch seeding with `--start "<url-search-or-intent>"` for demo/manual sessions

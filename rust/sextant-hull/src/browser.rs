@@ -2,8 +2,9 @@ use chrono::Utc;
 #[cfg(feature = "xilem-shell")]
 use sextant_airgap::SextantAirGap;
 use sextant_engine::{
-    AsyncDistillResult, AsyncFrameCapture, AsyncNavigationResult, BrowserKey, DistilledPage,
-    EngineBackend, EngineStatus, NodeType, RenderedFrame, SextantEngine, Tab,
+    AsyncDistillResult, AsyncFrameCapture, AsyncNavigationResult, AsyncNavigationTimings,
+    BrowserKey, DistilledPage, EngineBackend, EngineStatus, NodeType, RenderedFrame, SextantEngine,
+    Tab,
 };
 #[cfg(feature = "xilem-shell")]
 use sextant_firewall::{FirewallAction, SextantFirewall};
@@ -564,6 +565,15 @@ impl PendingNavigationKind {
             PendingNavigationKind::Reload => "reload worker dropped",
             PendingNavigationKind::Back => "back worker dropped",
             PendingNavigationKind::Forward => "forward worker dropped",
+        }
+    }
+
+    fn phase_label(self) -> &'static str {
+        match self {
+            PendingNavigationKind::Open => "open",
+            PendingNavigationKind::Reload => "reload",
+            PendingNavigationKind::Back => "back",
+            PendingNavigationKind::Forward => "forward",
         }
     }
 
@@ -2878,9 +2888,12 @@ impl BrowserApp {
 
         #[cfg(feature = "servo-backend")]
         {
+            let viewport = self.browser_viewport_rect;
+            let current_viewport_size = (viewport.w.max(1), viewport.h.max(1));
+            self.engine
+                .configure_initial_servo_viewport(current_viewport_size.0, current_viewport_size.1);
             let viewport_size = if self.pre_size_visible_navigation {
-                let viewport = self.browser_viewport_rect;
-                Some((viewport.w.max(1), viewport.h.max(1)))
+                Some(current_viewport_size)
             } else {
                 None
             };
@@ -2989,11 +3002,14 @@ impl BrowserApp {
                     .expect("pending navigation disappeared");
                 let elapsed = pending.started.elapsed();
                 match result {
-                    Ok(result) => {
+                    Ok(mut result) => {
                         let backend_name = backend(result.status.clone()).to_string();
                         let final_url = result.final_url.clone();
+                        let timings = result.timings.clone();
+                        let initial_frame = result.initial_frame.take();
                         self.engine.apply_async_navigation_result(result);
                         self.record_perf("navigation", elapsed, pending.kind.perf_label());
+                        self.record_navigation_timings(&timings, pending.kind);
                         self.perf.frame = None;
                         self.address_input = final_url.to_string();
                         self.page_scroll = 0;
@@ -3006,6 +3022,9 @@ impl BrowserApp {
                         }
                         self.validation.navigation_seen = true;
                         self.begin_frame_warmup();
+                        if !self.apply_initial_navigation_frame(initial_frame) {
+                            self.start_frame_capture_for(FrameCapturePurpose::RenderBridge);
+                        }
                         self.last_status =
                             pending
                                 .kind
@@ -3044,6 +3063,82 @@ impl BrowserApp {
                 );
                 Some(elapsed)
             }
+        }
+    }
+
+    fn apply_initial_navigation_frame(
+        &mut self,
+        initial_frame: Option<Result<AsyncFrameCapture, String>>,
+    ) -> bool {
+        let Some(result) = initial_frame else {
+            return false;
+        };
+        match result {
+            Ok(capture) => {
+                if let Some(resize) = capture.resize {
+                    self.record_perf(
+                        "resize",
+                        resize,
+                        FrameCapturePurpose::RenderBridge.resize_async_label(),
+                    );
+                } else {
+                    let current_viewport = self.browser_viewport_rect;
+                    let current_size = (current_viewport.w.max(1), current_viewport.h.max(1));
+                    if (capture.frame.width, capture.frame.height) == current_size {
+                        self.record_perf(
+                            "resize",
+                            Duration::ZERO,
+                            FrameCapturePurpose::RenderBridge.resize_label(),
+                        );
+                        self.last_frame_viewport = Some(current_size);
+                    }
+                }
+                self.record_perf(
+                    "frame",
+                    capture.capture,
+                    FrameCapturePurpose::RenderBridge.capture_label(),
+                );
+                let frame = capture.frame;
+                if frame.width > 0 && frame.height > 0 && !frame.pixels.is_empty() {
+                    self.validation.frame_seen = true;
+                }
+                self.latest_frame = Some(frame);
+                self.last_frame_refresh = Instant::now();
+                self.frame_refresh_budget = self.frame_refresh_budget.saturating_sub(1);
+                self.frame_dirty = self.frame_refresh_budget > 0;
+                true
+            }
+            Err(error) => {
+                self.record_perf(
+                    "frame",
+                    Duration::ZERO,
+                    FrameCapturePurpose::RenderBridge.capture_failed_label(),
+                );
+                self.last_status = format!("Initial Servo frame unavailable: {}", error);
+                self.last_ok = false;
+                self.validation.error_seen = true;
+                false
+            }
+        }
+    }
+
+    fn record_navigation_timings(
+        &mut self,
+        timings: &AsyncNavigationTimings,
+        kind: PendingNavigationKind,
+    ) {
+        let label = kind.phase_label();
+        if let Some(duration) = timings.firewall {
+            self.record_perf("nav-phase", duration, &format!("{label} firewall"));
+        }
+        if let Some(duration) = timings.servo_navigation {
+            self.record_perf("nav-phase", duration, &format!("{label} servo navigation"));
+        }
+        if let Some(duration) = timings.servo_inspect {
+            self.record_perf("nav-phase", duration, &format!("{label} servo inspect"));
+        }
+        if let Some(duration) = timings.reader_fallback {
+            self.record_perf("nav-phase", duration, &format!("{label} reader fallback"));
         }
     }
 
@@ -4017,6 +4112,13 @@ impl BrowserApp {
             .max_by_key(|event| event.duration.as_millis())
     }
 
+    fn slowest_perf_events(&self, limit: usize) -> Vec<&PerfEvent> {
+        let mut events = self.perf_events.iter().collect::<Vec<_>>();
+        events.sort_by(|left, right| right.duration.cmp(&left.duration));
+        events.truncate(limit);
+        events
+    }
+
     fn active_tab(&self) -> Option<&Tab> {
         self.engine.get_active_tab()
     }
@@ -4327,6 +4429,11 @@ impl BrowserApp {
                                 pending.purpose.resize_async_missing_label(),
                             );
                         }
+                        self.record_perf(
+                            "frame-total",
+                            pending.started.elapsed(),
+                            pending.purpose.capture_label(),
+                        );
                         self.record_perf("frame", capture.capture, pending.purpose.capture_label());
                         let frame = capture.frame;
                         if frame.width > 0 && frame.height > 0 && !frame.pixels.is_empty() {
@@ -4879,6 +4986,30 @@ fn run_visible_app(
                                     format_duration(draw_stats.present)
                                 );
                                 println!("[window-smoke] perf {}", app.perf.summary());
+                                if let Some(event) = app.slowest_perf_event() {
+                                    println!(
+                                        "[window-smoke] slowest perf {} {} | {}",
+                                        event.phase,
+                                        format_duration(event.duration),
+                                        event.label
+                                    );
+                                }
+                                let slow_events = app.slowest_perf_events(4);
+                                if !slow_events.is_empty() {
+                                    let summary = slow_events
+                                        .iter()
+                                        .map(|event| {
+                                            format!(
+                                                "{} {} {}",
+                                                event.phase,
+                                                format_duration(event.duration),
+                                                event.label
+                                            )
+                                        })
+                                        .collect::<Vec<_>>()
+                                        .join(" | ");
+                                    println!("[window-smoke] slow perf {}", summary);
+                                }
                                 if let Some(frame) = app.latest_frame.as_ref() {
                                     println!(
                                         "[window-smoke] latest Servo frame {}x{} ({} pixels)",
@@ -7276,6 +7407,36 @@ mod tests {
     }
 
     #[test]
+    fn navigation_phase_timings_are_recorded_without_overwriting_summary() -> Result<(), String> {
+        let data_dir =
+            env::temp_dir().join(format!("sextant-browser-nav-phase-{}", Uuid::new_v4()));
+        let mut app = BrowserApp::new_with_data_dir(data_dir.clone())?;
+        app.record_perf("navigation", Duration::from_millis(120), "open async");
+
+        app.record_navigation_timings(
+            &AsyncNavigationTimings {
+                firewall: Some(Duration::from_millis(2)),
+                servo_navigation: Some(Duration::from_millis(95)),
+                servo_inspect: Some(Duration::from_millis(7)),
+                reader_fallback: None,
+            },
+            PendingNavigationKind::Open,
+        );
+
+        assert_eq!(app.perf.navigation, Some(Duration::from_millis(120)));
+        assert_eq!(app.perf.resize, None);
+        assert!(app
+            .perf_events
+            .iter()
+            .any(|event| event.phase == "nav-phase"
+                && event.label == "open servo navigation"
+                && event.duration == Duration::from_millis(95)));
+
+        let _ = std::fs::remove_dir_all(data_dir);
+        Ok(())
+    }
+
+    #[test]
     fn slowest_perf_event_tracks_largest_duration() -> Result<(), String> {
         let data_dir =
             env::temp_dir().join(format!("sextant-browser-perf-slowest-{}", Uuid::new_v4()));
@@ -7290,6 +7451,42 @@ mod tests {
             .ok_or_else(|| "missing slowest perf event".to_string())?;
         assert_eq!(slowest.phase, "distill");
         assert_eq!(slowest.duration, Duration::from_millis(300));
+
+        let _ = std::fs::remove_dir_all(data_dir);
+        Ok(())
+    }
+
+    #[test]
+    fn slowest_perf_events_are_sorted_and_limited() -> Result<(), String> {
+        let data_dir = env::temp_dir().join(format!("sextant-browser-perf-top-{}", Uuid::new_v4()));
+        let mut app = BrowserApp::new_with_data_dir(data_dir.clone())?;
+
+        app.record_perf("navigation", Duration::from_millis(100), "open");
+        app.record_perf(
+            "nav-phase",
+            Duration::from_millis(95),
+            "open servo navigation",
+        );
+        app.record_perf(
+            "resize",
+            Duration::from_millis(430),
+            "viewport render bridge async",
+        );
+        app.record_perf("frame", Duration::from_millis(44), "capture render bridge");
+
+        let labels = app
+            .slowest_perf_events(3)
+            .iter()
+            .map(|event| event.label.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            labels,
+            vec![
+                "viewport render bridge async",
+                "open",
+                "open servo navigation"
+            ]
+        );
 
         let _ = std::fs::remove_dir_all(data_dir);
         Ok(())
@@ -7566,6 +7763,135 @@ mod tests {
         assert!(app.last_ok, "async reload failed: {}", app.last_status);
         assert!(app.last_status.contains("Reloaded active tab"));
         assert!(app.perf.navigation.is_some());
+
+        let _ = std::fs::remove_dir_all(data_dir);
+        Ok(())
+    }
+
+    #[test]
+    fn completed_visible_navigation_queues_first_frame_capture() -> Result<(), String> {
+        let data_dir = env::temp_dir().join(format!(
+            "sextant-browser-nav-first-frame-{}",
+            Uuid::new_v4()
+        ));
+        let mut app = BrowserApp::new_with_data_dir(data_dir.clone())?;
+        app.defer_user_navigation = true;
+        app.layout(PhysicalSize::new(1180, 760));
+        let tab_id = app
+            .active_tab()
+            .map(|tab| tab.id)
+            .ok_or_else(|| "missing active tab".to_string())?;
+        let url = Url::parse("https://example.com").map_err(|error| error.to_string())?;
+        let (result_tx, result_rx) = mpsc::channel();
+        result_tx
+            .send(Ok(AsyncNavigationResult {
+                tab_id,
+                requested_url: url.clone(),
+                final_url: url.clone(),
+                status: EngineStatus {
+                    active_backend: EngineBackend::Servo,
+                    is_sandboxed: true,
+                    memory_usage_mb: 180,
+                    gpu_accelerated: false,
+                    sandbox_profile: None,
+                    firewall_status: None,
+                    layout_time_ms: 0.0,
+                    parallel_threads: 8,
+                },
+                distilled_page: None,
+                can_go_back: false,
+                can_go_forward: false,
+                timings: AsyncNavigationTimings {
+                    firewall: Some(Duration::from_millis(1)),
+                    servo_navigation: Some(Duration::from_millis(12)),
+                    servo_inspect: Some(Duration::from_millis(2)),
+                    reader_fallback: None,
+                },
+                initial_frame: None,
+            }))
+            .map_err(|error| error.to_string())?;
+        app.pending_navigation = Some(PendingNavigation {
+            url: url.clone(),
+            kind: PendingNavigationKind::Open,
+            result_rx,
+            started: Instant::now(),
+            viewport_size: None,
+        });
+
+        assert!(app.collect_pending_navigation().is_some());
+        assert!(app.pending_navigation.is_none());
+        assert!(app.pending_frame_capture.is_some());
+        assert_eq!(app.frame_refresh_budget, FRAME_WARMUP_BUDGET);
+        assert!(app
+            .perf_events
+            .iter()
+            .any(|event| event.phase == "nav-phase" && event.label == "open servo navigation"));
+
+        let _ = std::fs::remove_dir_all(data_dir);
+        Ok(())
+    }
+
+    #[test]
+    fn completed_visible_navigation_applies_initial_frame() -> Result<(), String> {
+        let data_dir = env::temp_dir().join(format!(
+            "sextant-browser-nav-initial-frame-{}",
+            Uuid::new_v4()
+        ));
+        let mut app = BrowserApp::new_with_data_dir(data_dir.clone())?;
+        app.defer_user_navigation = true;
+        app.layout(PhysicalSize::new(1180, 760));
+        let viewport = app.browser_viewport_rect;
+        let viewport_size = (viewport.w.max(1), viewport.h.max(1));
+        let tab_id = app
+            .active_tab()
+            .map(|tab| tab.id)
+            .ok_or_else(|| "missing active tab".to_string())?;
+        let url = Url::parse("https://example.com").map_err(|error| error.to_string())?;
+        let (result_tx, result_rx) = mpsc::channel();
+        result_tx
+            .send(Ok(AsyncNavigationResult {
+                tab_id,
+                requested_url: url.clone(),
+                final_url: url.clone(),
+                status: EngineStatus {
+                    active_backend: EngineBackend::Servo,
+                    is_sandboxed: true,
+                    memory_usage_mb: 180,
+                    gpu_accelerated: false,
+                    sandbox_profile: None,
+                    firewall_status: None,
+                    layout_time_ms: 0.0,
+                    parallel_threads: 8,
+                },
+                distilled_page: None,
+                can_go_back: false,
+                can_go_forward: false,
+                timings: AsyncNavigationTimings::default(),
+                initial_frame: Some(Ok(AsyncFrameCapture {
+                    resize: None,
+                    capture: Duration::from_millis(8),
+                    frame: RenderedFrame {
+                        width: viewport_size.0,
+                        height: viewport_size.1,
+                        pixels: vec![0x00ff00; (viewport_size.0 * viewport_size.1) as usize],
+                    },
+                })),
+            }))
+            .map_err(|error| error.to_string())?;
+        app.pending_navigation = Some(PendingNavigation {
+            url,
+            kind: PendingNavigationKind::Open,
+            result_rx,
+            started: Instant::now(),
+            viewport_size: None,
+        });
+
+        assert!(app.collect_pending_navigation().is_some());
+        assert!(app.pending_frame_capture.is_none());
+        assert_eq!(app.last_frame_viewport, Some(viewport_size));
+        assert_eq!(app.perf.resize, Some(Duration::ZERO));
+        assert_eq!(app.perf.frame, Some(Duration::from_millis(8)));
+        assert!(app.latest_frame.is_some());
 
         let _ = std::fs::remove_dir_all(data_dir);
         Ok(())

@@ -57,6 +57,7 @@ mod servo_runtime {
     #[derive(Clone)]
     pub struct ServoServiceHandle {
         shared_command_tx: Arc<Mutex<Option<mpsc::Sender<ServoCommand>>>>,
+        initial_viewport_size: Arc<Mutex<(u32, u32)>>,
         failed: Arc<AtomicBool>,
     }
 
@@ -199,6 +200,7 @@ mod servo_runtime {
 
     struct ServoTabSession {
         webview: WebView,
+        viewport_size: (u32, u32),
     }
 
     struct ServoRuntimeState {
@@ -230,6 +232,10 @@ mod servo_runtime {
         fn new() -> Self {
             Self {
                 shared_command_tx: Arc::new(Mutex::new(None)),
+                initial_viewport_size: Arc::new(Mutex::new((
+                    DEFAULT_VIEWPORT_WIDTH,
+                    DEFAULT_VIEWPORT_HEIGHT,
+                ))),
                 failed: Arc::new(AtomicBool::new(false)),
             }
         }
@@ -266,10 +272,15 @@ mod servo_runtime {
             }
 
             let (command_tx, command_rx) = mpsc::channel();
+            let initial_viewport_size = self
+                .initial_viewport_size
+                .lock()
+                .map(|guard| *guard)
+                .unwrap_or((DEFAULT_VIEWPORT_WIDTH, DEFAULT_VIEWPORT_HEIGHT));
             eprintln!("[sextant-servo] spawning service thread");
             thread::Builder::new()
                 .name("sextant-servo-service".into())
-                .spawn(move || run_service(command_rx))
+                .spawn(move || run_service(command_rx, initial_viewport_size))
                 .map_err(|e| format!("failed to spawn Servo service thread: {}", e))?;
             *guard = Some(command_tx.clone());
             Ok(command_tx)
@@ -340,6 +351,12 @@ mod servo_runtime {
                 Err(error) => {
                     eprintln!("[sextant-servo] async request unavailable: {error}");
                 }
+            }
+        }
+
+        pub fn configure_initial_viewport(&self, width: u32, height: u32) {
+            if let Ok(mut guard) = self.initial_viewport_size.lock() {
+                *guard = (width.max(1), height.max(1));
             }
         }
 
@@ -549,8 +566,8 @@ mod servo_runtime {
         HANDLE.get_or_init(ServoServiceHandle::new).clone()
     }
 
-    fn run_service(command_rx: mpsc::Receiver<ServoCommand>) {
-        let mut runtime = match run_servo_command(create_runtime) {
+    fn run_service(command_rx: mpsc::Receiver<ServoCommand>, initial_viewport_size: (u32, u32)) {
+        let mut runtime = match run_servo_command(|| create_runtime(initial_viewport_size)) {
             Ok(runtime) => runtime,
             Err(error) => {
                 while let Ok(command) = command_rx.recv() {
@@ -934,16 +951,15 @@ mod servo_runtime {
         })?
     }
 
-    fn create_runtime() -> Result<ServoRuntimeState, String> {
+    fn create_runtime(initial_viewport_size: (u32, u32)) -> Result<ServoRuntimeState, String> {
         install_rustls_crypto_provider();
         prime_windows_angle_runtime()?;
         eprintln!("[sextant-servo] creating runtime");
+        let (width, height) = initial_viewport_size;
         let rendering_context = Rc::new(
-            SoftwareRenderingContext::new(PhysicalSize::new(
-                DEFAULT_VIEWPORT_WIDTH,
-                DEFAULT_VIEWPORT_HEIGHT,
-            ))
-            .map_err(|e| format!("Failed to create Servo software rendering context: {:?}", e))?,
+            SoftwareRenderingContext::new(PhysicalSize::new(width.max(1), height.max(1))).map_err(
+                |e| format!("Failed to create Servo software rendering context: {:?}", e),
+            )?,
         );
         rendering_context
             .make_current()
@@ -974,8 +990,12 @@ mod servo_runtime {
             builder = builder.url(url);
         }
         let webview = builder.build();
+        let size = runtime.rendering_context.size();
 
-        Ok(ServoTabSession { webview })
+        Ok(ServoTabSession {
+            webview,
+            viewport_size: (size.width, size.height),
+        })
     }
 
     fn navigate_tab(
@@ -1004,10 +1024,12 @@ mod servo_runtime {
             .remove(&tab_id)
             .ok_or_else(|| "Servo session was not created".to_string())?;
         if let Some((width, height)) = viewport_size {
-            session
-                .webview
-                .resize(PhysicalSize::new(width.max(1), height.max(1)));
-            runtime.servo.spin_event_loop();
+            let size = PhysicalSize::new(width.max(1), height.max(1));
+            if session.viewport_size != (size.width, size.height) {
+                session.webview.resize(size);
+                session.viewport_size = (size.width, size.height);
+                runtime.servo.spin_event_loop();
+            }
         }
         let result = navigate_session(&mut runtime.servo, &mut session, url);
         runtime.sessions.insert(tab_id, session);
@@ -1132,9 +1154,13 @@ mod servo_runtime {
         let size = PhysicalSize::new(width.max(1), height.max(1));
         let session = runtime
             .sessions
-            .get(&tab_id)
+            .get_mut(&tab_id)
             .ok_or_else(|| "Servo session was not created".to_string())?;
+        if session.viewport_size == (size.width, size.height) {
+            return Ok(());
+        }
         session.webview.resize(size);
+        session.viewport_size = (size.width, size.height);
         runtime.servo.spin_event_loop();
         Ok(())
     }
@@ -2170,6 +2196,14 @@ pub struct AsyncFrameCapture {
     pub frame: RenderedFrame,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct AsyncNavigationTimings {
+    pub firewall: Option<Duration>,
+    pub servo_navigation: Option<Duration>,
+    pub servo_inspect: Option<Duration>,
+    pub reader_fallback: Option<Duration>,
+}
+
 #[derive(Debug, Clone)]
 pub struct AsyncNavigationResult {
     pub tab_id: Uuid,
@@ -2179,6 +2213,8 @@ pub struct AsyncNavigationResult {
     pub distilled_page: Option<DistilledPage>,
     pub can_go_back: bool,
     pub can_go_forward: bool,
+    pub timings: AsyncNavigationTimings,
+    pub initial_frame: Option<Result<AsyncFrameCapture, String>>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2973,6 +3009,13 @@ impl SextantEngine {
         Ok(())
     }
 
+    pub fn configure_initial_servo_viewport(&self, width: u32, height: u32) {
+        #[cfg(feature = "servo-backend")]
+        self.servo_service.configure_initial_viewport(width, height);
+        #[cfg(not(feature = "servo-backend"))]
+        let _ = (width, height);
+    }
+
     pub fn open_tab(&mut self) -> Uuid {
         let id = Uuid::new_v4();
         let tab = Tab {
@@ -3238,7 +3281,10 @@ impl SextantEngine {
                 .spawn(move || {
                     let requested_url = url.clone();
                     let result = (|| {
+                        let mut timings = AsyncNavigationTimings::default();
+                        let firewall_started = Instant::now();
                         let (firewall_action, reason) = firewall.check_access(&persona_id, &url);
+                        timings.firewall = Some(firewall_started.elapsed());
                         if firewall_action == FirewallAction::Block {
                             return Err(format!("Firewall Blocked: {} (Reason: {})", url, reason));
                         }
@@ -3250,13 +3296,19 @@ impl SextantEngine {
                             );
                         }
 
+                        let servo_started = Instant::now();
                         match servo_service.navigate_with_viewport(
                             tab_id,
                             url.clone(),
                             viewport_size,
                         ) {
                             Ok(render) => {
+                                timings.servo_navigation = Some(servo_started.elapsed());
+                                let initial_frame =
+                                    Some(servo_service.resize_and_capture_frame(tab_id, None));
+                                let inspect_started = Instant::now();
                                 let snapshot = servo_service.inspect_tab(tab_id).ok();
+                                timings.servo_inspect = Some(inspect_started.elapsed());
                                 Ok(AsyncNavigationResult {
                                     tab_id,
                                     requested_url,
@@ -3271,10 +3323,15 @@ impl SextantEngine {
                                         .as_ref()
                                         .map(|tab| tab.can_go_forward)
                                         .unwrap_or(false),
+                                    timings,
+                                    initial_frame,
                                 })
                             }
                             Err(error) => {
+                                timings.servo_navigation = Some(servo_started.elapsed());
+                                let reader_started = Instant::now();
                                 let page = fetch_distilled_page(&url)?;
+                                timings.reader_fallback = Some(reader_started.elapsed());
                                 let status = reader_fallback_status(format!(
                                     "Servo live navigation failed: {}. Showing distilled reader.",
                                     error
@@ -3287,6 +3344,8 @@ impl SextantEngine {
                                     distilled_page: Some(page),
                                     can_go_back: false,
                                     can_go_forward: false,
+                                    timings,
+                                    initial_frame: None,
                                 })
                             }
                         }
@@ -3345,6 +3404,7 @@ impl SextantEngine {
                 .name("sextant-navigation-control".into())
                 .spawn(move || {
                     let result = (|| {
+                        let mut timings = AsyncNavigationTimings::default();
                         if backend != EngineBackend::Servo {
                             return Err(
                                 "Async visible navigation controls are only wired for Servo tabs right now."
@@ -3352,12 +3412,17 @@ impl SextantEngine {
                             );
                         }
 
+                        let servo_started = Instant::now();
                         let render = match control {
                             AsyncNavigationControl::Reload => servo_service.reload(tab_id),
                             AsyncNavigationControl::Back => servo_service.go_back(tab_id),
                             AsyncNavigationControl::Forward => servo_service.go_forward(tab_id),
                         }?;
+                        timings.servo_navigation = Some(servo_started.elapsed());
+                        let initial_frame = Some(servo_service.resize_and_capture_frame(tab_id, None));
+                        let inspect_started = Instant::now();
                         let snapshot = servo_service.inspect_tab(tab_id).ok();
+                        timings.servo_inspect = Some(inspect_started.elapsed());
                         Ok(AsyncNavigationResult {
                             tab_id,
                             requested_url,
@@ -3372,6 +3437,8 @@ impl SextantEngine {
                                 .as_ref()
                                 .map(|tab| tab.can_go_forward)
                                 .unwrap_or(false),
+                            timings,
+                            initial_frame,
                         })
                     })();
                     let _ = result_tx.send(result);

@@ -4,6 +4,20 @@ Audit trail of completed work sessions. Newest first.
 
 ---
 
+## 2026-05-22 — Visible Navigation Phase Telemetry And First-Frame Resize Removal
+
+- Added async navigation timing fields for firewall checks, Servo navigation/control work, Servo inspect, and reader fallback
+- Recorded those timings in the browser perf history as `nav-phase` events without overwriting the coarse `nav/distill/wake/resize/frame` summary
+- Extended visible window smoke output with the slowest perf event and top perf events so bridge resize, navigation sub-phases, and frame capture costs are visible in one bounded run
+- Extended MCP window-smoke parsing with structured `slowestPerfEvent` and `slowPerfEvents`, and tightened perf-summary parsing so human-readable slowest lines do not overwrite the coarse summary fields
+- Started the first post-navigation bridge capture immediately when async visible navigation completes, removing avoidable refresh cadence slack before the first page frame
+- Added `frame-total` perf events for async frame workers so queue/wall time can be compared with resize and capture costs
+- Added an initial Servo viewport hint for the visible browser shell and taught Servo tab sessions to skip same-size resize requests, so a fresh Servo runtime can be born at the browser viewport size without using the rejected pre-size-navigation path
+- Folded the first bridge frame into the async navigation result, so the visible shell can apply the real Servo frame as soon as navigation completes and skip the extra first-frame capture worker
+- Confirmed `https://example.com` window smoke now first-frames through the bridge in about 520ms, with first shell draw around 22ms, navigation around 432ms, Servo navigation around 405ms, bridge resize at 0ms, and frame capture around 23ms
+
+---
+
 ## 2026-05-19 — Direct Servo Presentation Proof
 
 - Added `sextant-servo-direct`, an experimental Servo-backed proof binary that uses Servo's `WindowRenderingContext`, `WebViewBuilder`, direct `paint()`, and `present()` path instead of the current frame-capture-to-Softbuffer render bridge

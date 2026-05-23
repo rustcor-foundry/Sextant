@@ -3025,6 +3025,8 @@ fn window_smoke_summary(report: &[String]) -> Value {
         "wakeMs": Value::Null,
         "resizeMs": Value::Null,
         "frameMs": Value::Null,
+        "slowestPerfEvent": Value::Null,
+        "slowPerfEvents": [],
         "latestFrameWidth": Value::Null,
         "latestFrameHeight": Value::Null,
         "latestFramePixels": Value::Null,
@@ -3051,7 +3053,11 @@ fn window_smoke_summary(report: &[String]) -> Value {
             summary["startupWorkMs"] = duration_token_to_value(value.trim());
         } else if let Some(value) = line.split("draw cost total ").nth(1) {
             apply_window_draw_costs(&mut summary, value);
-        } else if let Some(value) = line.split("perf ").nth(1) {
+        } else if let Some(value) = line.strip_prefix("[window-smoke] slowest perf ") {
+            summary["slowestPerfEvent"] = window_slowest_perf_event(value).unwrap_or(Value::Null);
+        } else if let Some(value) = line.strip_prefix("[window-smoke] slow perf ") {
+            summary["slowPerfEvents"] = Value::Array(window_perf_events(value));
+        } else if let Some(value) = line.strip_prefix("[window-smoke] perf ") {
             apply_window_perf_summary(&mut summary, value);
         } else if let Some(frame) = window_latest_frame(line) {
             summary["latestFrameWidth"] = Value::from(frame.0);
@@ -3115,6 +3121,32 @@ fn apply_window_perf_summary(summary: &mut Value, value: &str) {
         };
         summary[key] = duration_token_to_value(duration);
     }
+}
+
+fn window_perf_events(value: &str) -> Vec<Value> {
+    value.split('|').filter_map(window_perf_event).collect()
+}
+
+fn window_slowest_perf_event(value: &str) -> Option<Value> {
+    let (timing, label) = value.trim().split_once(" | ")?;
+    let mut event = window_perf_event(timing)?;
+    event["label"] = Value::String(label.trim().to_string());
+    Some(event)
+}
+
+fn window_perf_event(value: &str) -> Option<Value> {
+    let mut pieces = value.trim().splitn(3, char::is_whitespace);
+    let phase = pieces.next()?.trim();
+    let duration = pieces.next()?.trim();
+    let label = pieces.next().unwrap_or("").trim();
+    if phase.is_empty() || duration.is_empty() {
+        return None;
+    }
+    Some(json!({
+        "phase": phase,
+        "durationMs": duration_token_to_value(duration),
+        "label": label,
+    }))
 }
 
 fn window_latest_frame(line: &str) -> Option<(u64, u64, u64)> {
@@ -3853,6 +3885,8 @@ mod tests {
             "[window-smoke] startup/navigation work 414ms".to_string(),
             "[window-smoke] draw cost total 30ms | frame blit 9ms | present 0ms".to_string(),
             "[window-smoke] perf nav 414ms | distill pending | wake pending | resize 390ms | frame 438ms".to_string(),
+            "[window-smoke] slowest perf frame 438ms | capture render bridge".to_string(),
+            "[window-smoke] slow perf frame 438ms capture render bridge | nav-phase 414ms open servo navigation | resize 390ms viewport render bridge async".to_string(),
             "[window-smoke] latest Servo frame 776x292 (226592 pixels)".to_string(),
             "[window-smoke] first Servo frame in 950ms".to_string(),
         ];
@@ -3879,6 +3913,17 @@ mod tests {
         assert_eq!(summary["presentMs"], Value::from(0));
         assert_eq!(summary["navigationMs"], Value::from(414));
         assert_eq!(summary["distillMs"], Value::Null);
+        assert_eq!(summary["slowestPerfEvent"]["phase"], "frame");
+        assert_eq!(summary["slowestPerfEvent"]["durationMs"], Value::from(438));
+        assert_eq!(
+            summary["slowestPerfEvent"]["label"],
+            "capture render bridge"
+        );
+        assert_eq!(summary["slowPerfEvents"][1]["phase"], "nav-phase");
+        assert_eq!(
+            summary["slowPerfEvents"][1]["label"],
+            "open servo navigation"
+        );
         assert_eq!(summary["latestFrameWidth"], Value::from(776));
         assert_eq!(summary["latestFrameHeight"], Value::from(292));
         assert_eq!(summary["latestFramePixels"], Value::from(226592));
