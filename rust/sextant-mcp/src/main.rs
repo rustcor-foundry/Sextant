@@ -774,7 +774,7 @@ fn tools() -> Value {
         {
             "name": "browser_perception_probe",
             "title": "Browser Perception Probe",
-            "description": "Navigate and distill a target page, then report the native browser's semantic perception summary, counts, key nodes, and timing lines.",
+            "description": "Navigate and distill a target page, then report the native browser's semantic perception summary, counts, key nodes, source, and structured live-DOM timing.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -2815,6 +2815,7 @@ fn perception_report(report: &[String]) -> Value {
     let mut counts = Value::Null;
     let mut nodes = Vec::new();
     let mut source = Value::Null;
+    let mut live_dom_timing = Value::Null;
 
     for line in report {
         if let Some(value) = line.split("perception summary:").nth(1) {
@@ -2831,6 +2832,8 @@ fn perception_report(report: &[String]) -> Value {
             }));
         } else if let Some(value) = line.split("perception source:").nth(1) {
             source = Value::String(value.trim().to_string());
+        } else if let Some(value) = line.split("perception live-dom timing:").nth(1) {
+            live_dom_timing = live_dom_timing_report(value.trim(), line);
         }
     }
 
@@ -2839,7 +2842,32 @@ fn perception_report(report: &[String]) -> Value {
         "counts": counts,
         "nodes": nodes,
         "source": source,
+        "liveDomTiming": live_dom_timing,
     })
+}
+
+fn live_dom_timing_report(value: &str, raw: &str) -> Value {
+    let mut timing = json!({
+        "evalMs": Value::Null,
+        "parseMs": Value::Null,
+        "scriptMs": Value::Null,
+        "raw": raw,
+    });
+    for part in value.split_whitespace() {
+        let Some((name, raw_duration)) = part.split_once('=') else {
+            continue;
+        };
+        let key = match name {
+            "eval" => "evalMs",
+            "parse" => "parseMs",
+            "script" => "scriptMs",
+            _ => continue,
+        };
+        timing[key] = parse_perf_duration_ms(raw_duration)
+            .map(Value::from)
+            .unwrap_or(Value::Null);
+    }
+    timing
 }
 
 fn guard_report(report: &[String]) -> Value {
@@ -4008,6 +4036,7 @@ mod tests {
             "[perception-probe] perception counts: headings=1 links=1 inputs=1 images=0 text=0 buttons=1".to_string(),
             "[perception-probe] perception node 1: INPUT | input[name=q] | Search".to_string(),
             "[perception-probe] perception source: servo-live-dom".to_string(),
+            "[perception-probe] perception live-dom timing: eval=1278ms parse=5ms script=74ms".to_string(),
         ]);
 
         assert_eq!(
@@ -4020,6 +4049,9 @@ mod tests {
         assert_eq!(report["nodes"][0]["selector"], "input[name=q]");
         assert_eq!(report["nodes"][0]["text"], "Search");
         assert_eq!(report["source"], "servo-live-dom");
+        assert_eq!(report["liveDomTiming"]["evalMs"], 1278);
+        assert_eq!(report["liveDomTiming"]["parseMs"], 5);
+        assert_eq!(report["liveDomTiming"]["scriptMs"], 74);
     }
 
     #[test]

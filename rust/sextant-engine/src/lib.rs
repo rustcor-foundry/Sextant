@@ -1872,6 +1872,14 @@ mod servo_runtime {
         metadata.insert("fetched_at".to_string(), chrono::Utc::now().to_rfc3339());
         metadata.insert("final_url".to_string(), final_url.to_string());
         metadata.insert("source".to_string(), "servo-live-dom".to_string());
+        if let Some(timings) = object
+            .get("timings")
+            .and_then(|value| extract_object(value, "timings").ok())
+        {
+            if let Some(script_ms) = timings.get("scriptMs").and_then(extract_string) {
+                metadata.insert("live_dom_script_ms".to_string(), script_ms);
+            }
+        }
 
         Ok(DistilledPage {
             title,
@@ -1892,6 +1900,8 @@ mod servo_runtime {
             .ok_or_else(|| "Servo tab has no active URL to distill.".to_string())?;
         let script = r#"
 (() => {
+  const now = () => (window.performance && performance.now) ? performance.now() : Date.now();
+  const scriptStarted = now();
   const toText = (value) => typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : '';
   const headingNodes = Array.from(document.querySelectorAll('h1, h2, h3')).slice(0, 24);
   const linkNodes = Array.from(document.querySelectorAll('a[href]')).slice(0, 24);
@@ -1965,19 +1975,36 @@ mod servo_runtime {
     .map(node => toText(node.textContent || ''))
     .filter(Boolean)
     .join('\n');
+  const scriptElapsedMs = Math.max(0, Math.round(now() - scriptStarted));
 
   return {
     url: window.location.href,
     title: document.title || '',
     contentType: document.contentType || '',
     content: combined || toText(document.documentElement?.textContent || ''),
-    semanticMap
+    semanticMap,
+    timings: {
+      scriptMs: scriptElapsedMs
+    }
   };
 })()
 "#;
+        let eval_started = Instant::now();
         let snapshot =
             evaluate_javascript_sync(servo, &session.webview, script, NAVIGATION_TIMEOUT)?;
-        distilled_page_from_dom_snapshot(current_url, snapshot)
+        let eval_elapsed = eval_started.elapsed();
+        let parse_started = Instant::now();
+        let mut page = distilled_page_from_dom_snapshot(current_url, snapshot)?;
+        let parse_elapsed = parse_started.elapsed();
+        page.metadata.insert(
+            "live_dom_eval_ms".to_string(),
+            eval_elapsed.as_millis().to_string(),
+        );
+        page.metadata.insert(
+            "live_dom_parse_ms".to_string(),
+            parse_elapsed.as_millis().to_string(),
+        );
+        Ok(page)
     }
 
     #[cfg(target_os = "windows")]

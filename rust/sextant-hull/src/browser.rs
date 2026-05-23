@@ -6589,6 +6589,22 @@ fn push_perception_report(report: &mut Vec<String>, page: &sextant_engine::Disti
     {
         report.push(format!("perception source: {source}"));
     }
+    if let Some(eval_ms) = page.metadata.get("live_dom_eval_ms") {
+        let parse_ms = page
+            .metadata
+            .get("live_dom_parse_ms")
+            .map(String::as_str)
+            .unwrap_or("unknown");
+        let script_ms = page
+            .metadata
+            .get("live_dom_script_ms")
+            .map(String::as_str)
+            .unwrap_or("unknown");
+        report.push(format!(
+            "perception live-dom timing: eval={}ms parse={}ms script={}ms",
+            eval_ms, parse_ms, script_ms
+        ));
+    }
 }
 
 fn distill_operator_page(app: &mut BrowserApp) -> Result<sextant_engine::DistilledPage, String> {

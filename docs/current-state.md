@@ -187,6 +187,7 @@ The active native browser hull is intentionally plain, but it now has real brows
 - the visible browser now hints Servo's initial runtime viewport from the real browser viewport and returns the first real bridge frame with async navigation; the latest `https://example.com` visible smoke first-framed in about 520ms with bridge resize at 0ms and frame capture around 23ms
 - redirected Servo navigations no longer wait for the full exact-URL timeout; `https://www.rust-lang.org/` now accepts its `https://rust-lang.org/` final URL and visible smoke first-frames in about 1.3s instead of about 8.3s
 - MCP perf baselines now attach target URLs to structured timing samples; the latest four-target baseline shows max navigation around 925ms and identifies MDN live DOM distillation around 1.1s as the current slowest phase
+- live DOM perception timing now splits Servo evaluate wait, Rust parse, and in-page script work; the latest MDN probe showed about 1248ms waiting on Servo evaluation, about 10ms parsing in Rust, and only about 35ms inside the page script, so the next distillation performance work belongs in Servo evaluate/result scheduling rather than selector trimming
 - page perception reporting for distilled semantic maps in-window and through MCP
 - bounded `--window-smoke` mode for visible shell launch/draw checks before manual browsing
 - visible launch seeding with `--start "<url-search-or-intent>"` for demo/manual sessions
