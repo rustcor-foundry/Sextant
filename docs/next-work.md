@@ -266,6 +266,8 @@ Recent progress: redirected Servo navigations now count as successful URL progre
 
 Recent progress: live DOM distillation telemetry now splits the outer Servo JavaScript evaluation wait, Rust parse time, the in-page script's own runtime, and before/after Servo load status. A JSON-transport experiment and a main/article-scoped DOM walk did not produce a real speedup, so they were not kept as performance changes. The useful result is diagnostic: MDN probes kept full semantic coverage at 180 nodes and showed the script around 35-50ms while eval ranged roughly 711-1305ms, often starting at `HeadParsed` and ending at `Complete`. The bottleneck is Servo readiness/evaluate scheduling around page load, not the selector workload.
 
+Recent progress: the Servo service scheduler now lets pending live-DOM distillation yield to already-queued viewport input, matching the existing frame-capture yield behavior. This does not preempt a distillation once Servo has started evaluating it, but it keeps AI observation work from jumping ahead of user keystrokes, clicks, wheel, or pointer movement that are already waiting in the service queue.
+
 Recent progress: viewport wheel input now uses an enqueue-only Servo command and queues frame warmup instead of waiting for Servo acknowledgement or synchronously capturing a Servo frame inside the wheel handler. That keeps scroll input responsive while the event loop owns the next frame capture.
 
 Recent progress: viewport mouse/key/wheel input now uses a smaller interaction frame-warmup budget than page navigation and distillation. This keeps enough follow-up captures for visible feedback without rearming the full navigation warmup window on every input burst.

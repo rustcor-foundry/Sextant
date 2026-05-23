@@ -180,7 +180,9 @@ mod servo_runtime {
         fn can_yield_to_viewport_input(&self) -> bool {
             matches!(
                 self,
-                ServoCommand::CaptureFrame { .. } | ServoCommand::ResizeAndCaptureFrame { .. }
+                ServoCommand::DistillTab { .. }
+                    | ServoCommand::CaptureFrame { .. }
+                    | ServoCommand::ResizeAndCaptureFrame { .. }
             )
         }
     }
@@ -2096,6 +2098,11 @@ mod servo_runtime {
             ServoCommand::InspectTab { tab_id, reply_tx }
         }
 
+        fn distill_command(tab_id: Uuid) -> ServoCommand {
+            let (reply_tx, _reply_rx) = mpsc::channel();
+            ServoCommand::DistillTab { tab_id, reply_tx }
+        }
+
         fn key_text_command(tab_id: Uuid, text: &str) -> ServoCommand {
             let (reply_tx, _reply_rx) = mpsc::channel();
             ServoCommand::KeyCharacter {
@@ -2114,6 +2121,22 @@ mod servo_runtime {
                 y,
                 reply_tx,
             }
+        }
+
+        #[test]
+        fn service_scheduler_prioritizes_input_over_queued_distillation() {
+            let (command_tx, command_rx) = mpsc::channel();
+            let tab_id = Uuid::new_v4();
+            command_tx.send(distill_command(tab_id)).unwrap();
+            command_tx.send(key_text_command(tab_id, "a")).unwrap();
+            let mut pending_commands = VecDeque::new();
+
+            let command = next_servo_command(&command_rx, &mut pending_commands).unwrap();
+            assert!(matches!(command, ServoCommand::KeyCharacter { .. }));
+            assert_eq!(pending_commands.len(), 1);
+
+            let command = next_servo_command(&command_rx, &mut pending_commands).unwrap();
+            assert!(matches!(command, ServoCommand::DistillTab { .. }));
         }
 
         #[test]
