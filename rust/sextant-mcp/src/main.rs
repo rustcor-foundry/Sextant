@@ -2715,10 +2715,13 @@ fn perf_timing_sample(line: &str) -> Option<Value> {
 
 fn perf_line_target(line: &str, perf_index: usize) -> Value {
     let prefix = &line[..perf_index];
-    let Some((target, _)) = prefix.split_once(": [") else {
-        return Value::Null;
+    let target = if let Some((target, _)) = prefix.split_once(": [") {
+        target.trim()
+    } else if let Some((_, rest)) = prefix.split_once("] ") {
+        rest.trim().trim_end_matches(':').trim()
+    } else {
+        ""
     };
-    let target = target.trim();
     if target.is_empty() {
         Value::Null
     } else {
@@ -4093,9 +4096,10 @@ mod tests {
         let samples = perf_timing_samples(&[
             "[perf-probe] perf after navigation: nav 409ms | distill pending | wake pending | resize pending | frame pending".to_string(),
             "https://example.com: [perf-probe] perf after warm frame capture: nav 1.2s | distill 0ms | wake 8ms | resize 0ms | frame 25ms".to_string(),
+            "[perf-baseline] https://www.rust-lang.org/: perf after navigation: nav 1.0s | distill pending | wake pending | resize pending | frame pending".to_string(),
         ]);
 
-        assert_eq!(samples.len(), 2);
+        assert_eq!(samples.len(), 3);
         assert_eq!(samples[0]["label"], "after navigation");
         assert_eq!(samples[0]["navigationMs"], 409);
         assert!(samples[0]["distillMs"].is_null());
@@ -4106,6 +4110,8 @@ mod tests {
         assert_eq!(samples[1]["wakeMs"], 8);
         assert_eq!(samples[1]["resizeMs"], 0);
         assert_eq!(samples[1]["frameMs"], 25);
+        assert_eq!(samples[2]["target"], "https://www.rust-lang.org/");
+        assert_eq!(samples[2]["navigationMs"], 1000);
     }
 
     #[test]

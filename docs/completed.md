@@ -15,6 +15,10 @@ Audit trail of completed work sessions. Newest first.
 - Added an initial Servo viewport hint for the visible browser shell and taught Servo tab sessions to skip same-size resize requests, so a fresh Servo runtime can be born at the browser viewport size without using the rejected pre-size-navigation path
 - Folded the first bridge frame into the async navigation result, so the visible shell can apply the real Servo frame as soon as navigation completes and skip the extra first-frame capture worker
 - Confirmed `https://example.com` window smoke now first-frames through the bridge in about 520ms, with first shell draw around 22ms, navigation around 432ms, Servo navigation around 405ms, bridge resize at 0ms, and frame capture around 23ms
+- Fixed redirected Servo navigation waits so `https://www.rust-lang.org/` can complete when Servo lands on `https://rust-lang.org/` instead of burning the full 8-second exact-URL timeout
+- Confirmed Rust visible smoke dropped from about 8.3s first frame to about 1.3s, and `browser_perf_probe` reports Rust navigation around 1.2s with live DOM distillation still intact
+- Fixed MCP perf timing target parsing for `[perf-baseline] <url>: perf ...` lines so structured `perfTimings` and `perfSummary.slowestPhase.target` identify the page behind the slow phase
+- Re-ran the four-target `browser_perf_baseline`; max navigation is now about 925ms, frame capture stays under about 46ms, and the slowest phase shifted to MDN live DOM distillation at about 1.1s
 
 ---
 

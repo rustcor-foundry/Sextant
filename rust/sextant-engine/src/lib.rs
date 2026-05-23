@@ -1498,12 +1498,26 @@ mod servo_runtime {
         if previous_url.as_ref() != Some(&url) {
             session.webview.load(url.clone());
         }
-        let mut url_note = wait_for_url(servo, &session.webview, &url, NAVIGATION_TIMEOUT).err();
+        let mut url_note = wait_for_navigation_url(
+            servo,
+            &session.webview,
+            previous_url.as_ref(),
+            &url,
+            NAVIGATION_TIMEOUT,
+        )
+        .err();
         let mut final_url = session.webview.url().unwrap_or_else(|| url.clone());
 
         if previous_url.as_ref() != Some(&url) && Some(&final_url) == previous_url.as_ref() {
             session.webview.load(url.clone());
-            let retry_note = wait_for_url(servo, &session.webview, &url, NAVIGATION_TIMEOUT).err();
+            let retry_note = wait_for_navigation_url(
+                servo,
+                &session.webview,
+                previous_url.as_ref(),
+                &url,
+                NAVIGATION_TIMEOUT,
+            )
+            .err();
             final_url = session.webview.url().unwrap_or_else(|| url.clone());
             if Some(&final_url) == previous_url.as_ref() {
                 return Err(format!(
@@ -1627,15 +1641,27 @@ mod servo_runtime {
         })
     }
 
-    fn wait_for_url(
+    fn wait_for_navigation_url(
         servo: &mut Servo,
         webview: &WebView,
+        previous_url: Option<&Url>,
         expected_url: &Url,
         timeout: Duration,
     ) -> Result<(), String> {
         wait_for(servo, webview, timeout, |webview| {
-            webview.url().as_ref() == Some(expected_url)
+            navigation_url_ready(previous_url, expected_url, webview.url().as_ref())
         })
+    }
+
+    pub(super) fn navigation_url_ready(
+        previous_url: Option<&Url>,
+        expected_url: &Url,
+        current_url: Option<&Url>,
+    ) -> bool {
+        let Some(current_url) = current_url else {
+            return false;
+        };
+        current_url == expected_url || Some(current_url) != previous_url
     }
 
     fn wait_for_changed_url(
@@ -4465,6 +4491,35 @@ mod tests {
         assert_eq!(status.active_backend, EngineBackend::Servo);
         assert_eq!(active_tab.status.active_backend, EngineBackend::Servo);
         assert_eq!(active_tab.url.as_ref(), Some(&url));
+    }
+
+    #[cfg(feature = "servo-backend")]
+    #[test]
+    fn servo_navigation_url_wait_accepts_redirects_without_accepting_stale_url() {
+        let previous = Url::parse("https://old.example/").unwrap();
+        let requested = Url::parse("https://www.rust-lang.org/").unwrap();
+        let redirected = Url::parse("https://rust-lang.org/").unwrap();
+
+        assert!(servo_runtime::navigation_url_ready(
+            Some(&previous),
+            &requested,
+            Some(&requested)
+        ));
+        assert!(servo_runtime::navigation_url_ready(
+            Some(&previous),
+            &requested,
+            Some(&redirected)
+        ));
+        assert!(!servo_runtime::navigation_url_ready(
+            Some(&previous),
+            &requested,
+            Some(&previous)
+        ));
+        assert!(!servo_runtime::navigation_url_ready(
+            Some(&previous),
+            &requested,
+            None
+        ));
     }
 
     #[cfg(feature = "servo-backend")]
