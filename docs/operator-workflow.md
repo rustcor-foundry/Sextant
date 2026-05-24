@@ -10,9 +10,10 @@ Follow [next-work.md](next-work.md) as the active execution guide unless the tea
 
 1. [current-state.md](current-state.md)
 2. [next-work.md](next-work.md)
-3. [architecture.md](architecture.md)
-4. [development-guardrails.md](development-guardrails.md)
-5. [completed.md](completed.md)
+3. [performance-log.md](performance-log.md)
+4. [architecture.md](architecture.md)
+5. [development-guardrails.md](development-guardrails.md)
+6. [completed.md](completed.md)
 
 ## Normal Development Loop
 
@@ -145,6 +146,8 @@ The visible browser also has a `SHOWCASE` control in the main toolbar. Use it du
 `--perf-probe <url-or-search>` is the same timed page pass labeled for performance work, plus tiny before/after Servo eval probes and a second warm frame capture to separate first-capture resize cost from steady-state readback. `--perf-baseline` runs a small representative set of simple and heavier pages so normal browsing tuning has a repeatable baseline.
 
 `sextant-mcp --perf-probe <url-or-search>` and MCP tool `browser_perf_probe` expose the same timing path to Codex and Claude. Structured output keeps `perfSummary.slowestPhase` for the normal navigation/distill/Wake/resize/frame phases and adds `perfSummary.slowestObservedPhase` plus `maxEvalProbeMs` when diagnostic eval probes expose a slower Servo eval window. Use `browser_perf_baseline` for the built-in page set through MCP.
+
+Record meaningful before/after checkpoints in [performance-log.md](performance-log.md) when a performance change moves a visible smoke, perf probe, render-path baseline, or MCP timing field.
 
 `--operator-run <url-or-search>` adds a tiny scripted layer for native browser interaction. Supported steps are `--fill <selector> <value>`, `--click <selector>`, `--submit <selector>`, and `--expect <text>`.
 

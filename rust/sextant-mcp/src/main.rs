@@ -3206,6 +3206,8 @@ fn window_smoke_summary(report: &[String]) -> Value {
         "wakeMs": Value::Null,
         "resizeMs": Value::Null,
         "frameMs": Value::Null,
+        "frameTotalMs": Value::Null,
+        "frameQueueMs": Value::Null,
         "slowestPerfEvent": Value::Null,
         "slowPerfEvents": [],
         "latestFrameWidth": Value::Null,
@@ -3236,8 +3238,14 @@ fn window_smoke_summary(report: &[String]) -> Value {
             apply_window_draw_costs(&mut summary, value);
         } else if let Some(value) = line.strip_prefix("[window-smoke] slowest perf ") {
             summary["slowestPerfEvent"] = window_slowest_perf_event(value).unwrap_or(Value::Null);
+            let event = summary["slowestPerfEvent"].clone();
+            apply_window_perf_event_metrics(&mut summary, &event);
         } else if let Some(value) = line.strip_prefix("[window-smoke] slow perf ") {
-            summary["slowPerfEvents"] = Value::Array(window_perf_events(value));
+            let events = window_perf_events(value);
+            for event in &events {
+                apply_window_perf_event_metrics(&mut summary, event);
+            }
+            summary["slowPerfEvents"] = Value::Array(events);
         } else if let Some(value) = line.strip_prefix("[window-smoke] perf ") {
             apply_window_perf_summary(&mut summary, value);
         } else if let Some(frame) = window_latest_frame(line) {
@@ -3301,6 +3309,20 @@ fn apply_window_perf_summary(summary: &mut Value, value: &str) {
             _ => continue,
         };
         summary[key] = duration_token_to_value(duration);
+    }
+}
+
+fn apply_window_perf_event_metrics(summary: &mut Value, event: &Value) {
+    let Some(phase) = event.get("phase").and_then(Value::as_str) else {
+        return;
+    };
+    let Some(duration) = event.get("durationMs").cloned() else {
+        return;
+    };
+    match phase {
+        "frame-total" => summary["frameTotalMs"] = duration,
+        "frame-queue" => summary["frameQueueMs"] = duration,
+        _ => {}
     }
 }
 
@@ -4066,8 +4088,8 @@ mod tests {
             "[window-smoke] startup/navigation work 414ms".to_string(),
             "[window-smoke] draw cost total 30ms | frame blit 9ms | present 0ms".to_string(),
             "[window-smoke] perf nav 414ms | distill pending | wake pending | resize 390ms | frame 438ms".to_string(),
-            "[window-smoke] slowest perf frame 438ms | capture render bridge".to_string(),
-            "[window-smoke] slow perf frame 438ms capture render bridge | nav-phase 414ms open servo navigation | resize 390ms viewport render bridge async".to_string(),
+            "[window-smoke] slowest perf frame-total 472ms | capture render bridge".to_string(),
+            "[window-smoke] slow perf frame-total 472ms capture render bridge | frame 438ms capture render bridge | frame-queue 34ms capture queue render bridge | nav-phase 414ms open servo navigation | resize 390ms viewport render bridge async".to_string(),
             "[window-smoke] latest Servo frame 776x292 (226592 pixels)".to_string(),
             "[window-smoke] first Servo frame in 950ms".to_string(),
         ];
@@ -4094,15 +4116,17 @@ mod tests {
         assert_eq!(summary["presentMs"], Value::from(0));
         assert_eq!(summary["navigationMs"], Value::from(414));
         assert_eq!(summary["distillMs"], Value::Null);
-        assert_eq!(summary["slowestPerfEvent"]["phase"], "frame");
-        assert_eq!(summary["slowestPerfEvent"]["durationMs"], Value::from(438));
+        assert_eq!(summary["slowestPerfEvent"]["phase"], "frame-total");
+        assert_eq!(summary["slowestPerfEvent"]["durationMs"], Value::from(472));
         assert_eq!(
             summary["slowestPerfEvent"]["label"],
             "capture render bridge"
         );
-        assert_eq!(summary["slowPerfEvents"][1]["phase"], "nav-phase");
+        assert_eq!(summary["frameTotalMs"], Value::from(472));
+        assert_eq!(summary["frameQueueMs"], Value::from(34));
+        assert_eq!(summary["slowPerfEvents"][3]["phase"], "nav-phase");
         assert_eq!(
-            summary["slowPerfEvents"][1]["label"],
+            summary["slowPerfEvents"][3]["label"],
             "open servo navigation"
         );
         assert_eq!(summary["latestFrameWidth"], Value::from(776));
