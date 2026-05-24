@@ -63,9 +63,9 @@ const GLYPH_W: u32 = 5;
 const GLYPH_GAP: u32 = 2;
 const FRAME_REFRESH_IDLE: Duration = Duration::from_millis(1500);
 const FRAME_REFRESH_DIRTY: Duration = Duration::from_millis(250);
-const FRAME_REFRESH_INTERACTION: Duration = Duration::from_millis(32);
+const FRAME_REFRESH_INTERACTION: Duration = Duration::from_millis(48);
 const FRAME_WARMUP_BUDGET: u8 = 6;
-const FRAME_INTERACTION_WARMUP_BUDGET: u8 = 4;
+const FRAME_INTERACTION_WARMUP_BUDGET: u8 = 2;
 const VIEWPORT_MOUSE_MOVE_MIN_INTERVAL: Duration = Duration::from_millis(33);
 const VIEWPORT_MOUSE_MOVE_MIN_DISTANCE_PX: f32 = 2.0;
 const VIEWPORT_TEXT_INPUT_DEBOUNCE: Duration = Duration::ZERO;
@@ -1761,8 +1761,10 @@ impl BrowserApp {
             self.focus = FocusTarget::Address;
             return;
         }
-        if self.wake_rect.contains(x, y) {
+        if self.wake_input_hit_rect().contains(x, y) {
             self.focus = FocusTarget::Wake;
+            self.last_status = "Wake search focused.".to_string();
+            self.last_ok = true;
             return;
         }
         if let Some(mode) = self
@@ -1848,6 +1850,15 @@ impl BrowserApp {
         }
 
         self.run_action(action);
+    }
+
+    fn wake_input_hit_rect(&self) -> Rect {
+        Rect {
+            x: self.wake_rect.x,
+            y: self.wake_rect.y.saturating_sub(24),
+            w: self.wake_rect.w,
+            h: self.wake_rect.h.saturating_add(24),
+        }
     }
 
     fn switch_to_page_tab(&mut self, tab_id: Uuid) {
@@ -7602,6 +7613,25 @@ mod tests {
     #[test]
     fn builds_window_icon_for_visible_browser() {
         assert!(sextant_window_icon().is_some());
+    }
+
+    #[test]
+    fn wake_search_label_and_field_focus_input() -> Result<(), String> {
+        let data_dir =
+            env::temp_dir().join(format!("sextant-browser-wake-focus-{}", Uuid::new_v4()));
+        let mut app = BrowserApp::new_with_data_dir(data_dir.clone())?;
+        app.layout(PhysicalSize::new(1180, 760));
+        app.wake_query.clear();
+
+        let hit = app.wake_input_hit_rect();
+        app.click((hit.x + 8) as f64, (hit.y + 8) as f64);
+        assert!(matches!(app.focus, FocusTarget::Wake));
+        app.focused_text_mut().push_str("local ai");
+        assert_eq!(app.wake_query, "local ai");
+        assert!(app.last_status.contains("Wake search focused"));
+
+        let _ = std::fs::remove_dir_all(data_dir);
+        Ok(())
     }
 
     #[test]
