@@ -69,6 +69,8 @@ const FRAME_INTERACTION_WARMUP_BUDGET: u8 = 2;
 const VIEWPORT_MOUSE_MOVE_MIN_INTERVAL: Duration = Duration::from_millis(33);
 const VIEWPORT_MOUSE_MOVE_MIN_DISTANCE_PX: f32 = 2.0;
 const VIEWPORT_TEXT_INPUT_DEBOUNCE: Duration = Duration::ZERO;
+const VIEWPORT_INPUT_CAPTURE_SETTLE: Duration = Duration::from_millis(24);
+const WINDOW_INPUT_SMOKE_FRAME_SETTLE: Duration = Duration::from_millis(64);
 const OBSERVATION_WARMUP_IDLE_DELAY: Duration = Duration::from_millis(150);
 const PERF_HISTORY_LIMIT: usize = 24;
 const OPERATOR_DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
@@ -322,6 +324,7 @@ struct WindowSmokeSpec {
     target: Option<String>,
     timeout: Duration,
     user_distill: bool,
+    input_latency: bool,
 }
 
 #[derive(Clone)]
@@ -1053,6 +1056,7 @@ struct BrowserApp {
     last_browser_text_input: Option<Instant>,
     pending_viewport_input_tab: Option<Uuid>,
     pending_viewport_input: VecDeque<ViewportInputEvent>,
+    last_viewport_input_flush: Option<Instant>,
     frame_dirty: bool,
     frame_refresh_budget: u8,
     validation: ValidationState,
@@ -1218,6 +1222,7 @@ impl BrowserApp {
             last_browser_text_input: None,
             pending_viewport_input_tab: None,
             pending_viewport_input: VecDeque::new(),
+            last_viewport_input_flush: None,
             frame_dirty: false,
             frame_refresh_budget: 0,
             validation: ValidationState::default(),
@@ -1982,7 +1987,6 @@ impl BrowserApp {
         });
         if moved || clicked {
             self.validation.browser_input_seen = true;
-            self.begin_interaction_frame_warmup();
         }
         true
     }
@@ -2045,7 +2049,6 @@ impl BrowserApp {
                     self.flush_pending_browser_text();
                     if self.queue_viewport_input(ViewportInputEvent::KeyNamed { key, pressed }) {
                         self.validation.browser_input_seen = true;
-                        self.begin_interaction_frame_warmup();
                     }
                 }
             }
@@ -2064,7 +2067,6 @@ impl BrowserApp {
         self.pending_browser_text.push_str(value);
         self.last_browser_text_input = Some(Instant::now());
         self.validation.browser_input_seen = true;
-        self.begin_interaction_frame_warmup();
     }
 
     fn pending_browser_text_due(&self) -> Option<Instant> {
@@ -2102,13 +2104,6 @@ impl BrowserApp {
             return false;
         }
         self.validation.browser_input_seen = true;
-        self.frame_refresh_budget = self
-            .frame_refresh_budget
-            .max(FRAME_INTERACTION_WARMUP_BUDGET);
-        self.last_frame_refresh = Instant::now()
-            .checked_sub(FRAME_REFRESH_INTERACTION)
-            .unwrap_or_else(Instant::now);
-        self.frame_dirty = true;
         true
     }
 
@@ -2196,6 +2191,7 @@ impl BrowserApp {
             self.clear_viewport_input_lane();
             return false;
         }
+        let started = Instant::now();
         let mut flushed = false;
         while let Some(event) = self.pending_viewport_input.pop_front() {
             let result = match event {
@@ -2224,6 +2220,10 @@ impl BrowserApp {
             }
         }
         self.pending_viewport_input_tab = None;
+        if flushed {
+            self.last_viewport_input_flush = Some(Instant::now());
+            self.record_perf("input", started.elapsed(), "viewport enqueue");
+        }
         flushed
     }
 
@@ -2279,7 +2279,6 @@ impl BrowserApp {
             })
         {
             self.validation.browser_input_seen = true;
-            self.begin_interaction_frame_warmup();
             return;
         }
         self.page_scroll = (self.page_scroll - delta_y as i32).clamp(0, 4000);
@@ -4553,6 +4552,14 @@ impl BrowserApp {
             return false;
         }
 
+        if self
+            .last_viewport_input_flush
+            .map(|flushed| flushed.elapsed() < VIEWPORT_INPUT_CAPTURE_SETTLE)
+            .unwrap_or(false)
+        {
+            return false;
+        }
+
         let elapsed = self.last_frame_refresh.elapsed();
         let due = if self.frame_refresh_budget > 0 {
             elapsed >= FRAME_REFRESH_INTERACTION
@@ -5107,6 +5114,8 @@ fn run_visible_app(
         }
         if let Some(target) = smoke.target.as_ref() {
             pending_start_inputs.push(("window-smoke", target.clone()));
+        } else if smoke.input_latency {
+            pending_start_inputs.push(("window-smoke", input_latency_fixture_url()));
         }
     }
 
@@ -5125,18 +5134,34 @@ fn run_visible_app(
             || window_smoke
                 .as_ref()
                 .and_then(|spec| spec.target.as_ref())
-                .is_some());
+                .is_some()
+            || window_smoke
+                .as_ref()
+                .map(|spec| spec.input_latency)
+                .unwrap_or(false));
     let smoke_error = Arc::new(Mutex::new(None::<String>));
     let smoke_error_for_loop = smoke_error.clone();
     let smoke_started = visible_started;
     let mut smoke_first_draw: Option<Duration> = None;
     let mut smoke_first_frame: Option<Duration> = None;
+    let mut smoke_first_frame_seen_at: Option<Instant> = None;
     let smoke_requires_user_distill = window_smoke
         .as_ref()
         .map(|spec| spec.user_distill)
         .unwrap_or(false);
+    let smoke_requires_input_latency = cfg!(feature = "servo-backend")
+        && window_smoke
+            .as_ref()
+            .map(|spec| spec.input_latency)
+            .unwrap_or(false);
+    let smoke_input_uses_fixture = window_smoke
+        .as_ref()
+        .map(|spec| spec.input_latency && spec.target.is_none())
+        .unwrap_or(false);
     let mut smoke_user_distill_enqueued = false;
     let mut smoke_user_distill_done = false;
+    let mut smoke_input_started: Option<Instant> = None;
+    let mut smoke_input_done = false;
     let mut visible_first_draw_seen = false;
 
     let event_loop_result = event_loop
@@ -5203,6 +5228,10 @@ fn run_visible_app(
                                 }
                                 if app.latest_frame.is_some() && smoke_first_frame.is_none() {
                                     smoke_first_frame = Some(smoke_started.elapsed());
+                                    smoke_first_frame_seen_at = Some(Instant::now());
+                                }
+                                if smoke_requires_input_latency && !smoke_input_done {
+                                    return;
                                 }
                                 println!(
                                     "[window-smoke] visible shell draw passed in {}",
@@ -5410,6 +5439,48 @@ fn run_visible_app(
                     }
                 }
 
+                if smoke_requires_input_latency
+                    && smoke_first_frame.is_some()
+                    && smoke_first_frame_seen_at
+                        .map(|seen| seen.elapsed() >= WINDOW_INPUT_SMOKE_FRAME_SETTLE)
+                        .unwrap_or(false)
+                    && smoke_input_started.is_none()
+                    && !smoke_input_done
+                    && app.pending_navigation.is_none()
+                    && app.pending_frame_capture.is_none()
+                    && app.pending_distillation.is_none()
+                    && app.pending_persistence.is_none()
+                    && app.pending_wake_search.is_none()
+                {
+                    let started = Instant::now();
+                    let clicked = if smoke_input_uses_fixture {
+                        true
+                    } else {
+                        let (x, y) = rect_center(app.browser_viewport_rect);
+                        app.handle_mouse_input(x, y, ElementState::Pressed)
+                            && app.handle_mouse_input(x, y, ElementState::Released)
+                    };
+                    app.queue_browser_text("sextant input smoke");
+                    let text_flushed = app.flush_pending_browser_text();
+                    let input_flushed = app.flush_viewport_input_lane();
+                    if !clicked || !text_flushed || !input_flushed {
+                        let error = "window input latency smoke failed to enqueue viewport input";
+                        eprintln!("[window-smoke] {error}");
+                        if let Ok(mut smoke_error) = smoke_error_for_loop.lock() {
+                            *smoke_error = Some(error.to_string());
+                        }
+                        app.cleanup_incognito_storage();
+                        elwt.exit();
+                        return;
+                    }
+                    println!(
+                        "[window-smoke] input enqueue {}",
+                        format_duration(started.elapsed())
+                    );
+                    smoke_input_started = Some(Instant::now());
+                    window.request_redraw();
+                }
+
                 let mut input_flushed = false;
                 if app.flush_pending_browser_text_if_due() {
                     input_flushed = true;
@@ -5542,6 +5613,15 @@ fn run_visible_app(
                     window.request_redraw();
                 }
                 if app.collect_pending_frame_capture() {
+                    if let Some(started) = smoke_input_started {
+                        if smoke_requires_input_latency && !smoke_input_done {
+                            smoke_input_done = true;
+                            println!(
+                                "[window-smoke] input frame {}",
+                                format_duration(started.elapsed())
+                            );
+                        }
+                    }
                     window.request_redraw();
                 }
                 if app.maybe_refresh_frame() {
@@ -5550,7 +5630,16 @@ fn run_visible_app(
                 if app.maybe_start_scheduled_observation_warmup() {
                     window.request_redraw();
                 }
-                if app.pending_frame_capture.is_some() {
+                if smoke_requires_input_latency
+                    && smoke_input_started.is_none()
+                    && !smoke_input_done
+                    && smoke_first_frame_seen_at.is_some()
+                {
+                    let wake_at = smoke_first_frame_seen_at
+                        .and_then(|seen| seen.checked_add(WINDOW_INPUT_SMOKE_FRAME_SETTLE))
+                        .unwrap_or_else(Instant::now);
+                    elwt.set_control_flow(ControlFlow::WaitUntil(wake_at));
+                } else if app.pending_frame_capture.is_some() {
                     elwt.set_control_flow(ControlFlow::WaitUntil(
                         Instant::now() + Duration::from_millis(16),
                     ));
@@ -7041,11 +7130,23 @@ fn parse_window_smoke(args: &[String]) -> Result<Option<WindowSmokeSpec>, String
     let user_distill = args
         .iter()
         .any(|arg| arg == "--window-smoke-distill" || arg == "--user-distill");
+    let input_latency = args
+        .iter()
+        .any(|arg| arg == "--window-input-smoke" || arg == "--input-latency-smoke");
     Ok(Some(WindowSmokeSpec {
         target,
         timeout,
         user_distill,
+        input_latency,
     }))
+}
+
+fn input_latency_fixture_url() -> String {
+    let html = "<!doctype html><meta charset='utf-8'><title>Sextant Input Smoke</title>\
+<body style='margin:0;background:#10161d;color:white;font:20px sans-serif;display:grid;place-items:center;height:100vh'>\
+<input id='q' autofocus style='font:24px sans-serif;width:70vw;padding:18px' value=''></body>";
+    let encoded: String = url::form_urlencoded::byte_serialize(html.as_bytes()).collect();
+    format!("data:text/html,{}", encoded)
 }
 
 fn parse_browser_mode_arg(args: &[String]) -> Result<BrowserMode, String> {
@@ -8555,6 +8656,8 @@ mod tests {
 
         assert_eq!(app.pending_browser_text, "ab");
         assert_eq!(app.pending_browser_text_tab, Some(active_tab));
+        assert_eq!(app.frame_refresh_budget, 0);
+        assert!(!app.frame_dirty);
         assert!(app.pending_browser_text_due().is_some());
         assert!(app.flush_pending_browser_text_if_due());
         assert!(app.pending_browser_text.is_empty());
@@ -8563,6 +8666,8 @@ mod tests {
             app.pending_viewport_input.back(),
             Some(ViewportInputEvent::Text { text }) if text == "ab"
         ));
+        assert_eq!(app.frame_refresh_budget, FRAME_INTERACTION_WARMUP_BUDGET);
+        assert!(app.frame_dirty);
 
         let _ = std::fs::remove_dir_all(data_dir);
         Ok(())
@@ -8657,6 +8762,30 @@ mod tests {
         assert!(!app.flush_viewport_input_lane());
         assert!(app.pending_viewport_input.is_empty());
         assert!(app.pending_viewport_input_tab.is_none());
+
+        let _ = std::fs::remove_dir_all(data_dir);
+        Ok(())
+    }
+
+    #[test]
+    fn frame_refresh_waits_for_recent_viewport_input_flush() -> Result<(), String> {
+        let data_dir = env::temp_dir().join(format!(
+            "sextant-browser-frame-refresh-input-settle-{}",
+            Uuid::new_v4()
+        ));
+        let mut app = BrowserApp::new_with_data_dir(data_dir.clone())?;
+        app.latest_frame = Some(RenderedFrame {
+            width: 10,
+            height: 10,
+            pixels: vec![0; 100],
+        });
+        app.frame_refresh_budget = 1;
+        app.frame_dirty = true;
+        app.last_frame_refresh = Instant::now() - FRAME_REFRESH_INTERACTION;
+        app.last_viewport_input_flush = Some(Instant::now());
+
+        assert!(!app.maybe_refresh_frame());
+        assert!(app.pending_frame_capture.is_none());
 
         let _ = std::fs::remove_dir_all(data_dir);
         Ok(())
@@ -8943,6 +9072,7 @@ mod tests {
             "--window-smoke".to_string(),
             "https://example.com".to_string(),
             "--window-smoke-distill".to_string(),
+            "--window-input-smoke".to_string(),
             "--window-smoke-timeout".to_string(),
             "30".to_string(),
         ];
@@ -8951,6 +9081,8 @@ mod tests {
         assert_eq!(spec.target.as_deref(), Some("https://example.com"));
         assert_eq!(spec.timeout, Duration::from_secs(30));
         assert!(spec.user_distill);
+        assert!(spec.input_latency);
+        assert!(input_latency_fixture_url().starts_with("data:text/html,"));
     }
 
     #[test]

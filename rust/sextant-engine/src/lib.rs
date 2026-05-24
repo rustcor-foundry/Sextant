@@ -196,7 +196,8 @@ mod servo_runtime {
         fn can_yield_to_viewport_input(&self) -> bool {
             matches!(
                 self,
-                ServoCommand::DistillTab { .. }
+                ServoCommand::InspectTab { .. }
+                    | ServoCommand::DistillTab { .. }
                     | ServoCommand::EvalProbeTab { .. }
                     | ServoCommand::CaptureFrame { .. }
                     | ServoCommand::ResizeAndCaptureFrame { .. }
@@ -2409,7 +2410,7 @@ mod servo_runtime {
         }
 
         #[test]
-        fn service_scheduler_keeps_non_render_work_ahead_of_input() {
+        fn service_scheduler_prioritizes_input_over_queued_capture_and_inspect() {
             let (command_tx, command_rx) = mpsc::channel();
             let tab_id = Uuid::new_v4();
             command_tx.send(capture_command(tab_id)).unwrap();
@@ -2418,13 +2419,13 @@ mod servo_runtime {
             let mut pending_commands = VecDeque::new();
 
             let command = next_servo_command(&command_rx, &mut pending_commands).unwrap();
+            assert!(matches!(command, ServoCommand::KeyCharacter { .. }));
+
+            let command = next_servo_command(&command_rx, &mut pending_commands).unwrap();
             assert!(matches!(command, ServoCommand::CaptureFrame { .. }));
 
             let command = next_servo_command(&command_rx, &mut pending_commands).unwrap();
             assert!(matches!(command, ServoCommand::InspectTab { .. }));
-
-            let command = next_servo_command(&command_rx, &mut pending_commands).unwrap();
-            assert!(matches!(command, ServoCommand::KeyCharacter { .. }));
         }
 
         #[test]

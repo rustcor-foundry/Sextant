@@ -682,6 +682,10 @@ fn tools() -> Value {
                         "type": "boolean",
                         "description": "When true, queue a user-visible DISTILL action through the event-loop async path before the draw check exits."
                     },
+                    "input_latency": {
+                        "type": "boolean",
+                        "description": "When true, after first frame, focus the browser viewport, type through the visible input lane, wait for the follow-up bridge frame, and report input timings."
+                    },
                     "mode": browser_mode_property(),
                     "render_path": render_path_property(),
                     "pre_size_navigation": {
@@ -1581,6 +1585,12 @@ fn browser_window_smoke_cli_arguments(args: &[String]) -> Result<Option<Value>, 
     }
     if args
         .iter()
+        .any(|arg| arg == "--input-latency" || arg == "--window-input-smoke")
+    {
+        arguments["input_latency"] = Value::Bool(true);
+    }
+    if args
+        .iter()
         .any(|arg| arg == "--pre-size-navigation" || arg == "--pre-size-visible-navigation")
     {
         arguments["pre_size_navigation"] = Value::Bool(true);
@@ -1969,6 +1979,13 @@ fn run_browser_window_smoke_tool(arguments: Value) -> Result<Value, String> {
         .unwrap_or(false)
     {
         full_args.push("--window-smoke-distill".to_string());
+    }
+    if arguments
+        .get("input_latency")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        full_args.push("--window-input-smoke".to_string());
     }
     if arguments
         .get("pre_size_navigation")
@@ -3210,6 +3227,8 @@ fn window_smoke_summary(report: &[String]) -> Value {
         "frameMs": Value::Null,
         "frameTotalMs": Value::Null,
         "frameQueueMs": Value::Null,
+        "inputEnqueueMs": Value::Null,
+        "inputFrameMs": Value::Null,
         "slowestPerfEvent": Value::Null,
         "slowPerfEvents": [],
         "latestFrameWidth": Value::Null,
@@ -3238,6 +3257,10 @@ fn window_smoke_summary(report: &[String]) -> Value {
             summary["startupWorkMs"] = duration_token_to_value(value.trim());
         } else if let Some(value) = line.split("draw cost total ").nth(1) {
             apply_window_draw_costs(&mut summary, value);
+        } else if let Some(value) = line.split("input enqueue ").nth(1) {
+            summary["inputEnqueueMs"] = duration_token_to_value(value.trim());
+        } else if let Some(value) = line.split("input frame ").nth(1) {
+            summary["inputFrameMs"] = duration_token_to_value(value.trim());
         } else if let Some(value) = line.strip_prefix("[window-smoke] slowest perf ") {
             summary["slowestPerfEvent"] = window_slowest_perf_event(value).unwrap_or(Value::Null);
             let event = summary["slowestPerfEvent"].clone();
@@ -3757,6 +3780,10 @@ mod tests {
             window_smoke["inputSchema"]["properties"]["render_path"]["enum"][0],
             "bridge"
         );
+        assert_eq!(
+            window_smoke["inputSchema"]["properties"]["input_latency"]["type"],
+            "boolean"
+        );
     }
 
     #[test]
@@ -4098,6 +4125,8 @@ mod tests {
             "[window-smoke] visible shell draw passed in 38ms".to_string(),
             "[window-smoke] startup/navigation work 414ms".to_string(),
             "[window-smoke] draw cost total 30ms | frame blit 9ms | present 0ms".to_string(),
+            "[window-smoke] input enqueue 1ms".to_string(),
+            "[window-smoke] input frame 64ms".to_string(),
             "[window-smoke] perf nav 414ms | distill pending | wake pending | resize 390ms | frame 438ms".to_string(),
             "[window-smoke] slowest perf frame-total 472ms | capture render bridge".to_string(),
             "[window-smoke] slow perf frame-total 472ms capture render bridge | frame 438ms capture render bridge | frame-queue 34ms capture queue render bridge | nav-phase 414ms open servo navigation | nav-phase 275ms open servo url wait | nav-phase 250ms open servo load wait | resize 390ms viewport render bridge async".to_string(),
@@ -4125,6 +4154,8 @@ mod tests {
         assert_eq!(summary["drawTotalMs"], Value::from(30));
         assert_eq!(summary["frameBlitMs"], Value::from(9));
         assert_eq!(summary["presentMs"], Value::from(0));
+        assert_eq!(summary["inputEnqueueMs"], Value::from(1));
+        assert_eq!(summary["inputFrameMs"], Value::from(64));
         assert_eq!(summary["navigationMs"], Value::from(414));
         assert_eq!(summary["distillMs"], Value::Null);
         assert_eq!(summary["slowestPerfEvent"]["phase"], "frame-total");
