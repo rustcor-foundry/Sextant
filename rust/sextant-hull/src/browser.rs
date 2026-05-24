@@ -67,6 +67,7 @@ const FRAME_INTERACTION_WARMUP_BUDGET: u8 = 1;
 const VIEWPORT_MOUSE_MOVE_MIN_INTERVAL: Duration = Duration::from_millis(33);
 const VIEWPORT_MOUSE_MOVE_MIN_DISTANCE_PX: f32 = 2.0;
 const VIEWPORT_TEXT_INPUT_DEBOUNCE: Duration = Duration::from_millis(25);
+const OBSERVATION_WARMUP_IDLE_DELAY: Duration = Duration::from_millis(150);
 const PERF_HISTORY_LIMIT: usize = 24;
 const OPERATOR_DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
 const WINDOW_SMOKE_DEFAULT_TIMEOUT: Duration = Duration::from_secs(15);
@@ -490,6 +491,11 @@ struct PendingObservationWarmup {
     tab_id: Uuid,
     result_rx: mpsc::Receiver<Result<BrowserEvalProbe, String>>,
     started: Instant,
+}
+
+struct ScheduledObservationWarmup {
+    tab_id: Uuid,
+    due: Instant,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -984,6 +990,7 @@ struct BrowserApp {
     pending_user_navigation: Option<String>,
     pending_user_action: Option<Action>,
     pending_navigation: Option<PendingNavigation>,
+    scheduled_observation_warmup: Option<ScheduledObservationWarmup>,
     pending_observation_warmup: Option<PendingObservationWarmup>,
     pending_distillation: Option<PendingDistillation>,
     pending_persistence: Option<PendingPersistence>,
@@ -1077,6 +1084,7 @@ impl BrowserApp {
             pending_user_navigation: None,
             pending_user_action: None,
             pending_navigation: None,
+            scheduled_observation_warmup: None,
             pending_observation_warmup: None,
             pending_distillation: None,
             pending_persistence: None,
@@ -1316,6 +1324,7 @@ impl BrowserApp {
             self.wake_results.clear();
             self.recent_logs.clear();
             self.pending_user_action = None;
+            self.scheduled_observation_warmup = None;
             self.pending_observation_warmup = None;
             self.pending_distillation = None;
             self.pending_persistence = None;
@@ -3034,7 +3043,7 @@ impl BrowserApp {
                         self.validation.navigation_seen = true;
                         self.begin_frame_warmup();
                         if self.apply_initial_navigation_frame(initial_frame) {
-                            self.start_observation_warmup_if_allowed();
+                            self.schedule_observation_warmup_if_allowed();
                         } else {
                             self.start_frame_capture_for(FrameCapturePurpose::RenderBridge);
                         }
@@ -3079,9 +3088,10 @@ impl BrowserApp {
         }
     }
 
-    fn start_observation_warmup_if_allowed(&mut self) -> bool {
+    fn schedule_observation_warmup_if_allowed(&mut self) -> bool {
         if !self.observation_warmup_enabled
             || !self.capabilities().ai_observe_dom
+            || self.scheduled_observation_warmup.is_some()
             || self.pending_observation_warmup.is_some()
         {
             return false;
@@ -3089,6 +3099,59 @@ impl BrowserApp {
         let Some(tab_id) = self.active_tab().map(|tab| tab.id) else {
             return false;
         };
+        self.scheduled_observation_warmup = Some(ScheduledObservationWarmup {
+            tab_id,
+            due: Instant::now() + OBSERVATION_WARMUP_IDLE_DELAY,
+        });
+        true
+    }
+
+    fn maybe_start_scheduled_observation_warmup(&mut self) -> bool {
+        let Some(scheduled) = self.scheduled_observation_warmup.as_ref() else {
+            return false;
+        };
+        if Instant::now() < scheduled.due {
+            return false;
+        }
+        if self.observation_warmup_has_foreground_work() {
+            return false;
+        }
+        let tab_id = scheduled.tab_id;
+        if self.active_tab().map(|tab| tab.id) != Some(tab_id) {
+            self.scheduled_observation_warmup = None;
+            return false;
+        }
+        self.scheduled_observation_warmup = None;
+        self.start_observation_warmup_for(tab_id)
+    }
+
+    fn observation_warmup_has_foreground_work(&self) -> bool {
+        self.pending_user_navigation.is_some()
+            || self.pending_user_action.is_some()
+            || self.pending_navigation.is_some()
+            || self.pending_distillation.is_some()
+            || self.pending_persistence.is_some()
+            || self.pending_wake_search.is_some()
+            || self.pending_frame_capture.is_some()
+            || !self.pending_log_writes.is_empty()
+            || self.pending_log_refresh.is_some()
+            || !self.pending_viewport_input.is_empty()
+            || !self.pending_browser_text.is_empty()
+    }
+
+    fn scheduled_observation_warmup_due(&self) -> Option<Instant> {
+        self.scheduled_observation_warmup
+            .as_ref()
+            .map(|scheduled| scheduled.due)
+    }
+
+    fn start_observation_warmup_for(&mut self, tab_id: Uuid) -> bool {
+        if !self.observation_warmup_enabled
+            || !self.capabilities().ai_observe_dom
+            || self.pending_observation_warmup.is_some()
+        {
+            return false;
+        }
         match self.engine.eval_probe_tab_async(tab_id) {
             Ok(result_rx) => {
                 self.pending_observation_warmup = Some(PendingObservationWarmup {
@@ -5413,6 +5476,9 @@ fn run_visible_app(
                 if app.maybe_refresh_frame() {
                     window.request_redraw();
                 }
+                if app.maybe_start_scheduled_observation_warmup() {
+                    window.request_redraw();
+                }
                 if app.pending_frame_capture.is_some() {
                     elwt.set_control_flow(ControlFlow::WaitUntil(
                         Instant::now() + Duration::from_millis(16),
@@ -5451,6 +5517,8 @@ fn run_visible_app(
                     elwt.set_control_flow(ControlFlow::WaitUntil(
                         Instant::now() + Duration::from_millis(16),
                     ));
+                } else if let Some(due) = app.scheduled_observation_warmup_due() {
+                    elwt.set_control_flow(ControlFlow::WaitUntil(due));
                 } else if app.main_view == MainView::Browser
                     && (app.latest_frame.is_some() || app.frame_refresh_budget > 0)
                 {
@@ -8068,10 +8136,43 @@ mod tests {
             Uuid::new_v4()
         ));
         let mut app = BrowserApp::new_with_data_dir(data_dir.clone())?;
+        app.new_tab();
         app.observation_warmup_enabled = true;
-        app.set_browser_mode(BrowserMode::Direct);
+        app.set_browser_mode(BrowserMode::Assisted);
+        assert!(app.schedule_observation_warmup_if_allowed());
+        assert!(app.scheduled_observation_warmup.is_some());
 
-        assert!(!app.start_observation_warmup_if_allowed());
+        app.set_browser_mode(BrowserMode::Direct);
+        assert!(app.scheduled_observation_warmup.is_none());
+
+        assert!(!app.schedule_observation_warmup_if_allowed());
+        assert!(app.scheduled_observation_warmup.is_none());
+        assert!(app.pending_observation_warmup.is_none());
+
+        let _ = std::fs::remove_dir_all(data_dir);
+        Ok(())
+    }
+
+    #[test]
+    fn observation_warmup_waits_for_foreground_work() -> Result<(), String> {
+        let data_dir = env::temp_dir().join(format!(
+            "sextant-browser-observation-warmup-idle-{}",
+            Uuid::new_v4()
+        ));
+        let mut app = BrowserApp::new_with_data_dir(data_dir.clone())?;
+        app.new_tab();
+        app.observation_warmup_enabled = true;
+        app.set_browser_mode(BrowserMode::Assisted);
+
+        assert!(app.schedule_observation_warmup_if_allowed());
+        app.scheduled_observation_warmup
+            .as_mut()
+            .expect("scheduled warmup")
+            .due = Instant::now() - Duration::from_millis(1);
+        app.pending_browser_text = "typing".to_string();
+
+        assert!(!app.maybe_start_scheduled_observation_warmup());
+        assert!(app.scheduled_observation_warmup.is_some());
         assert!(app.pending_observation_warmup.is_none());
 
         let _ = std::fs::remove_dir_all(data_dir);

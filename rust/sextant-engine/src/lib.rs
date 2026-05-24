@@ -183,6 +183,10 @@ mod servo_runtime {
             )
         }
 
+        fn is_background_eval_probe(&self) -> bool {
+            matches!(self, ServoCommand::EvalProbeTab { .. })
+        }
+
         fn can_yield_to_viewport_input(&self) -> bool {
             matches!(
                 self,
@@ -844,7 +848,7 @@ mod servo_runtime {
             pending_commands.push_back(command);
         }
 
-        if let Some(index) = prioritized_viewport_input_index(pending_commands) {
+        if let Some(index) = prioritized_command_index(pending_commands) {
             return Ok(pending_commands
                 .remove(index)
                 .expect("pending command index disappeared"));
@@ -855,9 +859,7 @@ mod servo_runtime {
             .expect("pending command queue was unexpectedly empty"))
     }
 
-    fn prioritized_viewport_input_index(
-        pending_commands: &VecDeque<ServoCommand>,
-    ) -> Option<usize> {
+    fn prioritized_command_index(pending_commands: &VecDeque<ServoCommand>) -> Option<usize> {
         let first = pending_commands.front()?;
         if first.is_viewport_input() {
             return Some(0);
@@ -871,7 +873,15 @@ mod servo_runtime {
                 return Some(index);
             }
             if !command.can_yield_to_viewport_input() {
-                return None;
+                break;
+            }
+        }
+
+        if first.is_background_eval_probe() {
+            for (index, command) in pending_commands.iter().enumerate().skip(1) {
+                if !command.is_background_eval_probe() {
+                    return Some(index);
+                }
             }
         }
 
@@ -2259,6 +2269,38 @@ mod servo_runtime {
 
             let command = next_servo_command(&command_rx, &mut pending_commands).unwrap();
             assert!(matches!(command, ServoCommand::KeyCharacter { .. }));
+            assert_eq!(pending_commands.len(), 1);
+
+            let command = next_servo_command(&command_rx, &mut pending_commands).unwrap();
+            assert!(matches!(command, ServoCommand::EvalProbeTab { .. }));
+        }
+
+        #[test]
+        fn service_scheduler_prioritizes_distillation_over_queued_eval_probe() {
+            let (command_tx, command_rx) = mpsc::channel();
+            let tab_id = Uuid::new_v4();
+            command_tx.send(eval_probe_command(tab_id)).unwrap();
+            command_tx.send(distill_command(tab_id)).unwrap();
+            let mut pending_commands = VecDeque::new();
+
+            let command = next_servo_command(&command_rx, &mut pending_commands).unwrap();
+            assert!(matches!(command, ServoCommand::DistillTab { .. }));
+            assert_eq!(pending_commands.len(), 1);
+
+            let command = next_servo_command(&command_rx, &mut pending_commands).unwrap();
+            assert!(matches!(command, ServoCommand::EvalProbeTab { .. }));
+        }
+
+        #[test]
+        fn service_scheduler_prioritizes_frame_capture_over_queued_eval_probe() {
+            let (command_tx, command_rx) = mpsc::channel();
+            let tab_id = Uuid::new_v4();
+            command_tx.send(eval_probe_command(tab_id)).unwrap();
+            command_tx.send(capture_command(tab_id)).unwrap();
+            let mut pending_commands = VecDeque::new();
+
+            let command = next_servo_command(&command_rx, &mut pending_commands).unwrap();
+            assert!(matches!(command, ServoCommand::CaptureFrame { .. }));
             assert_eq!(pending_commands.len(), 1);
 
             let command = next_servo_command(&command_rx, &mut pending_commands).unwrap();
