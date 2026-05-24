@@ -67,7 +67,7 @@ const FRAME_WARMUP_BUDGET: u8 = 6;
 const FRAME_INTERACTION_WARMUP_BUDGET: u8 = 1;
 const VIEWPORT_MOUSE_MOVE_MIN_INTERVAL: Duration = Duration::from_millis(33);
 const VIEWPORT_MOUSE_MOVE_MIN_DISTANCE_PX: f32 = 2.0;
-const VIEWPORT_TEXT_INPUT_DEBOUNCE: Duration = Duration::from_millis(25);
+const VIEWPORT_TEXT_INPUT_DEBOUNCE: Duration = Duration::from_millis(8);
 const OBSERVATION_WARMUP_IDLE_DELAY: Duration = Duration::from_millis(150);
 const PERF_HISTORY_LIMIT: usize = 24;
 const OPERATOR_DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
@@ -1047,6 +1047,7 @@ struct BrowserApp {
     last_frame_refresh: Instant,
     last_viewport_mouse_move_forward: Option<Instant>,
     last_viewport_mouse_move_point: Option<(f32, f32)>,
+    pending_browser_text_tab: Option<Uuid>,
     pending_browser_text: String,
     last_browser_text_input: Option<Instant>,
     pending_viewport_input_tab: Option<Uuid>,
@@ -1211,6 +1212,7 @@ impl BrowserApp {
             last_frame_refresh: Instant::now(),
             last_viewport_mouse_move_forward: None,
             last_viewport_mouse_move_point: None,
+            pending_browser_text_tab: None,
             pending_browser_text: String::new(),
             last_browser_text_input: None,
             pending_viewport_input_tab: None,
@@ -1848,6 +1850,8 @@ impl BrowserApp {
     }
 
     fn switch_to_page_tab(&mut self, tab_id: Uuid) {
+        self.flush_pending_browser_text();
+        self.flush_viewport_input_lane();
         self.clear_viewport_input_lane();
         match self.engine.switch_to_tab(tab_id) {
             Ok(()) => {
@@ -2038,6 +2042,13 @@ impl BrowserApp {
     }
 
     fn queue_browser_text(&mut self, value: &str) {
+        let Some(active_tab_id) = self.active_tab().map(|tab| tab.id) else {
+            return;
+        };
+        if self.pending_browser_text_tab != Some(active_tab_id) {
+            self.pending_browser_text.clear();
+            self.pending_browser_text_tab = Some(active_tab_id);
+        }
         self.pending_browser_text.push_str(value);
         self.last_browser_text_input = Some(Instant::now());
         self.validation.browser_input_seen = true;
@@ -2066,7 +2077,14 @@ impl BrowserApp {
         if self.pending_browser_text.is_empty() {
             return false;
         }
+        if self.pending_browser_text_tab != self.active_tab().map(|tab| tab.id) {
+            self.pending_browser_text.clear();
+            self.pending_browser_text_tab = None;
+            self.last_browser_text_input = None;
+            return false;
+        }
         let text = std::mem::take(&mut self.pending_browser_text);
+        self.pending_browser_text_tab = None;
         self.last_browser_text_input = None;
         if !self.queue_viewport_input(ViewportInputEvent::Text { text }) {
             return false;
@@ -3031,6 +3049,7 @@ impl BrowserApp {
                 let elapsed = pending.started.elapsed();
                 match result {
                     Ok(mut result) => {
+                        let result_tab_id = result.tab_id;
                         let backend_name = backend(result.status.clone()).to_string();
                         let final_url = result.final_url.clone();
                         let timings = result.timings.clone();
@@ -3038,27 +3057,38 @@ impl BrowserApp {
                         self.engine.apply_async_navigation_result(result);
                         self.record_perf("navigation", elapsed, pending.kind.perf_label());
                         self.record_navigation_timings(&timings, pending.kind);
-                        self.perf.frame = None;
-                        self.address_input = final_url.to_string();
-                        self.page_scroll = 0;
-                        let current_viewport = self.browser_viewport_rect;
-                        let current_size = (current_viewport.w.max(1), current_viewport.h.max(1));
-                        if pending.viewport_size == Some(current_size) {
-                            self.last_frame_viewport = pending.viewport_size;
-                        } else {
-                            self.last_frame_viewport = None;
-                        }
                         self.validation.navigation_seen = true;
-                        self.begin_frame_warmup();
-                        if self.apply_initial_navigation_frame(initial_frame) {
-                            self.schedule_observation_warmup_if_allowed();
+                        if self.active_tab().map(|tab| tab.id) == Some(result_tab_id) {
+                            self.perf.frame = None;
+                            self.address_input = final_url.to_string();
+                            self.page_scroll = 0;
+                            let current_viewport = self.browser_viewport_rect;
+                            let current_size =
+                                (current_viewport.w.max(1), current_viewport.h.max(1));
+                            if pending.viewport_size == Some(current_size) {
+                                self.last_frame_viewport = pending.viewport_size;
+                            } else {
+                                self.last_frame_viewport = None;
+                            }
+                            self.begin_frame_warmup();
+                            if self.apply_initial_navigation_frame(initial_frame) {
+                                self.schedule_observation_warmup_if_allowed();
+                            } else {
+                                self.start_frame_capture_for(FrameCapturePurpose::RenderBridge);
+                            }
+                            self.last_status =
+                                pending
+                                    .kind
+                                    .success_status(&final_url, &backend_name, elapsed);
                         } else {
-                            self.start_frame_capture_for(FrameCapturePurpose::RenderBridge);
+                            self.last_status = format!(
+                                "Background tab {} loaded {} with {} in {}.",
+                                short_id(result_tab_id),
+                                short_url(&final_url),
+                                backend_name,
+                                format_duration(elapsed)
+                            );
                         }
-                        self.last_status =
-                            pending
-                                .kind
-                                .success_status(&final_url, &backend_name, elapsed);
                         self.last_ok = true;
                         let _ = self
                             .record_log(&pending.kind.log_intent(&final_url), LogStatus::Success);
@@ -8206,6 +8236,83 @@ mod tests {
     }
 
     #[test]
+    fn completed_background_navigation_does_not_replace_active_frame() -> Result<(), String> {
+        let data_dir = env::temp_dir().join(format!(
+            "sextant-browser-background-navigation-{}",
+            Uuid::new_v4()
+        ));
+        let mut app = BrowserApp::new_with_data_dir(data_dir.clone())?;
+        app.defer_user_navigation = true;
+        app.layout(PhysicalSize::new(1180, 760));
+        let first_tab = app
+            .active_tab()
+            .map(|tab| tab.id)
+            .ok_or_else(|| "missing active tab".to_string())?;
+        let url = Url::parse("https://example.com").map_err(|error| error.to_string())?;
+        let (result_tx, result_rx) = mpsc::channel();
+        result_tx
+            .send(Ok(AsyncNavigationResult {
+                tab_id: first_tab,
+                requested_url: url.clone(),
+                final_url: url.clone(),
+                status: EngineStatus {
+                    active_backend: EngineBackend::Servo,
+                    is_sandboxed: true,
+                    memory_usage_mb: 180,
+                    gpu_accelerated: false,
+                    sandbox_profile: None,
+                    firewall_status: None,
+                    layout_time_ms: 0.0,
+                    parallel_threads: 8,
+                },
+                distilled_page: None,
+                can_go_back: false,
+                can_go_forward: false,
+                timings: AsyncNavigationTimings::default(),
+                initial_frame: Some(Ok(AsyncFrameCapture {
+                    queue: Duration::from_millis(1),
+                    resize: None,
+                    capture: Duration::from_millis(5),
+                    frame: RenderedFrame {
+                        width: 320,
+                        height: 200,
+                        pixels: vec![0x00ff00; 320 * 200],
+                    },
+                })),
+            }))
+            .map_err(|error| error.to_string())?;
+        app.pending_navigation = Some(PendingNavigation {
+            url: url.clone(),
+            kind: PendingNavigationKind::Open,
+            result_rx,
+            started: Instant::now(),
+            viewport_size: None,
+        });
+
+        let second_tab = app.engine.open_tab();
+        app.engine.switch_to_tab(second_tab)?;
+        app.sync_address_to_active_tab();
+        assert!(app.collect_pending_navigation().is_some());
+
+        assert_eq!(app.active_tab().map(|tab| tab.id), Some(second_tab));
+        assert_eq!(app.address_input, "about:blank");
+        assert!(app.latest_frame.is_none());
+        assert!(app.pending_frame_capture.is_none());
+        assert_eq!(
+            app.engine
+                .get_tabs()
+                .iter()
+                .find(|tab| tab.id == first_tab)
+                .and_then(|tab| tab.url.as_ref()),
+            Some(&url)
+        );
+        assert!(app.last_status.contains("Background tab"));
+
+        let _ = std::fs::remove_dir_all(data_dir);
+        Ok(())
+    }
+
+    #[test]
     fn observation_warmup_respects_direct_mode_boundary() -> Result<(), String> {
         let data_dir = env::temp_dir().join(format!(
             "sextant-browser-observation-warmup-boundary-{}",
@@ -8371,16 +8478,41 @@ mod tests {
         let data_dir =
             env::temp_dir().join(format!("sextant-browser-key-debounce-{}", Uuid::new_v4()));
         let mut app = BrowserApp::new_with_data_dir(data_dir.clone())?;
+        let active_tab = app.active_tab().expect("active tab").id;
 
         app.queue_browser_text("a");
         app.queue_browser_text("b");
 
         assert_eq!(app.pending_browser_text, "ab");
+        assert_eq!(app.pending_browser_text_tab, Some(active_tab));
         assert!(app.pending_browser_text_due().is_some());
         assert!(!app.flush_pending_browser_text_if_due());
         app.last_browser_text_input =
             Some(Instant::now() - VIEWPORT_TEXT_INPUT_DEBOUNCE - Duration::from_millis(1));
         assert!(app.pending_browser_text_due().is_some());
+
+        let _ = std::fs::remove_dir_all(data_dir);
+        Ok(())
+    }
+
+    #[test]
+    fn viewport_text_input_does_not_follow_tab_switch() -> Result<(), String> {
+        let data_dir = env::temp_dir().join(format!(
+            "sextant-browser-key-tab-isolation-{}",
+            Uuid::new_v4()
+        ));
+        let mut app = BrowserApp::new_with_data_dir(data_dir.clone())?;
+        let first_tab = app.active_tab().expect("active tab").id;
+
+        app.queue_browser_text("search");
+        assert_eq!(app.pending_browser_text_tab, Some(first_tab));
+
+        let second_tab = app.engine.open_tab();
+        app.engine.switch_to_tab(second_tab)?;
+        assert!(!app.flush_pending_browser_text());
+        assert!(app.pending_browser_text.is_empty());
+        assert!(app.pending_browser_text_tab.is_none());
+        assert!(app.pending_viewport_input.is_empty());
 
         let _ = std::fs::remove_dir_all(data_dir);
         Ok(())
