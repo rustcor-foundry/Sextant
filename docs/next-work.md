@@ -282,6 +282,8 @@ Recent progress: visible window smoke now has an input-latency mode. MCP `browse
 
 Recent progress: input follow-up capture now wakes at the 24ms input-settle deadline instead of sleeping until the full 48ms interaction cadence. The Direct-mode input fixture improved from about 137ms to about 77ms for the follow-up frame, with input enqueue still reporting 0ms. The remaining visible delay is mostly settle time, bridge capture, and redraw polling rather than shell-to-Servo handoff.
 
+Recent progress: the input-settle window was shortened from 24ms to 16ms after the smoke proved shell-to-Servo enqueue remained at 0ms. The Direct-mode input fixture follow-up frame moved from about 77ms to about 65ms. The remaining target is now the bridge/readback and redraw tail rather than the input queue.
+
 Recent progress: visible event-loop frame refresh now starts Servo frame capture on a background worker and polls the result instead of blocking the window loop. Synchronous `refresh_frame` remains available for operator/proof paths that need immediate evidence.
 
 Recent progress: async render-bridge telemetry now splits Servo service queue wait into a `frame-queue` perf event, and window smoke prints the top six slow perf events so queue pressure is visible to operators and MCP clients. A fresh assisted user-DISTILL smoke showed the problem clearly (`frame-total` about 318ms with `frame-queue` about 272ms), then idle frame refresh was changed to wait while foreground Servo navigation, distillation, or AI warmup work is pending. The follow-up smoke dropped `frame-total` to about 56ms with capture around 29-37ms and no `frame-queue` in the top six.
