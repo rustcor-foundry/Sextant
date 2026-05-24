@@ -282,6 +282,8 @@ Recent progress: async render-bridge telemetry now splits Servo service queue wa
 
 Recent progress: current timing checkpoints now live in `docs/performance-log.md`, and MCP window-smoke JSON exposes `frameTotalMs` and `frameQueueMs` as first-class fields. The latest checkpoints show bridge queue pressure cleared on example.com/MDN/Google smokes, leaving Servo navigation/page readiness as the next large bottleneck.
 
+Recent progress: visible navigation now uses a shorter Servo load-settle timeout than synchronous operator/proof navigation, and MCP window-smoke JSON exposes `navUrlWaitMs` and `navLoadWaitMs` when split navigation events are present. MDN assisted first-frame timing moved from about 1.2s to about 763ms, and Google Direct moved from about 2.5s to about 756ms, while example.com assisted user-DISTILL still passes immediately after navigation.
+
 ### 2. Full In-Window Workflow Validation (~1-2 hours)
 
 The old Xilem validation checklist is reference material. Rebuild the same workflow coverage in the native browser shell around its actual controls and browser viewport, then run a real click-through pass that exercises the app end to end in the window and fixes anything that still only works in tests or partial runtime paths.

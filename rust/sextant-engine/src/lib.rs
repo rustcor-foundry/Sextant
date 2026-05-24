@@ -50,6 +50,7 @@ mod servo_runtime {
     const DEFAULT_VIEWPORT_HEIGHT: u32 = 720;
     const NAVIGATION_TIMEOUT: Duration = Duration::from_secs(8);
     const LOAD_SETTLE_TIMEOUT: Duration = Duration::from_millis(750);
+    const VISIBLE_LOAD_SETTLE_TIMEOUT: Duration = Duration::from_millis(250);
     const INTERACTION_NAVIGATION_TIMEOUT: Duration = Duration::from_secs(3);
     const SERVICE_REPLY_TIMEOUT: Duration = Duration::from_secs(20);
     const EVENT_LOOP_PAUSE: Duration = Duration::from_millis(10);
@@ -64,6 +65,8 @@ mod servo_runtime {
     pub struct ServoRenderResult {
         pub final_url: Url,
         pub status: EngineStatus,
+        pub url_wait: Option<Duration>,
+        pub load_wait: Option<Duration>,
     }
 
     pub struct ServoTabSnapshot {
@@ -85,6 +88,7 @@ mod servo_runtime {
             tab_id: Uuid,
             url: Url,
             viewport_size: Option<(u32, u32)>,
+            load_settle_timeout: Duration,
             reply_tx: mpsc::Sender<Result<ServoRenderResult, String>>,
         },
         Reload {
@@ -379,6 +383,7 @@ mod servo_runtime {
                 tab_id,
                 url: url.clone(),
                 viewport_size: None,
+                load_settle_timeout: LOAD_SETTLE_TIMEOUT,
                 reply_tx,
             })
         }
@@ -393,6 +398,7 @@ mod servo_runtime {
                 tab_id,
                 url: url.clone(),
                 viewport_size,
+                load_settle_timeout: VISIBLE_LOAD_SETTLE_TIMEOUT,
                 reply_tx,
             })
         }
@@ -663,10 +669,17 @@ mod servo_runtime {
                     tab_id,
                     url,
                     viewport_size,
+                    load_settle_timeout,
                     reply_tx,
                 } => {
                     let result = run_servo_command(|| {
-                        navigate_tab(&mut runtime, tab_id, url, viewport_size)
+                        navigate_tab(
+                            &mut runtime,
+                            tab_id,
+                            url,
+                            viewport_size,
+                            load_settle_timeout,
+                        )
                     });
                     let _ = reply_tx.send(result);
                 }
@@ -1069,6 +1082,7 @@ mod servo_runtime {
         tab_id: Uuid,
         url: Url,
         viewport_size: Option<(u32, u32)>,
+        load_settle_timeout: Duration,
     ) -> Result<ServoRenderResult, String> {
         if !runtime.sessions.contains_key(&tab_id) {
             eprintln!(
@@ -1097,7 +1111,7 @@ mod servo_runtime {
                 runtime.servo.spin_event_loop();
             }
         }
-        let result = navigate_session(&mut runtime.servo, &mut session, url);
+        let result = navigate_session(&mut runtime.servo, &mut session, url, load_settle_timeout);
         runtime.sessions.insert(tab_id, session);
         result
     }
@@ -1561,11 +1575,13 @@ mod servo_runtime {
         servo: &mut Servo,
         session: &mut ServoTabSession,
         url: Url,
+        load_settle_timeout: Duration,
     ) -> Result<ServoRenderResult, String> {
         let previous_url = session.webview.url();
         if previous_url.as_ref() != Some(&url) {
             session.webview.load(url.clone());
         }
+        let url_wait_started = Instant::now();
         let mut url_note = wait_for_navigation_url(
             servo,
             &session.webview,
@@ -1574,10 +1590,12 @@ mod servo_runtime {
             NAVIGATION_TIMEOUT,
         )
         .err();
+        let mut url_wait = Some(url_wait_started.elapsed());
         let mut final_url = session.webview.url().unwrap_or_else(|| url.clone());
 
         if previous_url.as_ref() != Some(&url) && Some(&final_url) == previous_url.as_ref() {
             session.webview.load(url.clone());
+            let retry_wait_started = Instant::now();
             let retry_note = wait_for_navigation_url(
                 servo,
                 &session.webview,
@@ -1586,6 +1604,7 @@ mod servo_runtime {
                 NAVIGATION_TIMEOUT,
             )
             .err();
+            url_wait = Some(retry_wait_started.elapsed());
             final_url = session.webview.url().unwrap_or_else(|| url.clone());
             if Some(&final_url) == previous_url.as_ref() {
                 return Err(format!(
@@ -1601,12 +1620,16 @@ mod servo_runtime {
             url_note = retry_note.or(url_note);
         }
 
-        let load_note = wait_for_load(servo, &session.webview, LOAD_SETTLE_TIMEOUT)
+        let load_wait_started = Instant::now();
+        let load_note = wait_for_load(servo, &session.webview, load_settle_timeout)
             .err()
             .or(url_note);
+        let load_wait = Some(load_wait_started.elapsed());
         Ok(ServoRenderResult {
             final_url,
             status: servo_engine_status_with_note(load_note),
+            url_wait,
+            load_wait,
         })
     }
 
@@ -1615,7 +1638,9 @@ mod servo_runtime {
         session: &mut ServoTabSession,
     ) -> Result<ServoRenderResult, String> {
         session.webview.reload();
+        let load_wait_started = Instant::now();
         let load_note = wait_for_load(servo, &session.webview, LOAD_SETTLE_TIMEOUT).err();
+        let load_wait = Some(load_wait_started.elapsed());
         let final_url = session
             .webview
             .url()
@@ -1623,6 +1648,8 @@ mod servo_runtime {
         Ok(ServoRenderResult {
             final_url,
             status: servo_engine_status_with_note(load_note),
+            url_wait: None,
+            load_wait,
         })
     }
 
@@ -1635,13 +1662,17 @@ mod servo_runtime {
         }
         let previous_url = session.webview.url();
         session.webview.go_back(1);
+        let url_wait_started = Instant::now();
         wait_for_changed_url(
             servo,
             &session.webview,
             previous_url.as_ref(),
             NAVIGATION_TIMEOUT,
         )?;
+        let url_wait = Some(url_wait_started.elapsed());
+        let load_wait_started = Instant::now();
         let load_note = wait_for_load(servo, &session.webview, LOAD_SETTLE_TIMEOUT).err();
+        let load_wait = Some(load_wait_started.elapsed());
         let final_url = session
             .webview
             .url()
@@ -1649,6 +1680,8 @@ mod servo_runtime {
         Ok(ServoRenderResult {
             final_url,
             status: servo_engine_status_with_note(load_note),
+            url_wait,
+            load_wait,
         })
     }
 
@@ -1661,13 +1694,17 @@ mod servo_runtime {
         }
         let previous_url = session.webview.url();
         session.webview.go_forward(1);
+        let url_wait_started = Instant::now();
         wait_for_changed_url(
             servo,
             &session.webview,
             previous_url.as_ref(),
             NAVIGATION_TIMEOUT,
         )?;
+        let url_wait = Some(url_wait_started.elapsed());
+        let load_wait_started = Instant::now();
         let load_note = wait_for_load(servo, &session.webview, LOAD_SETTLE_TIMEOUT).err();
+        let load_wait = Some(load_wait_started.elapsed());
         let final_url = session
             .webview
             .url()
@@ -1675,6 +1712,8 @@ mod servo_runtime {
         Ok(ServoRenderResult {
             final_url,
             status: servo_engine_status_with_note(load_note),
+            url_wait,
+            load_wait,
         })
     }
 
@@ -2469,6 +2508,8 @@ pub struct AsyncFrameCapture {
 pub struct AsyncNavigationTimings {
     pub firewall: Option<Duration>,
     pub servo_navigation: Option<Duration>,
+    pub servo_url_wait: Option<Duration>,
+    pub servo_load_wait: Option<Duration>,
     pub servo_inspect: Option<Duration>,
     pub reader_fallback: Option<Duration>,
 }
@@ -3573,6 +3614,8 @@ impl SextantEngine {
                         ) {
                             Ok(render) => {
                                 timings.servo_navigation = Some(servo_started.elapsed());
+                                timings.servo_url_wait = render.url_wait;
+                                timings.servo_load_wait = render.load_wait;
                                 let initial_frame =
                                     Some(servo_service.resize_and_capture_frame(tab_id, None));
                                 let inspect_started = Instant::now();
@@ -3688,6 +3731,8 @@ impl SextantEngine {
                             AsyncNavigationControl::Forward => servo_service.go_forward(tab_id),
                         }?;
                         timings.servo_navigation = Some(servo_started.elapsed());
+                        timings.servo_url_wait = render.url_wait;
+                        timings.servo_load_wait = render.load_wait;
                         let initial_frame = Some(servo_service.resize_and_capture_frame(tab_id, None));
                         let inspect_started = Instant::now();
                         let snapshot = servo_service.inspect_tab(tab_id).ok();

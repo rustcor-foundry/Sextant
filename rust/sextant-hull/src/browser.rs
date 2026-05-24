@@ -3309,6 +3309,12 @@ impl BrowserApp {
         if let Some(duration) = timings.servo_navigation {
             self.record_perf("nav-phase", duration, &format!("{label} servo navigation"));
         }
+        if let Some(duration) = timings.servo_url_wait {
+            self.record_perf("nav-phase", duration, &format!("{label} servo url wait"));
+        }
+        if let Some(duration) = timings.servo_load_wait {
+            self.record_perf("nav-phase", duration, &format!("{label} servo load wait"));
+        }
         if let Some(duration) = timings.servo_inspect {
             self.record_perf("nav-phase", duration, &format!("{label} servo inspect"));
         }
@@ -7667,6 +7673,8 @@ mod tests {
             &AsyncNavigationTimings {
                 firewall: Some(Duration::from_millis(2)),
                 servo_navigation: Some(Duration::from_millis(95)),
+                servo_url_wait: Some(Duration::from_millis(55)),
+                servo_load_wait: Some(Duration::from_millis(35)),
                 servo_inspect: Some(Duration::from_millis(7)),
                 reader_fallback: None,
             },
@@ -7681,6 +7689,18 @@ mod tests {
             .any(|event| event.phase == "nav-phase"
                 && event.label == "open servo navigation"
                 && event.duration == Duration::from_millis(95)));
+        assert!(app
+            .perf_events
+            .iter()
+            .any(|event| event.phase == "nav-phase"
+                && event.label == "open servo url wait"
+                && event.duration == Duration::from_millis(55)));
+        assert!(app
+            .perf_events
+            .iter()
+            .any(|event| event.phase == "nav-phase"
+                && event.label == "open servo load wait"
+                && event.duration == Duration::from_millis(35)));
 
         let _ = std::fs::remove_dir_all(data_dir);
         Ok(())
@@ -8054,6 +8074,8 @@ mod tests {
                 timings: AsyncNavigationTimings {
                     firewall: Some(Duration::from_millis(1)),
                     servo_navigation: Some(Duration::from_millis(12)),
+                    servo_url_wait: Some(Duration::from_millis(8)),
+                    servo_load_wait: Some(Duration::from_millis(4)),
                     servo_inspect: Some(Duration::from_millis(2)),
                     reader_fallback: None,
                 },

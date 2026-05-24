@@ -153,7 +153,7 @@ Use `browser_perf_baseline` when the question is "what is the current normal-bro
 
 Performance tool responses include `structuredContent.perfTimings`, an array of parsed timing samples with `target`, `navigationMs`, `distillMs`, `wakeMs`, `resizeMs`, and `frameMs` fields. Pending phases are returned as `null`. They also include `structuredContent.perfSummary`, with max timings by phase and the single slowest phase, including the target page when available.
 
-Visible window-smoke responses include `structuredContent.windowSmoke.frameTotalMs`, `frameQueueMs`, and `frameMs` when those slow perf events are present, so agents can distinguish render-bridge wall time, Servo service wait, and actual capture/readback work.
+Visible window-smoke responses include `structuredContent.windowSmoke.frameTotalMs`, `frameQueueMs`, and `frameMs` when those slow perf events are present, so agents can distinguish render-bridge wall time, Servo service wait, and actual capture/readback work. They also expose `navUrlWaitMs` and `navLoadWaitMs` when split Servo navigation events are present.
 
 The native browser writes operator/performance report lines to stdout and browser diagnostics to stderr, so MCP clients can use `operatorReport` and `perfTimings` without filtering Servo log noise.
 

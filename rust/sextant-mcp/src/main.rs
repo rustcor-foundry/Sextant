@@ -3202,6 +3202,8 @@ fn window_smoke_summary(report: &[String]) -> Value {
         "frameBlitMs": Value::Null,
         "presentMs": Value::Null,
         "navigationMs": Value::Null,
+        "navUrlWaitMs": Value::Null,
+        "navLoadWaitMs": Value::Null,
         "distillMs": Value::Null,
         "wakeMs": Value::Null,
         "resizeMs": Value::Null,
@@ -3322,6 +3324,15 @@ fn apply_window_perf_event_metrics(summary: &mut Value, event: &Value) {
     match phase {
         "frame-total" => summary["frameTotalMs"] = duration,
         "frame-queue" => summary["frameQueueMs"] = duration,
+        "nav-phase" => {
+            if let Some(label) = event.get("label").and_then(Value::as_str) {
+                if label.ends_with("servo url wait") {
+                    summary["navUrlWaitMs"] = duration;
+                } else if label.ends_with("servo load wait") {
+                    summary["navLoadWaitMs"] = duration;
+                }
+            }
+        }
         _ => {}
     }
 }
@@ -4089,7 +4100,7 @@ mod tests {
             "[window-smoke] draw cost total 30ms | frame blit 9ms | present 0ms".to_string(),
             "[window-smoke] perf nav 414ms | distill pending | wake pending | resize 390ms | frame 438ms".to_string(),
             "[window-smoke] slowest perf frame-total 472ms | capture render bridge".to_string(),
-            "[window-smoke] slow perf frame-total 472ms capture render bridge | frame 438ms capture render bridge | frame-queue 34ms capture queue render bridge | nav-phase 414ms open servo navigation | resize 390ms viewport render bridge async".to_string(),
+            "[window-smoke] slow perf frame-total 472ms capture render bridge | frame 438ms capture render bridge | frame-queue 34ms capture queue render bridge | nav-phase 414ms open servo navigation | nav-phase 275ms open servo url wait | nav-phase 250ms open servo load wait | resize 390ms viewport render bridge async".to_string(),
             "[window-smoke] latest Servo frame 776x292 (226592 pixels)".to_string(),
             "[window-smoke] first Servo frame in 950ms".to_string(),
         ];
@@ -4124,6 +4135,8 @@ mod tests {
         );
         assert_eq!(summary["frameTotalMs"], Value::from(472));
         assert_eq!(summary["frameQueueMs"], Value::from(34));
+        assert_eq!(summary["navUrlWaitMs"], Value::from(275));
+        assert_eq!(summary["navLoadWaitMs"], Value::from(250));
         assert_eq!(summary["slowPerfEvents"][3]["phase"], "nav-phase");
         assert_eq!(
             summary["slowPerfEvents"][3]["label"],
