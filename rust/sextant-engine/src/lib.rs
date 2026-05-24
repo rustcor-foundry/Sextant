@@ -4298,6 +4298,38 @@ impl SextantEngine {
         }
     }
 
+    pub fn eval_probe_tab_async(
+        &self,
+        tab_id: Uuid,
+    ) -> Result<mpsc::Receiver<Result<BrowserEvalProbe, String>>, String> {
+        let (result_tx, result_rx) = mpsc::channel();
+
+        #[cfg(feature = "servo-backend")]
+        {
+            if !self.tabs.contains_key(&tab_id) {
+                return Err("Tab not found".to_string());
+            }
+            let servo_service = self.servo_service.clone();
+            thread::Builder::new()
+                .name("sextant-eval-probe".into())
+                .spawn(move || {
+                    let result = servo_service.eval_probe_tab(tab_id);
+                    let _ = result_tx.send(result);
+                })
+                .map_err(|error| format!("failed to spawn Servo eval probe worker: {error}"))?;
+            Ok(result_rx)
+        }
+
+        #[cfg(not(feature = "servo-backend"))]
+        {
+            let _ = tab_id;
+            let _ = result_tx.send(Err(
+                "Servo backend is not enabled in this build.".to_string()
+            ));
+            Ok(result_rx)
+        }
+    }
+
     pub fn interact_tab(
         &mut self,
         tab_id: Uuid,

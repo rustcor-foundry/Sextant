@@ -156,6 +156,8 @@ The visible browser also has a `SHOWCASE` control in the main toolbar. Use it du
 
 `--window-smoke [url-search-or-intent] --window-smoke-timeout <seconds>` opens the actual visible shell, optionally navigates or runs a native intent, draws once, reports whether a Servo frame was captured, and exits. Use it when validating the user-facing browser window rather than the operator bridge.
 
+Visible Agent, Assisted, and Observe navigation may start a lightweight AI-observation eval warmup after the first real navigation frame is applied. Direct and Incognito skip that warmup so user-only browsing checks do not pay for AI readiness work.
+
 `--start "<url-search-or-intent>"` launches the visible browser, runs that URL/search/intent, and leaves the window open for demo or manual testing.
 
 `--start-real-browsing` seeds the visible browser with the same normal-browsing proof used by `--real-browsing-smoke`, then leaves the window open. Pair it with `--window-smoke --window-smoke-timeout 60` for a bounded visible check that the user-facing shell still draws after the workflow.

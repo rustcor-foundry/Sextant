@@ -3,8 +3,8 @@ use chrono::Utc;
 use sextant_airgap::SextantAirGap;
 use sextant_engine::{
     AsyncDistillResult, AsyncFrameCapture, AsyncNavigationResult, AsyncNavigationTimings,
-    BrowserKey, DistilledPage, EngineBackend, EngineStatus, NodeType, RenderedFrame, SextantEngine,
-    Tab,
+    BrowserEvalProbe, BrowserKey, DistilledPage, EngineBackend, EngineStatus, NodeType,
+    RenderedFrame, SextantEngine, Tab,
 };
 #[cfg(feature = "xilem-shell")]
 use sextant_firewall::{FirewallAction, SextantFirewall};
@@ -484,6 +484,12 @@ struct PendingNavigation {
     result_rx: mpsc::Receiver<Result<AsyncNavigationResult, String>>,
     started: Instant,
     viewport_size: Option<(u32, u32)>,
+}
+
+struct PendingObservationWarmup {
+    tab_id: Uuid,
+    result_rx: mpsc::Receiver<Result<BrowserEvalProbe, String>>,
+    started: Instant,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -973,10 +979,12 @@ struct BrowserApp {
     last_status: String,
     last_ok: bool,
     defer_user_navigation: bool,
+    observation_warmup_enabled: bool,
     pre_size_visible_navigation: bool,
     pending_user_navigation: Option<String>,
     pending_user_action: Option<Action>,
     pending_navigation: Option<PendingNavigation>,
+    pending_observation_warmup: Option<PendingObservationWarmup>,
     pending_distillation: Option<PendingDistillation>,
     pending_persistence: Option<PendingPersistence>,
     pending_wake_search: Option<PendingWakeSearch>,
@@ -1064,10 +1072,12 @@ impl BrowserApp {
             last_status: "Ready. Type a URL or search, then press Enter.".to_string(),
             last_ok: true,
             defer_user_navigation: false,
+            observation_warmup_enabled: false,
             pre_size_visible_navigation: false,
             pending_user_navigation: None,
             pending_user_action: None,
             pending_navigation: None,
+            pending_observation_warmup: None,
             pending_distillation: None,
             pending_persistence: None,
             pending_wake_search: None,
@@ -1306,6 +1316,7 @@ impl BrowserApp {
             self.wake_results.clear();
             self.recent_logs.clear();
             self.pending_user_action = None;
+            self.pending_observation_warmup = None;
             self.pending_distillation = None;
             self.pending_persistence = None;
             self.pending_wake_search = None;
@@ -3022,7 +3033,9 @@ impl BrowserApp {
                         }
                         self.validation.navigation_seen = true;
                         self.begin_frame_warmup();
-                        if !self.apply_initial_navigation_frame(initial_frame) {
+                        if self.apply_initial_navigation_frame(initial_frame) {
+                            self.start_observation_warmup_if_allowed();
+                        } else {
                             self.start_frame_capture_for(FrameCapturePurpose::RenderBridge);
                         }
                         self.last_status =
@@ -3060,6 +3073,93 @@ impl BrowserApp {
                 let _ = self.record_log(
                     &pending.kind.log_intent(&pending.url),
                     LogStatus::Failure(self.last_status.clone()),
+                );
+                Some(elapsed)
+            }
+        }
+    }
+
+    fn start_observation_warmup_if_allowed(&mut self) -> bool {
+        if !self.observation_warmup_enabled
+            || !self.capabilities().ai_observe_dom
+            || self.pending_observation_warmup.is_some()
+        {
+            return false;
+        }
+        let Some(tab_id) = self.active_tab().map(|tab| tab.id) else {
+            return false;
+        };
+        match self.engine.eval_probe_tab_async(tab_id) {
+            Ok(result_rx) => {
+                self.pending_observation_warmup = Some(PendingObservationWarmup {
+                    tab_id,
+                    result_rx,
+                    started: Instant::now(),
+                });
+                true
+            }
+            Err(error) => {
+                self.record_perf(
+                    "eval-warmup",
+                    Duration::ZERO,
+                    "ai observation warmup start failed",
+                );
+                self.validation.error_seen = true;
+                let _ = self.record_log(
+                    "ai observation warmup",
+                    LogStatus::Failure(error.to_string()),
+                );
+                false
+            }
+        }
+    }
+
+    fn collect_pending_observation_warmup(&mut self) -> Option<Duration> {
+        let pending = self.pending_observation_warmup.as_ref()?;
+        match pending.result_rx.try_recv() {
+            Ok(result) => {
+                let pending = self
+                    .pending_observation_warmup
+                    .take()
+                    .expect("pending observation warmup disappeared");
+                let elapsed = pending.started.elapsed();
+                match result {
+                    Ok(probe) => {
+                        self.record_perf(
+                            "eval-warmup",
+                            Duration::from_millis(probe.eval_ms),
+                            &format!(
+                                "ai observation warmup tab {} script {}ms queue {}ms elapsed {}",
+                                pending.tab_id,
+                                probe.script_ms,
+                                probe.queue_ms,
+                                format_duration(elapsed)
+                            ),
+                        );
+                    }
+                    Err(error) => {
+                        self.record_perf("eval-warmup", elapsed, "ai observation warmup failed");
+                        self.validation.error_seen = true;
+                        let _ = self.record_log(
+                            "ai observation warmup",
+                            LogStatus::Failure(error.to_string()),
+                        );
+                    }
+                }
+                Some(elapsed)
+            }
+            Err(mpsc::TryRecvError::Empty) => None,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                let pending = self
+                    .pending_observation_warmup
+                    .take()
+                    .expect("pending observation warmup disappeared");
+                let elapsed = pending.started.elapsed();
+                self.record_perf("eval-warmup", elapsed, "ai observation warmup dropped");
+                self.validation.error_seen = true;
+                let _ = self.record_log(
+                    "ai observation warmup",
+                    LogStatus::Failure("worker dropped".to_string()),
                 );
                 Some(elapsed)
             }
@@ -4788,6 +4888,7 @@ fn run_visible_app(
         app.set_user_render_path(user_render_path)?;
     }
     app.pre_size_visible_navigation = pre_size_visible_navigation;
+    app.observation_warmup_enabled = true;
     app.set_browser_mode(browser_mode);
     if !app.last_ok {
         return Err(app.last_status.clone());
@@ -5218,6 +5319,9 @@ fn run_visible_app(
                     }
                     window.request_redraw();
                 }
+                if app.collect_pending_observation_warmup().is_some() {
+                    window.request_redraw();
+                }
                 if smoke_requires_user_distill
                     && !smoke_user_distill_enqueued
                     && active_start_input.is_none()
@@ -5340,6 +5444,10 @@ fn run_visible_app(
                 } else if let Some(due) = app.pending_browser_text_due() {
                     elwt.set_control_flow(ControlFlow::WaitUntil(due));
                 } else if app.pending_navigation.is_some() {
+                    elwt.set_control_flow(ControlFlow::WaitUntil(
+                        Instant::now() + Duration::from_millis(16),
+                    ));
+                } else if app.pending_observation_warmup.is_some() {
                     elwt.set_control_flow(ControlFlow::WaitUntil(
                         Instant::now() + Duration::from_millis(16),
                     ));
@@ -7947,6 +8055,24 @@ mod tests {
         assert_eq!(app.perf.resize, Some(Duration::ZERO));
         assert_eq!(app.perf.frame, Some(Duration::from_millis(8)));
         assert!(app.latest_frame.is_some());
+        assert!(app.pending_observation_warmup.is_none());
+
+        let _ = std::fs::remove_dir_all(data_dir);
+        Ok(())
+    }
+
+    #[test]
+    fn observation_warmup_respects_direct_mode_boundary() -> Result<(), String> {
+        let data_dir = env::temp_dir().join(format!(
+            "sextant-browser-observation-warmup-boundary-{}",
+            Uuid::new_v4()
+        ));
+        let mut app = BrowserApp::new_with_data_dir(data_dir.clone())?;
+        app.observation_warmup_enabled = true;
+        app.set_browser_mode(BrowserMode::Direct);
+
+        assert!(!app.start_observation_warmup_if_allowed());
+        assert!(app.pending_observation_warmup.is_none());
 
         let _ = std::fs::remove_dir_all(data_dir);
         Ok(())

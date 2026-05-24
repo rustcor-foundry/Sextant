@@ -268,6 +268,8 @@ Recent progress: live DOM distillation telemetry now splits Servo service queue 
 
 Recent progress: MCP perf summaries now surface diagnostic eval probes without hiding normal phase timing. `perfSummary.slowestPhase` remains the normal navigation/distill/Wake/resize/frame view, while `perfSummary.slowestObservedPhase` and `maxEvalProbeMs` include the before/after tiny eval samples so agents can see when Servo eval readiness is the real long pole.
 
+Recent progress: visible navigation now has an opt-in AI-observation warmup lane. After a real initial navigation frame is applied, Agent/Assisted/Observe modes can launch a tiny async Servo eval probe to absorb the first slow eval window before the user or AI asks for DOM distillation. Direct and Incognito skip this lane entirely so the human-only browsing path does not pay for AI readiness work.
+
 Recent progress: the Servo service scheduler now lets pending live-DOM distillation yield to already-queued viewport input, matching the existing frame-capture yield behavior. This does not preempt a distillation once Servo has started evaluating it, but it keeps AI observation work from jumping ahead of user keystrokes, clicks, wheel, or pointer movement that are already waiting in the service queue.
 
 Recent progress: viewport wheel input now uses an enqueue-only Servo command and queues frame warmup instead of waiting for Servo acknowledgement or synchronously capturing a Servo frame inside the wheel handler. That keeps scroll input responsive while the event loop owns the next frame capture.
