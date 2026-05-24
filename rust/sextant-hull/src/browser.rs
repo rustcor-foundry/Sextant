@@ -30,7 +30,7 @@ use winit::dpi::PhysicalSize;
 use winit::event::{ElementState, Event, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
-use winit::window::{Window, WindowBuilder};
+use winit::window::{Icon, Window, WindowBuilder};
 
 const BG: u32 = 0x0010161d;
 const PANEL: u32 = 0x0019232c;
@@ -63,11 +63,12 @@ const GLYPH_W: u32 = 5;
 const GLYPH_GAP: u32 = 2;
 const FRAME_REFRESH_IDLE: Duration = Duration::from_millis(1500);
 const FRAME_REFRESH_DIRTY: Duration = Duration::from_millis(250);
+const FRAME_REFRESH_INTERACTION: Duration = Duration::from_millis(32);
 const FRAME_WARMUP_BUDGET: u8 = 6;
-const FRAME_INTERACTION_WARMUP_BUDGET: u8 = 1;
+const FRAME_INTERACTION_WARMUP_BUDGET: u8 = 4;
 const VIEWPORT_MOUSE_MOVE_MIN_INTERVAL: Duration = Duration::from_millis(33);
 const VIEWPORT_MOUSE_MOVE_MIN_DISTANCE_PX: f32 = 2.0;
-const VIEWPORT_TEXT_INPUT_DEBOUNCE: Duration = Duration::from_millis(8);
+const VIEWPORT_TEXT_INPUT_DEBOUNCE: Duration = Duration::ZERO;
 const OBSERVATION_WARMUP_IDLE_DELAY: Duration = Duration::from_millis(150);
 const PERF_HISTORY_LIMIT: usize = 24;
 const OPERATOR_DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
@@ -2094,7 +2095,7 @@ impl BrowserApp {
             .frame_refresh_budget
             .max(FRAME_INTERACTION_WARMUP_BUDGET);
         self.last_frame_refresh = Instant::now()
-            .checked_sub(FRAME_REFRESH_DIRTY)
+            .checked_sub(FRAME_REFRESH_INTERACTION)
             .unwrap_or_else(Instant::now);
         self.frame_dirty = true;
         true
@@ -4542,7 +4543,9 @@ impl BrowserApp {
         }
 
         let elapsed = self.last_frame_refresh.elapsed();
-        let due = if self.frame_dirty || self.frame_refresh_budget > 0 {
+        let due = if self.frame_refresh_budget > 0 {
+            elapsed >= FRAME_REFRESH_INTERACTION
+        } else if self.frame_dirty {
             elapsed >= FRAME_REFRESH_DIRTY
         } else {
             self.focus == FocusTarget::Browser && elapsed >= FRAME_REFRESH_IDLE
@@ -4992,6 +4995,7 @@ fn run_visible_app(
         WindowBuilder::new()
             .with_title("Sextant Browser")
             .with_inner_size(PhysicalSize::new(1180, 760))
+            .with_window_icon(sextant_window_icon())
             .build(&event_loop)
             .map_err(|error| format!("window creation failed: {error}"))?,
     );
@@ -5579,7 +5583,9 @@ fn run_visible_app(
                 } else if app.main_view == MainView::Browser
                     && (app.latest_frame.is_some() || app.frame_refresh_budget > 0)
                 {
-                    let delay = if app.frame_dirty {
+                    let delay = if app.frame_refresh_budget > 0 {
+                        FRAME_REFRESH_INTERACTION
+                    } else if app.frame_dirty {
                         FRAME_REFRESH_DIRTY
                     } else {
                         FRAME_REFRESH_IDLE
@@ -5614,6 +5620,35 @@ fn run_visible_app(
     }
 
     Ok(())
+}
+
+fn sextant_window_icon() -> Option<Icon> {
+    let size = 64u32;
+    let mut rgba = vec![0u8; (size * size * 4) as usize];
+    for y in 0..size {
+        for x in 0..size {
+            let index = ((y * size + x) * 4) as usize;
+            let dx = x as i32 - 32;
+            let dy = y as i32 - 32;
+            let inside = dx * dx + dy * dy <= 30 * 30;
+            let ring = dx * dx + dy * dy >= 24 * 24 && inside;
+            let needle = (x >= 29 && x <= 34 && y >= 12 && y <= 52)
+                || (y >= 29 && y <= 34 && x >= 12 && x <= 52)
+                || ((x as i32 - y as i32).abs() <= 2 && x >= 18 && x <= 46);
+
+            let color = if ring {
+                [14, 199, 232, 255]
+            } else if needle {
+                [47, 191, 113, 255]
+            } else if inside {
+                [13, 19, 25, 255]
+            } else {
+                [0, 0, 0, 0]
+            };
+            rgba[index..index + 4].copy_from_slice(&color);
+        }
+    }
+    Icon::from_rgba(rgba, size, size).ok()
 }
 
 fn start_visible_input(app: &mut BrowserApp, input: &str) -> Result<bool, String> {
@@ -7565,6 +7600,11 @@ mod tests {
     }
 
     #[test]
+    fn builds_window_icon_for_visible_browser() {
+        assert!(sextant_window_icon().is_some());
+    }
+
+    #[test]
     fn page_tab_strip_keeps_active_overflow_tab_visible() -> Result<(), String> {
         let data_dir =
             env::temp_dir().join(format!("sextant-browser-tab-overflow-{}", Uuid::new_v4()));
@@ -8474,7 +8514,7 @@ mod tests {
     }
 
     #[test]
-    fn viewport_text_input_is_debounced_before_servo_flush() -> Result<(), String> {
+    fn viewport_text_input_flushes_without_debounce() -> Result<(), String> {
         let data_dir =
             env::temp_dir().join(format!("sextant-browser-key-debounce-{}", Uuid::new_v4()));
         let mut app = BrowserApp::new_with_data_dir(data_dir.clone())?;
@@ -8486,10 +8526,13 @@ mod tests {
         assert_eq!(app.pending_browser_text, "ab");
         assert_eq!(app.pending_browser_text_tab, Some(active_tab));
         assert!(app.pending_browser_text_due().is_some());
-        assert!(!app.flush_pending_browser_text_if_due());
-        app.last_browser_text_input =
-            Some(Instant::now() - VIEWPORT_TEXT_INPUT_DEBOUNCE - Duration::from_millis(1));
-        assert!(app.pending_browser_text_due().is_some());
+        assert!(app.flush_pending_browser_text_if_due());
+        assert!(app.pending_browser_text.is_empty());
+        assert_eq!(app.pending_browser_text_tab, None);
+        assert!(matches!(
+            app.pending_viewport_input.back(),
+            Some(ViewportInputEvent::Text { text }) if text == "ab"
+        ));
 
         let _ = std::fs::remove_dir_all(data_dir);
         Ok(())
