@@ -56,6 +56,7 @@ const TAB_H: u32 = 46;
 const PAGE_TAB_H: u32 = 34;
 const PAGE_TAB_PAGER_W: u32 = 26;
 const MAX_VISIBLE_PAGE_TABS: usize = 6;
+const LOAD_BAR_H: u32 = 5;
 const METRIC_Y: u32 = CHROME_H + STRIP_H + TAB_H + PAGE_TAB_H + 12;
 const METRIC_H: u32 = 76;
 const GLYPH_W: u32 = 5;
@@ -5535,6 +5536,7 @@ fn run_visible_app(
                 } else if let Some(due) = app.pending_browser_text_due() {
                     elwt.set_control_flow(ControlFlow::WaitUntil(due));
                 } else if app.pending_navigation.is_some() {
+                    window.request_redraw();
                     elwt.set_control_flow(ControlFlow::WaitUntil(
                         Instant::now() + Duration::from_millis(16),
                     ));
@@ -7639,6 +7641,38 @@ mod tests {
     }
 
     #[test]
+    fn page_load_bar_sits_between_tabs_and_metrics() -> Result<(), String> {
+        let data_dir = env::temp_dir().join(format!("sextant-browser-load-bar-{}", Uuid::new_v4()));
+        let mut app = BrowserApp::new_with_data_dir(data_dir.clone())?;
+        app.layout(PhysicalSize::new(1180, 760));
+        let track = page_load_bar_rect(app.window_size.width);
+        let tab_strip_bottom = CHROME_H + STRIP_H + TAB_H + PAGE_TAB_H;
+
+        assert!(track.y >= tab_strip_bottom);
+        assert!(track.y + track.h <= METRIC_Y);
+        assert!(page_load_bar_active_rect(&app, track).is_none());
+
+        let (_result_tx, result_rx) = mpsc::channel();
+        let url = Url::parse("https://example.com").map_err(|error| error.to_string())?;
+        app.pending_navigation = Some(PendingNavigation {
+            url,
+            kind: PendingNavigationKind::Open,
+            result_rx,
+            started: Instant::now() - Duration::from_millis(80),
+            viewport_size: None,
+        });
+        let active = page_load_bar_active_rect(&app, track)
+            .ok_or_else(|| "pending navigation should expose a load gauge segment".to_string())?;
+        assert!(active.x >= track.x);
+        assert!(active.x + active.w <= track.x + track.w);
+        assert_eq!(active.y, track.y);
+        assert_eq!(active.h, track.h);
+
+        let _ = std::fs::remove_dir_all(data_dir);
+        Ok(())
+    }
+
+    #[test]
     fn records_perf_events_and_caps_history() -> Result<(), String> {
         let data_dir =
             env::temp_dir().join(format!("sextant-browser-perf-history-{}", Uuid::new_v4()));
@@ -9076,6 +9110,7 @@ fn draw(
     draw_top_bar(&mut buffer, width, height, app);
     draw_controls(&mut buffer, width, height, app);
     draw_page_tab_strip(&mut buffer, width, height, app);
+    draw_page_load_bar(&mut buffer, width, height, app);
     draw_metric_cards(&mut buffer, width, height, app);
     let frame_blit = match app.main_view {
         MainView::Browser => draw_page_panel(&mut buffer, width, height, app),
@@ -9371,6 +9406,77 @@ fn draw_page_tab_strip(buffer: &mut [u32], width: u32, height: u32, app: &Browse
             draw_text(buffer, width, height, rect.x, rect.y, &label, TEXT_DIM, 1);
         }
     }
+}
+
+fn draw_page_load_bar(buffer: &mut [u32], width: u32, height: u32, app: &BrowserApp) {
+    let track = page_load_bar_rect(width);
+    if track.w == 0 || track.h == 0 {
+        return;
+    }
+
+    fill_rect(buffer, width, height, track, FIELD);
+    fill_rect(
+        buffer,
+        width,
+        height,
+        Rect {
+            x: track.x,
+            y: track.y,
+            w: track.w,
+            h: 1,
+        },
+        BORDER,
+    );
+
+    if let Some(active) = page_load_bar_active_rect(app, track) {
+        fill_rect(buffer, width, height, active, BUTTON_BRIGHT);
+        let pulse = Rect {
+            x: active.x,
+            y: active.y,
+            w: active.w,
+            h: 1,
+        };
+        fill_rect(buffer, width, height, pulse, STATUS_OK);
+    }
+}
+
+fn page_load_bar_rect(width: u32) -> Rect {
+    let rail_x = right_rail_x(width);
+    Rect {
+        x: 24,
+        y: CHROME_H + STRIP_H + TAB_H + PAGE_TAB_H + 4,
+        w: rail_x.saturating_sub(48),
+        h: LOAD_BAR_H,
+    }
+}
+
+fn page_load_bar_active_rect(app: &BrowserApp, track: Rect) -> Option<Rect> {
+    let pending = app.pending_navigation.as_ref()?;
+    if track.w == 0 {
+        return None;
+    }
+
+    let segment_w = (track.w / 3).max(64).min(track.w);
+    let travel = track.w.saturating_sub(segment_w);
+    let elapsed_ms = pending.started.elapsed().as_millis() as u32;
+    let offset = if travel == 0 {
+        0
+    } else {
+        let cycle = travel.saturating_mul(2).max(1);
+        let phase = (elapsed_ms / 8) % cycle;
+        if phase <= travel {
+            phase
+        } else {
+            cycle.saturating_sub(phase)
+        }
+    };
+
+    Some(Rect {
+        x: track.x.saturating_add(offset),
+        y: track.y,
+        w: segment_w,
+        h: track.h,
+    })
 }
 
 fn page_tab_range_label_rect(app: &BrowserApp) -> Option<(Rect, String)> {
