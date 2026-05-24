@@ -12,7 +12,7 @@ Environment: Windows debug build through `cargo run`, default Servo backend, pro
 | `https://developer.mozilla.org/en-US/docs/Web/HTML` | Assisted | 30ms | 485ms | 395ms | n/a | 27ms | n/a | n/a | 37ms | Visible load now returns on first real frame; `navUrlWaitMs` 259ms and `navLoadWaitMs` 14ms. |
 | `https://www.google.com` | Direct | 50ms | 518ms | 383ms | n/a | n/a | n/a | n/a | 29ms | Human-only path confirms Direct skips AI work; visible load now returns on first real frame with `navLoadWaitMs` 15ms. |
 | `https://www.google.com` | Direct | 22ms | 549ms | 470ms | n/a | n/a | n/a | n/a | 22ms | Post input-lane settle checkpoint; warmed run after rebuild. `navUrlWaitMs` was 334ms and `navLoadWaitMs` was 15ms. A prior cold/noisy Google run in the same pass hit 1.0s first frame because URL wait spiked to 748ms, while bridge capture stayed 28ms. |
-| built-in input fixture + input latency | Direct | 24ms | 253ms | 179ms | n/a | n/a | 32ms | n/a | 18-28ms | New `--window-input-smoke` checkpoint through MCP `browser_window_smoke` / CLI `--input-latency`. Viewport input enqueue reported `0ms`; follow-up frame after typed input reported `137ms`. |
+| built-in input fixture + input latency | Direct | 34ms | 337ms | 242ms | n/a | n/a | 35ms | n/a | 26-27ms | Input-settle wake checkpoint through MCP `browser_window_smoke` / CLI `--input-latency`. Viewport input enqueue reported `0ms`; follow-up frame after typed input improved to `77ms` by waking at the 24ms input-settle deadline instead of the full 48ms interaction cadence. |
 
 Recent movement:
 
@@ -22,7 +22,8 @@ Recent movement:
 - After visible navigation settle tuning, MDN first frame is about 763ms and Google Direct first frame is about 756ms; synchronous operator/proof navigation keeps the longer settle path.
 - After first-frame return for visible navigation, MDN first frame is about 485ms and Google Direct first frame is about 518ms; the old ~250ms visible load settle wait is now about 14-15ms when Servo has painted a fresh frame.
 - After input-lane settle tuning, warmed Google Direct is still in the same band at about 549ms first frame, with bridge capture down around 22ms. The change is aimed at keyboard feel: text input no longer rearms the bridge before it is flushed to Servo, and frame refresh waits a short 24ms settle window after viewport input enqueue.
-- The first input-latency smoke gives us a separate keyboard-lane baseline: handoff from the shell to Servo is effectively immediate (`0ms` in the visible smoke), while the user-visible follow-up frame is currently about 137ms on the centered input fixture.
+- The first input-latency smoke gave us a separate keyboard-lane baseline: handoff from the shell to Servo is effectively immediate (`0ms` in the visible smoke), while the user-visible follow-up frame was about 137ms on the centered input fixture.
+- After waking frame refresh at the input-settle deadline, the same input fixture improved to about 77ms for the follow-up frame. That remaining time is now mostly settle + render bridge capture + redraw polling.
 
 Current read:
 

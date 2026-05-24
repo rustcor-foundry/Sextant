@@ -4553,16 +4553,15 @@ impl BrowserApp {
         }
 
         if self
-            .last_viewport_input_flush
-            .map(|flushed| flushed.elapsed() < VIEWPORT_INPUT_CAPTURE_SETTLE)
-            .unwrap_or(false)
+            .viewport_input_capture_delay()
+            .is_some_and(|delay| !delay.is_zero())
         {
             return false;
         }
 
         let elapsed = self.last_frame_refresh.elapsed();
         let due = if self.frame_refresh_budget > 0 {
-            elapsed >= FRAME_REFRESH_INTERACTION
+            self.last_viewport_input_flush.is_some() || elapsed >= FRAME_REFRESH_INTERACTION
         } else if self.frame_dirty {
             elapsed >= FRAME_REFRESH_DIRTY
         } else {
@@ -4570,9 +4569,16 @@ impl BrowserApp {
         };
 
         if due {
-            self.start_frame_capture_for(FrameCapturePurpose::RenderBridge);
+            if self.start_frame_capture_for(FrameCapturePurpose::RenderBridge) {
+                self.last_viewport_input_flush = None;
+            }
         }
         false
+    }
+
+    fn viewport_input_capture_delay(&self) -> Option<Duration> {
+        let elapsed = self.last_viewport_input_flush?.elapsed();
+        Some(VIEWPORT_INPUT_CAPTURE_SETTLE.saturating_sub(elapsed))
     }
 
     fn start_frame_capture_for(&mut self, purpose: FrameCapturePurpose) -> bool {
@@ -5684,7 +5690,8 @@ fn run_visible_app(
                     && (app.latest_frame.is_some() || app.frame_refresh_budget > 0)
                 {
                     let delay = if app.frame_refresh_budget > 0 {
-                        FRAME_REFRESH_INTERACTION
+                        app.viewport_input_capture_delay()
+                            .unwrap_or(FRAME_REFRESH_INTERACTION)
                     } else if app.frame_dirty {
                         FRAME_REFRESH_DIRTY
                     } else {
@@ -8784,8 +8791,38 @@ mod tests {
         app.last_frame_refresh = Instant::now() - FRAME_REFRESH_INTERACTION;
         app.last_viewport_input_flush = Some(Instant::now());
 
+        assert!(app
+            .viewport_input_capture_delay()
+            .is_some_and(|delay| delay <= VIEWPORT_INPUT_CAPTURE_SETTLE));
         assert!(!app.maybe_refresh_frame());
         assert!(app.pending_frame_capture.is_none());
+
+        let _ = std::fs::remove_dir_all(data_dir);
+        Ok(())
+    }
+
+    #[test]
+    fn frame_refresh_uses_input_settle_deadline_for_interaction_capture() -> Result<(), String> {
+        let data_dir = env::temp_dir().join(format!(
+            "sextant-browser-frame-refresh-input-deadline-{}",
+            Uuid::new_v4()
+        ));
+        let mut app = BrowserApp::new_with_data_dir(data_dir.clone())?;
+        app.latest_frame = Some(RenderedFrame {
+            width: 10,
+            height: 10,
+            pixels: vec![0; 100],
+        });
+        app.frame_refresh_budget = 1;
+        app.frame_dirty = true;
+        app.last_frame_refresh = Instant::now();
+        app.last_viewport_input_flush =
+            Some(Instant::now() - VIEWPORT_INPUT_CAPTURE_SETTLE - Duration::from_millis(1));
+
+        assert_eq!(app.viewport_input_capture_delay(), Some(Duration::ZERO));
+        assert!(!app.maybe_refresh_frame());
+        assert!(app.pending_frame_capture.is_some());
+        assert!(app.last_viewport_input_flush.is_none());
 
         let _ = std::fs::remove_dir_all(data_dir);
         Ok(())
