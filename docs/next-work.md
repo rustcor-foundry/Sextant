@@ -284,6 +284,8 @@ Recent progress: current timing checkpoints now live in `docs/performance-log.md
 
 Recent progress: visible navigation now uses a shorter Servo load-settle timeout than synchronous operator/proof navigation, and MCP window-smoke JSON exposes `navUrlWaitMs` and `navLoadWaitMs` when split navigation events are present. MDN assisted first-frame timing moved from about 1.2s to about 763ms, and Google Direct moved from about 2.5s to about 756ms, while example.com assisted user-DISTILL still passes immediately after navigation.
 
+Recent progress: visible navigation now exits its load wait as soon as a fresh Servo frame is available, while synchronous operator/proof paths keep the longer deterministic readiness wait. The latest MDN assisted smoke reached first frame around 485ms with `navLoadWaitMs` around 14ms, and Google Direct reached first frame around 518ms with `navLoadWaitMs` around 15ms. The next measured target is the remaining `navUrlWaitMs` around 248-259ms without accepting stale navigation state.
+
 ### 2. Full In-Window Workflow Validation (~1-2 hours)
 
 The old Xilem validation checklist is reference material. Rebuild the same workflow coverage in the native browser shell around its actual controls and browser viewport, then run a real click-through pass that exercises the app end to end in the window and fixes anything that still only works in tests or partial runtime paths.

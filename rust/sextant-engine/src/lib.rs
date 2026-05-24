@@ -89,6 +89,7 @@ mod servo_runtime {
             url: Url,
             viewport_size: Option<(u32, u32)>,
             load_settle_timeout: Duration,
+            return_on_first_frame: bool,
             reply_tx: mpsc::Sender<Result<ServoRenderResult, String>>,
         },
         Reload {
@@ -234,6 +235,10 @@ mod servo_runtime {
     }
 
     impl HeadlessWebViewDelegate {
+        fn is_frame_ready(&self) -> bool {
+            self.frame_ready.load(Ordering::SeqCst)
+        }
+
         fn take_frame_ready(&self) -> bool {
             self.frame_ready.swap(false, Ordering::SeqCst)
         }
@@ -384,6 +389,7 @@ mod servo_runtime {
                 url: url.clone(),
                 viewport_size: None,
                 load_settle_timeout: LOAD_SETTLE_TIMEOUT,
+                return_on_first_frame: false,
                 reply_tx,
             })
         }
@@ -399,6 +405,7 @@ mod servo_runtime {
                 url: url.clone(),
                 viewport_size,
                 load_settle_timeout: VISIBLE_LOAD_SETTLE_TIMEOUT,
+                return_on_first_frame: true,
                 reply_tx,
             })
         }
@@ -670,6 +677,7 @@ mod servo_runtime {
                     url,
                     viewport_size,
                     load_settle_timeout,
+                    return_on_first_frame,
                     reply_tx,
                 } => {
                     let result = run_servo_command(|| {
@@ -679,6 +687,7 @@ mod servo_runtime {
                             url,
                             viewport_size,
                             load_settle_timeout,
+                            return_on_first_frame,
                         )
                     });
                     let _ = reply_tx.send(result);
@@ -1083,6 +1092,7 @@ mod servo_runtime {
         url: Url,
         viewport_size: Option<(u32, u32)>,
         load_settle_timeout: Duration,
+        return_on_first_frame: bool,
     ) -> Result<ServoRenderResult, String> {
         if !runtime.sessions.contains_key(&tab_id) {
             eprintln!(
@@ -1111,7 +1121,15 @@ mod servo_runtime {
                 runtime.servo.spin_event_loop();
             }
         }
-        let result = navigate_session(&mut runtime.servo, &mut session, url, load_settle_timeout);
+        let delegate = runtime.delegate.clone();
+        let result = navigate_session(
+            &mut runtime.servo,
+            &delegate,
+            &mut session,
+            url,
+            load_settle_timeout,
+            return_on_first_frame,
+        );
         runtime.sessions.insert(tab_id, session);
         result
     }
@@ -1573,12 +1591,17 @@ mod servo_runtime {
 
     fn navigate_session(
         servo: &mut Servo,
+        delegate: &HeadlessWebViewDelegate,
         session: &mut ServoTabSession,
         url: Url,
         load_settle_timeout: Duration,
+        return_on_first_frame: bool,
     ) -> Result<ServoRenderResult, String> {
         let previous_url = session.webview.url();
         if previous_url.as_ref() != Some(&url) {
+            if return_on_first_frame {
+                let _ = delegate.take_frame_ready();
+            }
             session.webview.load(url.clone());
         }
         let url_wait_started = Instant::now();
@@ -1594,6 +1617,9 @@ mod servo_runtime {
         let mut final_url = session.webview.url().unwrap_or_else(|| url.clone());
 
         if previous_url.as_ref() != Some(&url) && Some(&final_url) == previous_url.as_ref() {
+            if return_on_first_frame {
+                let _ = delegate.take_frame_ready();
+            }
             session.webview.load(url.clone());
             let retry_wait_started = Instant::now();
             let retry_note = wait_for_navigation_url(
@@ -1621,9 +1647,12 @@ mod servo_runtime {
         }
 
         let load_wait_started = Instant::now();
-        let load_note = wait_for_load(servo, &session.webview, load_settle_timeout)
-            .err()
-            .or(url_note);
+        let load_note = if return_on_first_frame {
+            wait_for_load_or_frame(servo, &session.webview, delegate, load_settle_timeout).err()
+        } else {
+            wait_for_load(servo, &session.webview, load_settle_timeout).err()
+        }
+        .or(url_note);
         let load_wait = Some(load_wait_started.elapsed());
         Ok(ServoRenderResult {
             final_url,
@@ -1745,6 +1774,17 @@ mod servo_runtime {
     ) -> Result<(), String> {
         wait_for(servo, webview, timeout, |webview| {
             webview.load_status() == LoadStatus::Complete
+        })
+    }
+
+    fn wait_for_load_or_frame(
+        servo: &mut Servo,
+        webview: &WebView,
+        delegate: &HeadlessWebViewDelegate,
+        timeout: Duration,
+    ) -> Result<(), String> {
+        wait_for(servo, webview, timeout, |webview| {
+            webview.load_status() == LoadStatus::Complete || delegate.is_frame_ready()
         })
     }
 
