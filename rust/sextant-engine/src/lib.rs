@@ -124,6 +124,7 @@ mod servo_runtime {
         ResizeAndCaptureFrame {
             tab_id: Uuid,
             viewport_size: Option<(u32, u32)>,
+            enqueued_at: Instant,
             reply_tx: mpsc::Sender<Result<AsyncFrameCapture, String>>,
         },
         ResizeTab {
@@ -444,6 +445,7 @@ mod servo_runtime {
             self.request(|reply_tx| ServoCommand::ResizeAndCaptureFrame {
                 tab_id,
                 viewport_size,
+                enqueued_at: Instant::now(),
                 reply_tx,
             })
         }
@@ -744,10 +746,12 @@ mod servo_runtime {
                 ServoCommand::ResizeAndCaptureFrame {
                     tab_id,
                     viewport_size,
+                    enqueued_at,
                     reply_tx,
                 } => {
+                    let queue_elapsed = enqueued_at.elapsed();
                     let result = run_servo_command(|| {
-                        resize_and_capture_frame(&mut runtime, tab_id, viewport_size)
+                        resize_and_capture_frame(&mut runtime, tab_id, viewport_size, queue_elapsed)
                     });
                     let _ = reply_tx.send(result);
                 }
@@ -1189,6 +1193,7 @@ mod servo_runtime {
         runtime: &mut ServoRuntimeState,
         tab_id: Uuid,
         viewport_size: Option<(u32, u32)>,
+        queue: Duration,
     ) -> Result<AsyncFrameCapture, String> {
         let resize = if let Some((width, height)) = viewport_size {
             let started = Instant::now();
@@ -1200,6 +1205,7 @@ mod servo_runtime {
         let capture_started = Instant::now();
         let frame = capture_frame(runtime, tab_id)?.frame;
         Ok(AsyncFrameCapture {
+            queue,
             resize,
             capture: capture_started.elapsed(),
             frame,
@@ -2453,6 +2459,7 @@ pub struct BrowserEvalProbe {
 
 #[derive(Debug, Clone)]
 pub struct AsyncFrameCapture {
+    pub queue: Duration,
     pub resize: Option<Duration>,
     pub capture: Duration,
     pub frame: RenderedFrame,

@@ -278,6 +278,8 @@ Recent progress: viewport mouse/key/wheel input now uses a smaller interaction f
 
 Recent progress: visible event-loop frame refresh now starts Servo frame capture on a background worker and polls the result instead of blocking the window loop. Synchronous `refresh_frame` remains available for operator/proof paths that need immediate evidence.
 
+Recent progress: async render-bridge telemetry now splits Servo service queue wait into a `frame-queue` perf event, and window smoke prints the top six slow perf events so queue pressure is visible to operators and MCP clients. A fresh assisted user-DISTILL smoke showed the problem clearly (`frame-total` about 318ms with `frame-queue` about 272ms), then idle frame refresh was changed to wait while foreground Servo navigation, distillation, or AI warmup work is pending. The follow-up smoke dropped `frame-total` to about 56ms with capture around 29-37ms and no `frame-queue` in the top six.
+
 ### 2. Full In-Window Workflow Validation (~1-2 hours)
 
 The old Xilem validation checklist is reference material. Rebuild the same workflow coverage in the native browser shell around its actual controls and browser viewport, then run a real click-through pass that exercises the app end to end in the window and fixes anything that still only works in tests or partial runtime paths.

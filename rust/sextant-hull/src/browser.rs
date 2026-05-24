@@ -413,6 +413,13 @@ enum FrameCapturePurpose {
 }
 
 impl FrameCapturePurpose {
+    fn queue_label(self) -> &'static str {
+        match self {
+            FrameCapturePurpose::RenderBridge => "capture queue render bridge",
+            FrameCapturePurpose::AiObservation => "capture queue ai observation",
+        }
+    }
+
     fn capture_label(self) -> &'static str {
         match self {
             FrameCapturePurpose::RenderBridge => "capture render bridge",
@@ -3238,6 +3245,11 @@ impl BrowserApp {
         };
         match result {
             Ok(capture) => {
+                self.record_perf(
+                    "frame-queue",
+                    capture.queue,
+                    FrameCapturePurpose::RenderBridge.queue_label(),
+                );
                 if let Some(resize) = capture.resize {
                     self.record_perf(
                         "resize",
@@ -4484,6 +4496,8 @@ impl BrowserApp {
 
         if self.main_view != MainView::Browser
             || self.pending_navigation.is_some()
+            || self.pending_distillation.is_some()
+            || self.pending_observation_warmup.is_some()
             || (self.latest_frame.is_none() && self.frame_refresh_budget == 0)
             || self.pending_frame_capture.is_some()
         {
@@ -4573,6 +4587,11 @@ impl BrowserApp {
                 }
                 match result {
                     Ok(capture) => {
+                        self.record_perf(
+                            "frame-queue",
+                            capture.queue,
+                            pending.purpose.queue_label(),
+                        );
                         if let Some(resize) = capture.resize {
                             self.record_perf(
                                 "resize",
@@ -5158,7 +5177,7 @@ fn run_visible_app(
                                         event.label
                                     );
                                 }
-                                let slow_events = app.slowest_perf_events(4);
+                                let slow_events = app.slowest_perf_events(6);
                                 if !slow_events.is_empty() {
                                     let summary = slow_events
                                         .iter()
@@ -8099,6 +8118,7 @@ mod tests {
                 can_go_forward: false,
                 timings: AsyncNavigationTimings::default(),
                 initial_frame: Some(Ok(AsyncFrameCapture {
+                    queue: Duration::from_millis(3),
                     resize: None,
                     capture: Duration::from_millis(8),
                     frame: RenderedFrame {
@@ -8231,6 +8251,35 @@ mod tests {
         assert!(app.validation.browser_input_seen);
         assert!(app.frame_dirty);
         assert_eq!(app.frame_refresh_budget, FRAME_INTERACTION_WARMUP_BUDGET);
+
+        let _ = std::fs::remove_dir_all(data_dir);
+        Ok(())
+    }
+
+    #[test]
+    fn frame_refresh_waits_for_foreground_servo_work() -> Result<(), String> {
+        let data_dir = env::temp_dir().join(format!(
+            "sextant-browser-frame-refresh-foreground-{}",
+            Uuid::new_v4()
+        ));
+        let mut app = BrowserApp::new_with_data_dir(data_dir.clone())?;
+        app.new_tab();
+        app.latest_frame = Some(RenderedFrame {
+            width: 10,
+            height: 10,
+            pixels: vec![0; 100],
+        });
+        app.frame_refresh_budget = 1;
+        app.frame_dirty = true;
+        app.last_frame_refresh = Instant::now() - FRAME_REFRESH_DIRTY;
+        let (_tx, result_rx) = mpsc::channel();
+        app.pending_distillation = Some(PendingDistillation {
+            result_rx,
+            started: Instant::now(),
+        });
+
+        assert!(!app.maybe_refresh_frame());
+        assert!(app.pending_frame_capture.is_none());
 
         let _ = std::fs::remove_dir_all(data_dir);
         Ok(())
