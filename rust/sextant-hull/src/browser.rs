@@ -32,6 +32,9 @@ use winit::event_loop::{ControlFlow, EventLoop};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Icon, Window, WindowBuilder};
 
+#[cfg(feature = "servo-backend")]
+mod direct_servo;
+
 const BG: u32 = 0x0010161d;
 const PANEL: u32 = 0x0019232c;
 const PANEL_ALT: u32 = 0x00202b35;
@@ -75,6 +78,7 @@ const OBSERVATION_WARMUP_IDLE_DELAY: Duration = Duration::from_millis(150);
 const PERF_HISTORY_LIMIT: usize = 24;
 const OPERATOR_DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
 const WINDOW_SMOKE_DEFAULT_TIMEOUT: Duration = Duration::from_secs(15);
+const DIRECT_INCOGNITO_CLEANUP_ARG: &str = "--cleanup-direct-incognito";
 
 #[derive(Clone, Copy, Debug)]
 struct Rect {
@@ -160,7 +164,7 @@ impl UserRenderPath {
                 "temporary frame-capture render bridge feeding Softbuffer"
             }
             UserRenderPath::DirectServo => {
-                "direct Servo WindowRenderingContext proof; not integrated into the production shell yet"
+                "direct Servo WindowRenderingContext raw window; shell chrome compositor pending"
             }
         }
     }
@@ -325,6 +329,12 @@ struct WindowSmokeSpec {
     timeout: Duration,
     user_distill: bool,
     input_latency: bool,
+    first_interaction_smoke: bool,
+    verified_input_smoke: bool,
+    search_submit_smoke: bool,
+    live_search_smoke: bool,
+    load_smoke: bool,
+    resize_smoke: bool,
 }
 
 #[derive(Clone)]
@@ -4837,6 +4847,14 @@ fn main() {
         .init();
 
     let args: Vec<String> = env::args().collect();
+    if let Some(path) = operator_arg_value(&args, DIRECT_INCOGNITO_CLEANUP_ARG) {
+        if let Err(error) = cleanup_direct_incognito_data_dir(Path::new(&path)) {
+            eprintln!("[sextant-browser] direct incognito cleanup failed: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
     let operator_timeout = match parse_operator_timeout(&args) {
         Ok(timeout) => timeout,
         Err(error) => {
@@ -4947,6 +4965,80 @@ fn main() {
         .any(|arg| arg == "--start-showcase" || arg == "--demo");
     let start_real_browsing = args.iter().any(|arg| arg == "--start-real-browsing");
     let start_shell_interaction = args.iter().any(|arg| arg == "--start-shell-interaction");
+    let start_location_smoke = operator_arg_value(&args, "--location-smoke")
+        .or_else(|| operator_arg_value(&args, "--window-location-smoke"));
+    let start_history_smoke = operator_arg_value(&args, "--history-smoke")
+        .or_else(|| operator_arg_value(&args, "--window-history-smoke"));
+    let start_first_interaction_smoke = window_smoke
+        .as_ref()
+        .map(|smoke| smoke.first_interaction_smoke)
+        .unwrap_or(false)
+        || args.iter().any(|arg| {
+            arg == "--first-interaction-smoke" || arg == "--window-first-interaction-smoke"
+        });
+    let start_verified_input_smoke = window_smoke
+        .as_ref()
+        .map(|smoke| smoke.verified_input_smoke)
+        .unwrap_or(false)
+        || args
+            .iter()
+            .any(|arg| arg == "--verified-input-smoke" || arg == "--window-verified-input-smoke");
+    let start_search_submit_smoke = window_smoke
+        .as_ref()
+        .map(|smoke| smoke.search_submit_smoke)
+        .unwrap_or(false)
+        || args
+            .iter()
+            .any(|arg| arg == "--search-submit-smoke" || arg == "--window-search-submit-smoke");
+    let start_live_search_smoke = window_smoke
+        .as_ref()
+        .map(|smoke| smoke.live_search_smoke)
+        .unwrap_or(false)
+        || args
+            .iter()
+            .any(|arg| arg == "--live-search-smoke" || arg == "--window-live-search-smoke");
+    let start_load_smoke = window_smoke
+        .as_ref()
+        .map(|smoke| smoke.load_smoke)
+        .unwrap_or(false)
+        || args
+            .iter()
+            .any(|arg| arg == "--load-smoke" || arg == "--window-load-smoke");
+    let start_reload_smoke = args
+        .iter()
+        .any(|arg| arg == "--reload-smoke" || arg == "--window-reload-smoke");
+    let start_resize_smoke = window_smoke
+        .as_ref()
+        .map(|smoke| smoke.resize_smoke)
+        .unwrap_or(false)
+        || args
+            .iter()
+            .any(|arg| arg == "--resize-smoke" || arg == "--window-resize-smoke");
+
+    if user_render_path == UserRenderPath::DirectServo {
+        if let Err(error) = run_direct_servo_browser(
+            window_smoke,
+            startup_input,
+            start_showcase,
+            start_real_browsing,
+            start_shell_interaction,
+            start_location_smoke,
+            start_history_smoke,
+            start_first_interaction_smoke,
+            start_verified_input_smoke,
+            start_search_submit_smoke,
+            start_live_search_smoke,
+            start_load_smoke,
+            start_reload_smoke,
+            start_resize_smoke,
+            browser_mode,
+            pre_size_visible_navigation,
+        ) {
+            eprintln!("[sextant-browser] failed: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
 
     if let Err(error) = run_visible_app(
         window_smoke,
@@ -4961,6 +5053,564 @@ fn main() {
         eprintln!("[sextant-browser] failed: {error}");
         std::process::exit(1);
     }
+}
+
+#[cfg(feature = "servo-backend")]
+fn run_direct_servo_browser(
+    window_smoke: Option<WindowSmokeSpec>,
+    startup_input: Option<String>,
+    start_showcase: bool,
+    start_real_browsing: bool,
+    start_shell_interaction: bool,
+    start_location_smoke: Option<String>,
+    start_history_smoke: Option<String>,
+    start_first_interaction_smoke: bool,
+    start_verified_input_smoke: bool,
+    start_search_submit_smoke: bool,
+    start_live_search_smoke: bool,
+    start_load_smoke: bool,
+    start_reload_smoke: bool,
+    start_resize_smoke: bool,
+    browser_mode: BrowserMode,
+    pre_size_visible_navigation: bool,
+) -> Result<(), String> {
+    if !matches!(browser_mode, BrowserMode::Direct | BrowserMode::Incognito) {
+        return Err(format!(
+            "raw direct Servo render path currently supports Direct or Incognito mode only; {} mode still requires the bridge shell for AI observation/control surfaces",
+            browser_mode.label()
+        ));
+    }
+
+    let mut unsupported = Vec::new();
+    if start_showcase {
+        unsupported.push("launch showcase");
+    }
+    if start_real_browsing {
+        unsupported.push("real browsing workflow");
+    }
+    if let Some(smoke) = window_smoke.as_ref() {
+        if smoke.user_distill {
+            unsupported.push("user distill");
+        }
+        if smoke.input_latency && start_shell_interaction {
+            unsupported.push("combined direct input and tab smoke");
+        }
+        if smoke.input_latency && start_location_smoke.is_some() {
+            unsupported.push("combined direct input and location smoke");
+        }
+        if smoke.input_latency && start_history_smoke.is_some() {
+            unsupported.push("combined direct input and history smoke");
+        }
+        if smoke.input_latency && start_first_interaction_smoke {
+            unsupported.push("combined direct input and first-interaction smoke");
+        }
+        if smoke.input_latency && start_verified_input_smoke {
+            unsupported.push("combined direct input and verified-input smoke");
+        }
+        if smoke.input_latency && start_search_submit_smoke {
+            unsupported.push("combined direct input and search-submit smoke");
+        }
+        if smoke.input_latency && start_live_search_smoke {
+            unsupported.push("combined direct input and live-search smoke");
+        }
+        if smoke.input_latency && start_load_smoke {
+            unsupported.push("combined direct input and load smoke");
+        }
+        if smoke.input_latency && start_reload_smoke {
+            unsupported.push("combined direct input and reload smoke");
+        }
+        if smoke.input_latency && start_resize_smoke {
+            unsupported.push("combined direct input and resize smoke");
+        }
+        if start_shell_interaction && start_location_smoke.is_some() {
+            unsupported.push("combined direct tab and location smoke");
+        }
+        if start_shell_interaction && start_history_smoke.is_some() {
+            unsupported.push("combined direct tab and history smoke");
+        }
+        if start_shell_interaction && start_first_interaction_smoke {
+            unsupported.push("combined direct tab and first-interaction smoke");
+        }
+        if start_shell_interaction && start_verified_input_smoke {
+            unsupported.push("combined direct tab and verified-input smoke");
+        }
+        if start_shell_interaction && start_search_submit_smoke {
+            unsupported.push("combined direct tab and search-submit smoke");
+        }
+        if start_shell_interaction && start_live_search_smoke {
+            unsupported.push("combined direct tab and live-search smoke");
+        }
+        if start_shell_interaction && start_load_smoke {
+            unsupported.push("combined direct tab and load smoke");
+        }
+        if start_shell_interaction && start_resize_smoke {
+            unsupported.push("combined direct tab and resize smoke");
+        }
+        if start_location_smoke.is_some() && start_history_smoke.is_some() {
+            unsupported.push("combined direct location and history smoke");
+        }
+        if start_location_smoke.is_some() && start_first_interaction_smoke {
+            unsupported.push("combined direct location and first-interaction smoke");
+        }
+        if start_location_smoke.is_some() && start_verified_input_smoke {
+            unsupported.push("combined direct location and verified-input smoke");
+        }
+        if start_location_smoke.is_some() && start_search_submit_smoke {
+            unsupported.push("combined direct location and search-submit smoke");
+        }
+        if start_location_smoke.is_some() && start_live_search_smoke {
+            unsupported.push("combined direct location and live-search smoke");
+        }
+        if start_location_smoke.is_some() && start_load_smoke {
+            unsupported.push("combined direct location and load smoke");
+        }
+        if start_location_smoke.is_some() && start_resize_smoke {
+            unsupported.push("combined direct location and resize smoke");
+        }
+        if start_history_smoke.is_some() && start_load_smoke {
+            unsupported.push("combined direct history and load smoke");
+        }
+        if start_history_smoke.is_some() && start_first_interaction_smoke {
+            unsupported.push("combined direct history and first-interaction smoke");
+        }
+        if start_history_smoke.is_some() && start_verified_input_smoke {
+            unsupported.push("combined direct history and verified-input smoke");
+        }
+        if start_history_smoke.is_some() && start_search_submit_smoke {
+            unsupported.push("combined direct history and search-submit smoke");
+        }
+        if start_history_smoke.is_some() && start_live_search_smoke {
+            unsupported.push("combined direct history and live-search smoke");
+        }
+        if start_first_interaction_smoke && start_load_smoke {
+            unsupported.push("combined direct first-interaction and load smoke");
+        }
+        if start_first_interaction_smoke && start_resize_smoke {
+            unsupported.push("combined direct first-interaction and resize smoke");
+        }
+        if start_first_interaction_smoke && start_verified_input_smoke {
+            unsupported.push("combined direct first-interaction and verified-input smoke");
+        }
+        if start_first_interaction_smoke && start_live_search_smoke {
+            unsupported.push("combined direct first-interaction and live-search smoke");
+        }
+        if start_verified_input_smoke && start_load_smoke {
+            unsupported.push("combined direct verified-input and load smoke");
+        }
+        if start_verified_input_smoke && start_resize_smoke {
+            unsupported.push("combined direct verified-input and resize smoke");
+        }
+        if start_verified_input_smoke && start_search_submit_smoke {
+            unsupported.push("combined direct verified-input and search-submit smoke");
+        }
+        if start_verified_input_smoke && start_live_search_smoke {
+            unsupported.push("combined direct verified-input and live-search smoke");
+        }
+        if start_search_submit_smoke && start_live_search_smoke {
+            unsupported.push("combined direct search-submit and live-search smoke");
+        }
+        if start_search_submit_smoke && start_load_smoke {
+            unsupported.push("combined direct search-submit and load smoke");
+        }
+        if start_search_submit_smoke && start_resize_smoke {
+            unsupported.push("combined direct search-submit and resize smoke");
+        }
+        if start_live_search_smoke && start_load_smoke {
+            unsupported.push("combined direct live-search and load smoke");
+        }
+        if start_live_search_smoke && start_resize_smoke {
+            unsupported.push("combined direct live-search and resize smoke");
+        }
+        if start_history_smoke.is_some() && start_resize_smoke {
+            unsupported.push("combined direct history and resize smoke");
+        }
+        if start_load_smoke && start_resize_smoke {
+            unsupported.push("combined direct load and resize smoke");
+        }
+        if start_reload_smoke
+            && (start_shell_interaction
+                || start_location_smoke.is_some()
+                || start_history_smoke.is_some()
+                || start_first_interaction_smoke
+                || start_verified_input_smoke
+                || start_search_submit_smoke
+                || start_live_search_smoke
+                || start_load_smoke
+                || start_resize_smoke)
+        {
+            unsupported.push("combined direct reload and other control smoke");
+        }
+    }
+    if !unsupported.is_empty() {
+        return Err(format!(
+            "direct Servo render path currently supports raw URL browsing only; {} still require the bridge shell",
+            unsupported.join(", ")
+        ));
+    }
+
+    let smoke_mode = window_smoke.is_some();
+    let timeout = window_smoke
+        .as_ref()
+        .map(|smoke| smoke.timeout)
+        .unwrap_or(WINDOW_SMOKE_DEFAULT_TIMEOUT);
+    let input_latency = window_smoke
+        .as_ref()
+        .map(|smoke| smoke.input_latency)
+        .unwrap_or(false);
+    let requested_target = window_smoke
+        .as_ref()
+        .and_then(|smoke| smoke.target.clone())
+        .or(startup_input);
+    let verified_input_fixture = if requested_target.is_none() && start_verified_input_smoke {
+        Some(direct_servo::start_verified_input_fixture_server()?)
+    } else {
+        None
+    };
+    let search_submit_fixture = if requested_target.is_none() && start_search_submit_smoke {
+        Some(direct_servo::start_search_submit_fixture_server()?)
+    } else {
+        None
+    };
+    let target_text = requested_target.unwrap_or_else(|| {
+        if input_latency {
+            input_latency_fixture_url()
+        } else if start_first_interaction_smoke {
+            input_latency_fixture_url()
+        } else if start_verified_input_smoke {
+            verified_input_fixture
+                .as_ref()
+                .expect("verified input fixture should be started")
+                .url()
+                .to_string()
+        } else if start_search_submit_smoke {
+            search_submit_fixture
+                .as_ref()
+                .expect("search submit fixture should be started")
+                .url()
+                .to_string()
+        } else if start_live_search_smoke {
+            "https://lite.duckduckgo.com/lite/".to_string()
+        } else {
+            "https://example.com".to_string()
+        }
+    });
+    let target = parse_navigation_target(&target_text)?;
+    let scripted_text = input_latency.then(|| "sextant".to_string());
+    let direct_data_dir = if browser_mode == BrowserMode::Incognito {
+        let data_dir = env::temp_dir().join(format!(
+            "sextant-browser-direct-incognito-{}",
+            Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&data_dir).map_err(|error| error.to_string())?;
+        Some(data_dir)
+    } else {
+        None
+    };
+
+    if smoke_mode {
+        println!("[window-smoke] starting visible browser shell smoke");
+        println!(
+            "[window-smoke] browser mode {} ({})",
+            browser_mode.label(),
+            browser_mode.status()
+        );
+        println!(
+            "[window-smoke] render path {} ({})",
+            UserRenderPath::DirectServo.label(),
+            UserRenderPath::DirectServo.status()
+        );
+        println!("[window-smoke] render gap shell chrome compositor pending");
+        println!(
+            "[window-smoke] pre-size navigation {}",
+            pre_size_visible_navigation
+        );
+        if let Some(data_dir) = direct_data_dir.as_ref() {
+            println!(
+                "[window-smoke] ephemeral browser data dir {}",
+                data_dir.display()
+            );
+            println!(
+                "[window-smoke] direct Servo config dir {}",
+                data_dir.display()
+            );
+            println!("[window-smoke] direct Servo http cache disabled true");
+        }
+    } else {
+        println!(
+            "[window-start] starting direct Servo raw browsing lane in {} mode",
+            browser_mode.label()
+        );
+    }
+
+    let direct_result = direct_servo::run(direct_servo::DirectServoOptions {
+        target,
+        smoke: smoke_mode,
+        timeout,
+        title: "Sextant Browser Direct".to_string(),
+        log_prefix: "window-direct",
+        setup_servo_logging: false,
+        scripted_text,
+        scripted_first_interaction_smoke: start_first_interaction_smoke,
+        scripted_verified_input_smoke: start_verified_input_smoke,
+        scripted_search_submit_smoke: start_search_submit_smoke,
+        scripted_live_search_smoke: start_live_search_smoke,
+        scripted_location: start_location_smoke,
+        scripted_history: start_history_smoke,
+        scripted_load_smoke: start_load_smoke,
+        scripted_reload_smoke: start_reload_smoke,
+        scripted_resize_smoke: start_resize_smoke,
+        scripted_tab_smoke: start_shell_interaction,
+        config_dir: direct_data_dir.clone(),
+        disable_http_cache: browser_mode == BrowserMode::Incognito,
+    });
+    let cleanup_result = direct_data_dir
+        .as_ref()
+        .map(|data_dir| cleanup_or_defer_direct_incognito_data_dir(data_dir))
+        .unwrap_or(Ok(()));
+    let outcome = match (direct_result, cleanup_result) {
+        (Ok(outcome), Ok(())) => outcome,
+        (Ok(_), Err(cleanup_error)) => return Err(cleanup_error),
+        (Err(run_error), Ok(())) => return Err(run_error),
+        (Err(run_error), Err(cleanup_error)) => {
+            return Err(format!("{run_error}; additionally {cleanup_error}"));
+        }
+    };
+
+    if smoke_mode {
+        if let Some(first_present) = outcome.first_present {
+            println!(
+                "[window-smoke] first direct present in {}",
+                direct_servo::format_duration(first_present)
+            );
+            println!(
+                "[window-smoke] first Servo frame in {}",
+                direct_servo::format_duration(first_present)
+            );
+        }
+        if let Some(input_frame) = outcome.input_frame {
+            println!(
+                "[window-smoke] input frame {}",
+                direct_servo::format_duration(input_frame)
+            );
+        }
+        if let Some(first_interaction_frame) = outcome.first_interaction_frame {
+            println!(
+                "[window-smoke] first interaction frame {}",
+                direct_servo::format_duration(first_interaction_frame)
+            );
+        }
+        if let Some(before_load_complete) = outcome.first_interaction_before_load_complete {
+            println!(
+                "[window-smoke] first interaction before load complete {}",
+                before_load_complete
+            );
+        }
+        if let Some(verified_input_frame) = outcome.verified_input_frame {
+            println!(
+                "[window-smoke] verified input frame {}",
+                direct_servo::format_duration(verified_input_frame)
+            );
+        }
+        if let Some(verified_input) = outcome.verified_input {
+            println!("[window-smoke] verified input {}", verified_input);
+        }
+        if let Some(before_load_complete) = outcome.verified_input_before_load_complete {
+            println!(
+                "[window-smoke] verified input before load complete {}",
+                before_load_complete
+            );
+        }
+        if let Some(search_submit_frame) = outcome.search_submit_frame {
+            println!(
+                "[window-smoke] search submit frame {}",
+                direct_servo::format_duration(search_submit_frame)
+            );
+        }
+        if let Some(search_submit) = outcome.search_submit {
+            println!("[window-smoke] search submit {}", search_submit);
+        }
+        if let Some(search_submit_url) = outcome.search_submit_url {
+            println!("[window-smoke] search submit url {}", search_submit_url);
+        }
+        if let Some(search_submit_title) = outcome.search_submit_title {
+            println!("[window-smoke] search submit title {}", search_submit_title);
+        }
+        if let Some(live_search_frame) = outcome.live_search_frame {
+            println!(
+                "[window-smoke] live search frame {}",
+                direct_servo::format_duration(live_search_frame)
+            );
+        }
+        if let Some(live_search) = outcome.live_search {
+            println!("[window-smoke] live search {}", live_search);
+        }
+        if let Some(live_search_url) = outcome.live_search_url {
+            println!("[window-smoke] live search url {}", live_search_url);
+        }
+        if let Some(live_search_title) = outcome.live_search_title {
+            println!("[window-smoke] live search title {}", live_search_title);
+        }
+        if let Some(location_frame) = outcome.location_frame {
+            println!(
+                "[window-smoke] location frame {}",
+                direct_servo::format_duration(location_frame)
+            );
+        }
+        if let Some(location_url) = outcome.location_url {
+            println!("[window-smoke] location url {}", location_url);
+        }
+        if let Some(location_title) = outcome.location_title {
+            println!("[window-smoke] location title {}", location_title);
+        }
+        if let Some(history_navigation_frame) = outcome.history_navigation_frame {
+            println!(
+                "[window-smoke] history navigation frame {}",
+                direct_servo::format_duration(history_navigation_frame)
+            );
+        }
+        if let Some(history_back_frame) = outcome.history_back_frame {
+            println!(
+                "[window-smoke] history back frame {}",
+                direct_servo::format_duration(history_back_frame)
+            );
+        }
+        if let Some(history_forward_frame) = outcome.history_forward_frame {
+            println!(
+                "[window-smoke] history forward frame {}",
+                direct_servo::format_duration(history_forward_frame)
+            );
+        }
+        if let Some(history_final_url) = outcome.history_final_url {
+            println!("[window-smoke] history final url {}", history_final_url);
+        }
+        if let Some(history_final_title) = outcome.history_final_title {
+            println!("[window-smoke] history final title {}", history_final_title);
+        }
+        if let Some(load_complete) = outcome.load_complete {
+            println!(
+                "[window-smoke] load complete {}",
+                direct_servo::format_duration(load_complete)
+            );
+        }
+        if let Some(load_url) = outcome.load_url {
+            println!("[window-smoke] load url {}", load_url);
+        }
+        if let Some(load_title) = outcome.load_title {
+            println!("[window-smoke] load title {}", load_title);
+        }
+        if let Some(reload_frame) = outcome.reload_frame {
+            println!(
+                "[window-smoke] reload frame {}",
+                direct_servo::format_duration(reload_frame)
+            );
+        }
+        if let Some(reload_url) = outcome.reload_url {
+            println!("[window-smoke] reload url {}", reload_url);
+        }
+        if let Some(reload_title) = outcome.reload_title {
+            println!("[window-smoke] reload title {}", reload_title);
+        }
+        if let Some(resize_frame) = outcome.resize_frame {
+            println!(
+                "[window-smoke] resize frame {}",
+                direct_servo::format_duration(resize_frame)
+            );
+        }
+        if let Some(tab_frame) = outcome.tab_frame {
+            println!(
+                "[window-smoke] tab frame {}",
+                direct_servo::format_duration(tab_frame)
+            );
+        }
+        if let Some(tab_url) = outcome.tab_url {
+            println!("[window-smoke] tab url {}", tab_url);
+        }
+        if let Some(tab_title) = outcome.tab_title {
+            println!("[window-smoke] tab title {}", tab_title);
+        }
+    }
+    Ok(())
+}
+
+fn cleanup_or_defer_direct_incognito_data_dir(data_dir: &Path) -> Result<(), String> {
+    match cleanup_direct_incognito_data_dir(data_dir) {
+        Ok(()) => Ok(()),
+        Err(cleanup_error) => {
+            let exe = env::current_exe().map_err(|error| {
+                format!(
+                    "{cleanup_error}; additionally failed to locate cleanup helper executable: {error}"
+                )
+            })?;
+            std::process::Command::new(exe)
+                .arg(DIRECT_INCOGNITO_CLEANUP_ARG)
+                .arg(data_dir)
+                .spawn()
+                .map(|_| ())
+                .map_err(|error| {
+                    format!(
+                        "{cleanup_error}; additionally failed to launch cleanup helper: {error}"
+                    )
+                })
+        }
+    }
+}
+
+fn cleanup_direct_incognito_data_dir(data_dir: &Path) -> Result<(), String> {
+    let temp_dir = env::temp_dir();
+    let file_name = data_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    if !data_dir.starts_with(&temp_dir)
+        || !file_name.starts_with("sextant-browser-direct-incognito-")
+    {
+        return Err(format!(
+            "refusing to remove unexpected direct incognito data dir {}",
+            data_dir.display()
+        ));
+    }
+
+    let mut last_error = None;
+    for _ in 0..50 {
+        match std::fs::remove_dir_all(data_dir) {
+            Ok(()) => return Ok(()),
+            Err(_) if !data_dir.exists() => return Ok(()),
+            Err(error) => {
+                last_error = Some(error);
+                thread::sleep(Duration::from_millis(100));
+            }
+        }
+    }
+
+    Err(format!(
+        "direct incognito data cleanup failed for {}: {}",
+        data_dir.display(),
+        last_error
+            .map(|error| error.to_string())
+            .unwrap_or_else(|| "unknown cleanup error".to_string())
+    ))
+}
+
+#[cfg(not(feature = "servo-backend"))]
+fn run_direct_servo_browser(
+    _window_smoke: Option<WindowSmokeSpec>,
+    _startup_input: Option<String>,
+    _start_showcase: bool,
+    _start_real_browsing: bool,
+    _start_shell_interaction: bool,
+    _start_location_smoke: Option<String>,
+    _start_history_smoke: Option<String>,
+    _start_first_interaction_smoke: bool,
+    _start_verified_input_smoke: bool,
+    _start_search_submit_smoke: bool,
+    _start_live_search_smoke: bool,
+    _start_load_smoke: bool,
+    _start_reload_smoke: bool,
+    _start_resize_smoke: bool,
+    _browser_mode: BrowserMode,
+    _pre_size_visible_navigation: bool,
+) -> Result<(), String> {
+    Err("direct Servo render path requires the servo-backend feature".to_string())
 }
 
 fn run_operator_mode<F>(label: &'static str, timeout: Duration, run: F) -> !
@@ -7140,11 +7790,35 @@ fn parse_window_smoke(args: &[String]) -> Result<Option<WindowSmokeSpec>, String
     let input_latency = args
         .iter()
         .any(|arg| arg == "--window-input-smoke" || arg == "--input-latency-smoke");
+    let first_interaction_smoke = args
+        .iter()
+        .any(|arg| arg == "--first-interaction-smoke" || arg == "--window-first-interaction-smoke");
+    let verified_input_smoke = args
+        .iter()
+        .any(|arg| arg == "--verified-input-smoke" || arg == "--window-verified-input-smoke");
+    let search_submit_smoke = args
+        .iter()
+        .any(|arg| arg == "--search-submit-smoke" || arg == "--window-search-submit-smoke");
+    let live_search_smoke = args
+        .iter()
+        .any(|arg| arg == "--live-search-smoke" || arg == "--window-live-search-smoke");
+    let load_smoke = args
+        .iter()
+        .any(|arg| arg == "--load-smoke" || arg == "--window-load-smoke");
+    let resize_smoke = args
+        .iter()
+        .any(|arg| arg == "--resize-smoke" || arg == "--window-resize-smoke");
     Ok(Some(WindowSmokeSpec {
         target,
         timeout,
         user_distill,
         input_latency,
+        first_interaction_smoke,
+        verified_input_smoke,
+        search_submit_smoke,
+        live_search_smoke,
+        load_smoke,
+        resize_smoke,
     }))
 }
 
@@ -9110,6 +9784,9 @@ mod tests {
             "https://example.com".to_string(),
             "--window-smoke-distill".to_string(),
             "--window-input-smoke".to_string(),
+            "--window-verified-input-smoke".to_string(),
+            "--window-search-submit-smoke".to_string(),
+            "--window-live-search-smoke".to_string(),
             "--window-smoke-timeout".to_string(),
             "30".to_string(),
         ];
@@ -9119,6 +9796,9 @@ mod tests {
         assert_eq!(spec.timeout, Duration::from_secs(30));
         assert!(spec.user_distill);
         assert!(spec.input_latency);
+        assert!(spec.verified_input_smoke);
+        assert!(spec.search_submit_smoke);
+        assert!(spec.live_search_smoke);
         assert!(input_latency_fixture_url().starts_with("data:text/html,"));
     }
 

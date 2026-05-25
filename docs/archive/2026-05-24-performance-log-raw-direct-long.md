@@ -1,0 +1,53 @@
+# Performance Log
+
+This log keeps the current native browser timing checkpoints visible while tuning Servo, the render bridge, and the AI observation lanes.
+
+## 2026-05-24
+
+Environment: Windows debug build through `cargo run`, default Servo backend. Production `sextant-browser` supports the bridge-backed shell path plus an experimental raw direct Servo window path behind `--render-path direct`.
+
+| Scenario | Mode | First draw | First frame | Nav | Distill | Wake | Frame total | Frame queue | Frame capture | Notes |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| `https://example.com` + user DISTILL | Assisted | 46ms | 977ms | 402ms | 422ms | 50ms | 50ms | not in top 6 / `null` | 46ms | Current post-first-frame-return checkpoint from `sextant-mcp --window-smoke ... --user-distill --json`; immediate distill still succeeds after faster visible navigation settle. |
+| `https://developer.mozilla.org/en-US/docs/Web/HTML` | Assisted | 30ms | 485ms | 395ms | n/a | 27ms | n/a | n/a | 37ms | Visible load now returns on first real frame; `navUrlWaitMs` 259ms and `navLoadWaitMs` 14ms. |
+| `https://www.google.com` | Direct | 50ms | 518ms | 383ms | n/a | n/a | n/a | n/a | 29ms | Human-only path confirms Direct skips AI work; visible load now returns on first real frame with `navLoadWaitMs` 15ms. |
+| `https://www.google.com` | Direct | 22ms | 549ms | 470ms | n/a | n/a | n/a | n/a | 22ms | Post input-lane settle checkpoint; warmed run after rebuild. `navUrlWaitMs` was 334ms and `navLoadWaitMs` was 15ms. A prior cold/noisy Google run in the same pass hit 1.0s first frame because URL wait spiked to 748ms, while bridge capture stayed 28ms. |
+| built-in input fixture + input latency | Direct | 31ms | 302ms | 213ms | n/a | n/a | 41ms | n/a | 26-32ms | Input-settle wake checkpoint through MCP `browser_window_smoke` / CLI `--input-latency`. Viewport input enqueue reported `0ms`; follow-up frame after typed input improved to `65ms` after shortening the input-settle window to 16ms. |
+| `https://example.com` + `--render-path direct` | Direct | n/a | 115-191ms | n/a | n/a | n/a | n/a | n/a | none | Production-binary raw direct Servo lane smoke through `sextant-browser`; latest tab smoke after active-tab redraw isolation reported `directPresentMs=191` and `tabFrameMs=32` with `frameReadback=false` by construction. Standalone `sextant-servo-direct` smoke in the same series reached first direct present in about 151ms. |
+| `https://example.com` + `--render-path direct --load-smoke` | Direct | n/a | 178ms | n/a | n/a | n/a | n/a | n/a | none | Raw direct load-complete smoke separates first present from active WebView `LoadStatus::Complete`; latest warmed run reported `loadCompleteMs=591`. |
+| `https://www.google.com` + `--render-path direct --load-smoke` | Direct | n/a | 169ms | n/a | n/a | n/a | n/a | n/a | none | Raw direct first present stays fast, but full active WebView load completion reported `loadCompleteMs=5100`, matching the user-visible sense that complex pages still have long Servo tail work. |
+| input fixture + `--render-path direct --first-interaction-smoke` | Direct | n/a | 140ms | n/a | n/a | n/a | n/a | n/a | none | First interaction is sent immediately after first direct present, without waiting for load completion; latest controlled fixture reported `firstInteractionFrameMs=5` and `firstInteractionBeforeLoadComplete=true`. |
+| `https://www.google.com` + `--render-path direct --first-interaction-smoke` | Direct | n/a | 149ms | n/a | n/a | n/a | n/a | n/a | none | Warm Google run confirms the snappy feel: first direct present around 149ms, follow-up interaction frame around 6ms, and the interaction happened before active WebView load completion. |
+| `https://example.com` + `--render-path direct` | Incognito | n/a | 150ms | n/a | n/a | n/a | n/a | n/a | none | Raw direct Incognito smoke uses an ephemeral Servo `config_dir`, disables Servo HTTP cache, reports those fields through MCP, and cleans up the temp config dir with a guarded retry helper. |
+| `https://example.com` + direct location smoke to data URL | Direct | n/a | 161ms | n/a | n/a | n/a | n/a | n/a | none | Raw direct title-bar location smoke waits for initial `LoadStatus::Complete`, then navigates through the same location parser/manual path as `Ctrl+L`; latest `locationFrameMs=464`. |
+| direct history smoke between two data URLs | Direct | n/a | 158ms | n/a | n/a | n/a | n/a | n/a | none | Raw direct history smoke navigates page A -> page B through the direct location path, waits for history availability, then drives back and forward; latest `historyNavigationFrameMs=186`, `historyBackFrameMs=31`, `historyForwardFrameMs=31`. |
+| direct reload smoke on data URL | Direct | n/a | 172ms | n/a | n/a | n/a | n/a | n/a | none | Raw direct reload smoke waits for active page load completion, calls Servo reload through the direct control path, and reports `reloadFrameMs=133`. |
+| direct resize smoke on data URL | Direct | n/a | 168ms | n/a | n/a | n/a | n/a | n/a | none | Raw direct resize smoke requests a native winit inner-size change to 640x420, resizes every direct WebView from the applied size, and reports `resizeFrameMs=27`. |
+| direct input fixture + `--render-path direct --input-latency` | Direct | n/a | 134-172ms | n/a | n/a | n/a | n/a | n/a | none | Raw direct Servo input smoke through `sextant-browser`; scripted text waits for active `LoadStatus::Complete` before injection and the latest follow-up direct present reports `inputFrameMs=1`. Standalone proof wrapper also passed with first direct present around 162ms and input frame around 0ms on the simple data URL. |
+
+Recent movement:
+
+- Before idle-refresh gating, assisted `example.com` user-DISTILL showed `frame-total` around 318ms with `frame-queue` around 272ms and capture around 29-37ms.
+- After idle-refresh gating, the same path dropped to `frame-total` around 45-56ms with capture around 42ms and no visible queue pressure in the top slow events.
+- Before visible navigation settle tuning, MDN first frame was about 1.2-1.5s and Google Direct first frame was about 2.5s.
+- After visible navigation settle tuning, MDN first frame is about 763ms and Google Direct first frame is about 756ms; synchronous operator/proof navigation keeps the longer settle path.
+- After first-frame return for visible navigation, MDN first frame is about 485ms and Google Direct first frame is about 518ms; the old ~250ms visible load settle wait is now about 14-15ms when Servo has painted a fresh frame.
+- After input-lane settle tuning, warmed Google Direct is still in the same band at about 549ms first frame, with bridge capture down around 22ms. The change is aimed at keyboard feel: text input no longer rearms the bridge before it is flushed to Servo, and frame refresh waits a short 24ms settle window after viewport input enqueue.
+- The first input-latency smoke gave us a separate keyboard-lane baseline: handoff from the shell to Servo is effectively immediate (`0ms` in the visible smoke), while the user-visible follow-up frame was about 137ms on the centered input fixture.
+- After waking frame refresh at the input-settle deadline, the same input fixture improved to about 77ms for the follow-up frame. Shortening the settle window from 24ms to 16ms moved it again to about 65ms. That remaining time is now mostly settle + render bridge capture + redraw polling.
+- The production-binary raw direct Servo smoke now bypasses the frame-capture bridge entirely for user display and presents in roughly 115-173ms on `https://example.com`. This is not the full shell compositor yet: chrome, tabs, AI observation, and advanced proof workflows still use the bridge shell.
+- Direct Servo input is now measurable without the render bridge: the raw direct input fixture presented the typed-text follow-up frame in about 1ms from load-complete-gated injection to present on the latest run. The old bridge input fixture remains about 65ms because it still includes settle + capture + shell redraw.
+- The raw direct window now has first browser affordances beyond rendering: URL/title/history state updates the native title, `Ctrl+L` provides a title-bar location mode, keyboard shortcuts call Servo reload/back/forward, and direct tabs can be opened/closed/cycled without the bridge. Inactive direct tabs no longer wake the redraw loop, and every direct WebView is resized on window resize with an extra resize when it becomes active.
+- Raw direct Incognito is now measurable separately from Direct profile mode: latest Incognito direct first-present is about 150ms with Servo config storage pointed at a temp dir and HTTP cache disabled; Direct profile mode still presents around 176ms in the latest smoke.
+- Raw direct location navigation is now measurable separately from startup navigation. The first attempt exposed an early `LoadUrl for unknown browsing context` race; the current gated path waits for the active WebView load state and reports the follow-up frame around 464ms on a data URL target.
+- Raw direct history navigation is now measurable separately from location navigation: data-URL history smoke reports the second navigation around 186ms, then back/forward frames around 31ms each.
+- Raw direct reload is now measurable as its own control path: data-URL reload smoke reports the reload follow-up frame around 133ms.
+- Raw direct native resize is now measurable as its own control path: data-URL resize smoke reports the post-resize direct frame around 27ms after requesting a 640x420 window size.
+- Raw direct load completion is now measurable separately from first present: example.com first-presents around 178ms but completes around 591ms, while Google first-presents around 169ms but does not report active WebView load completion until about 5.1s.
+- Raw direct first interaction is now measurable separately from both first present and load completion: the controlled input fixture presented an immediate text follow-up frame around 5ms after first present, and warmed Google presented the follow-up frame around 6ms after first present, both before active WebView load completion.
+
+Current read:
+
+- Render-bridge queue pressure is no longer the active problem on these checkpoints.
+- The direct path now has the right split for user-perceived speed: first present and first interaction are fast, while `loadCompleteMs` tracks the complex-page tail. Google can first-present in under 200ms and accept an immediate follow-up interaction frame in about 6ms, while load completion stretches to about 5.1s.
+- A tighter 2ms active Servo poll interval was tested and not kept; it did not reliably improve URL wait and made the signal noisier.

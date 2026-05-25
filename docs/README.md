@@ -27,4 +27,5 @@ This index is the navigation entry point for the Sextant documentation set.
 ## Maintenance
 - Keep high-signal docs in this folder root for discoverability.
 - Move historical snapshots into archive-like subfolders when they are no longer active references.
+- The May 24 raw-direct long-form docs were archived as `docs/archive/2026-05-24-*-raw-direct-long.md`; keep root docs short and current.
 

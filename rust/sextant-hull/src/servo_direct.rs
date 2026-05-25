@@ -1,260 +1,120 @@
-use std::cell::{Cell, RefCell};
 use std::env;
-#[cfg(target_os = "windows")]
-use std::path::PathBuf;
-use std::rc::Rc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use servo::{
-    RenderingContext, Servo, ServoBuilder, WebView, WebViewBuilder, WebViewDelegate,
-    WindowRenderingContext,
-};
 use url::Url;
-use winit30::application::ApplicationHandler;
-use winit30::dpi::PhysicalSize;
-use winit30::event::WindowEvent;
-use winit30::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
-use winit30::raw_window_handle::{HasDisplayHandle, HasWindowHandle};
-use winit30::window::{Window, WindowAttributes, WindowId};
+
+mod direct_servo;
 
 const DEFAULT_URL: &str = "https://example.com";
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(15);
 
-struct DirectServoApp {
-    target: Url,
-    smoke: bool,
-    timeout: Duration,
-    started: Instant,
-    state: Option<Rc<DirectServoState>>,
-}
-
-struct DirectServoState {
-    window: Window,
-    servo: Servo,
-    rendering_context: Rc<WindowRenderingContext>,
-    webview: RefCell<Option<WebView>>,
-    frame_ready: Cell<bool>,
-    first_present: Cell<Option<Duration>>,
-}
-
-impl WebViewDelegate for DirectServoState {
-    fn notify_new_frame_ready(&self, _webview: WebView) {
-        self.frame_ready.set(true);
-        self.window.request_redraw();
-    }
-}
-
-impl DirectServoApp {
-    fn new(target: Url, smoke: bool, timeout: Duration) -> Self {
-        Self {
-            target,
-            smoke,
-            timeout,
-            started: Instant::now(),
-            state: None,
-        }
-    }
-}
-
-impl ApplicationHandler for DirectServoApp {
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.state.is_some() {
-            return;
-        }
-
-        let display_handle = event_loop
-            .display_handle()
-            .expect("failed to get display handle");
-        let window = event_loop
-            .create_window(
-                WindowAttributes::default()
-                    .with_title("Sextant Servo Direct")
-                    .with_inner_size(PhysicalSize::new(1180, 760)),
-            )
-            .expect("failed to create direct Servo window");
-        let window_handle = window.window_handle().expect("failed to get window handle");
-        let rendering_context = Rc::new(
-            WindowRenderingContext::new(display_handle, window_handle, window.inner_size())
-                .expect("failed to create Servo window rendering context"),
-        );
-        rendering_context
-            .make_current()
-            .expect("failed to activate Servo window rendering context");
-
-        let servo = ServoBuilder::default().build();
-        servo.setup_logging();
-
-        let state = Rc::new(DirectServoState {
-            window,
-            servo,
-            rendering_context,
-            webview: RefCell::new(None),
-            frame_ready: Cell::new(false),
-            first_present: Cell::new(None),
-        });
-
-        let webview = WebViewBuilder::new(&state.servo, state.rendering_context.clone())
-            .url(self.target.clone())
-            .delegate(state.clone())
-            .build();
-        state.webview.replace(Some(webview));
-        state.window.request_redraw();
-        self.state = Some(state);
-        println!(
-            "[servo-direct] opening {} with Servo WindowRenderingContext",
-            self.target
-        );
-    }
-
-    fn window_event(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        _window_id: WindowId,
-        event: WindowEvent,
-    ) {
-        if let Some(state) = self.state.as_ref() {
-            state.servo.spin_event_loop();
-        }
-
-        match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
-            WindowEvent::RedrawRequested => {
-                if let Some(state) = self.state.as_ref() {
-                    if let Some(webview) = state.webview.borrow().as_ref() {
-                        webview.paint();
-                        state.rendering_context.present();
-                        if state.first_present.get().is_none() {
-                            let elapsed = self.started.elapsed();
-                            state.first_present.set(Some(elapsed));
-                            println!(
-                                "[servo-direct] first direct present in {}",
-                                format_duration(elapsed)
-                            );
-                            if self.smoke {
-                                event_loop.exit();
-                            }
-                        }
-                    }
-                }
-            }
-            WindowEvent::Resized(size) => {
-                if let Some(state) = self.state.as_ref() {
-                    if let Some(webview) = state.webview.borrow().as_ref() {
-                        webview.resize(size);
-                    }
-                    state.window.request_redraw();
-                }
-            }
-            _ => {}
-        }
-    }
-
-    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        if let Some(state) = self.state.as_ref() {
-            state.servo.spin_event_loop();
-            if state.frame_ready.replace(false) {
-                state.window.request_redraw();
-            }
-        }
-
-        if self.smoke && self.started.elapsed() >= self.timeout {
-            eprintln!(
-                "[servo-direct] timed out after {} before first direct present",
-                format_duration(self.timeout)
-            );
-            event_loop.exit();
-        }
-    }
-}
-
 fn main() -> Result<(), String> {
-    install_rustls_crypto_provider();
-    prime_windows_angle_runtime()?;
     let args: Vec<String> = env::args().collect();
-    let target = parse_target(&args)?;
+    let verified_input_smoke = args.iter().any(|arg| arg == "--verified-input-smoke");
+    let search_submit_smoke = args.iter().any(|arg| arg == "--search-submit-smoke");
+    let live_search_smoke = args.iter().any(|arg| arg == "--live-search-smoke");
+    let local_fixture = if verified_input_smoke && !has_explicit_target(&args) {
+        Some(direct_servo::start_verified_input_fixture_server()?)
+    } else if search_submit_smoke && !has_explicit_target(&args) {
+        Some(direct_servo::start_search_submit_fixture_server()?)
+    } else {
+        None
+    };
+    let live_default = live_search_smoke.then(|| {
+        Url::parse("https://lite.duckduckgo.com/lite/").expect("live search URL should parse")
+    });
+    let target = parse_target(
+        &args,
+        local_fixture
+            .as_ref()
+            .map(|fixture| fixture.url())
+            .or(live_default.as_ref()),
+    )?;
     let smoke = args.iter().any(|arg| arg == "--smoke");
     let timeout = parse_timeout(&args)?;
 
-    let event_loop = EventLoop::new().map_err(|error| error.to_string())?;
-    event_loop.set_control_flow(ControlFlow::Wait);
-    let mut app = DirectServoApp::new(target, smoke, timeout);
-    event_loop
-        .run_app(&mut app)
-        .map_err(|error| format!("direct Servo event loop failed: {error}"))
-}
-
-fn install_rustls_crypto_provider() {
-    let _ = rustls::crypto::ring::default_provider().install_default();
-}
-
-#[cfg(target_os = "windows")]
-fn prime_windows_angle_runtime() -> Result<(), String> {
-    let mut current_path = env::var_os("PATH").unwrap_or_default();
-    for candidate in windows_angle_runtime_candidates() {
-        if candidate.join("libEGL.dll").is_file() && candidate.join("libGLESv2.dll").is_file() {
-            let already_present = env::split_paths(&current_path).any(|path| path == candidate);
-            if !already_present {
-                let mut paths = vec![candidate.clone()];
-                paths.extend(env::split_paths(&current_path));
-                current_path = env::join_paths(paths).map_err(|error| {
-                    format!("failed to extend PATH for Servo ANGLE runtime: {error}")
-                })?;
-                env::set_var("PATH", &current_path);
-            }
-            return Ok(());
-        }
+    let outcome = direct_servo::run(direct_servo::DirectServoOptions {
+        target,
+        smoke,
+        timeout,
+        title: "Sextant Servo Direct".to_string(),
+        log_prefix: "servo-direct",
+        setup_servo_logging: true,
+        scripted_text: parse_scripted_text(&args),
+        scripted_first_interaction_smoke: args.iter().any(|arg| arg == "--first-interaction-smoke"),
+        scripted_verified_input_smoke: verified_input_smoke,
+        scripted_search_submit_smoke: search_submit_smoke,
+        scripted_live_search_smoke: live_search_smoke,
+        scripted_location: parse_scripted_location(&args),
+        scripted_history: parse_scripted_history(&args),
+        scripted_load_smoke: args.iter().any(|arg| arg == "--load-smoke"),
+        scripted_reload_smoke: args.iter().any(|arg| arg == "--reload-smoke"),
+        scripted_resize_smoke: args.iter().any(|arg| arg == "--resize-smoke"),
+        scripted_tab_smoke: args.iter().any(|arg| arg == "--tab-smoke"),
+        config_dir: parse_config_dir(&args),
+        disable_http_cache: args.iter().any(|arg| arg == "--disable-http-cache"),
+    })?;
+    if let Some(before_load_complete) = outcome.first_interaction_before_load_complete {
+        println!("[servo-direct] first interaction before load complete {before_load_complete}");
     }
-
-    Err(format!(
-        "Servo requires libEGL.dll and libGLESv2.dll on PATH. Checked: {}",
-        windows_angle_runtime_candidates()
-            .into_iter()
-            .map(|path| path.display().to_string())
-            .collect::<Vec<_>>()
-            .join(", ")
-    ))
-}
-
-#[cfg(not(target_os = "windows"))]
-fn prime_windows_angle_runtime() -> Result<(), String> {
+    if let Some(verified_input) = outcome.verified_input {
+        println!("[servo-direct] verified input {verified_input}");
+    }
+    if let Some(before_load_complete) = outcome.verified_input_before_load_complete {
+        println!("[servo-direct] verified input before load complete {before_load_complete}");
+    }
+    if let Some(search_submit) = outcome.search_submit {
+        println!("[servo-direct] search submit {search_submit}");
+    }
+    if let Some(search_submit_url) = outcome.search_submit_url {
+        println!("[servo-direct] search submit url {search_submit_url}");
+    }
+    if let Some(search_submit_title) = outcome.search_submit_title {
+        println!("[servo-direct] search submit title {search_submit_title}");
+    }
+    if let Some(live_search) = outcome.live_search {
+        println!("[servo-direct] live search {live_search}");
+    }
+    if let Some(live_search_url) = outcome.live_search_url {
+        println!("[servo-direct] live search url {live_search_url}");
+    }
+    if let Some(live_search_title) = outcome.live_search_title {
+        println!("[servo-direct] live search title {live_search_title}");
+    }
+    if let Some(location_url) = outcome.location_url {
+        println!("[servo-direct] location url {location_url}");
+    }
+    if let Some(location_title) = outcome.location_title {
+        println!("[servo-direct] location title {location_title}");
+    }
+    if let Some(history_final_url) = outcome.history_final_url {
+        println!("[servo-direct] history final url {history_final_url}");
+    }
+    if let Some(history_final_title) = outcome.history_final_title {
+        println!("[servo-direct] history final title {history_final_title}");
+    }
+    if let Some(load_url) = outcome.load_url {
+        println!("[servo-direct] load url {load_url}");
+    }
+    if let Some(load_title) = outcome.load_title {
+        println!("[servo-direct] load title {load_title}");
+    }
+    if let Some(reload_url) = outcome.reload_url {
+        println!("[servo-direct] reload url {reload_url}");
+    }
+    if let Some(reload_title) = outcome.reload_title {
+        println!("[servo-direct] reload title {reload_title}");
+    }
+    if let Some(tab_url) = outcome.tab_url {
+        println!("[servo-direct] tab url {tab_url}");
+    }
+    if let Some(tab_title) = outcome.tab_title {
+        println!("[servo-direct] tab title {tab_title}");
+    }
     Ok(())
 }
 
-#[cfg(target_os = "windows")]
-fn windows_angle_runtime_candidates() -> Vec<PathBuf> {
-    let mut candidates = Vec::new();
-    candidates.extend(existing_subdirectories(
-        r"C:\Program Files (x86)\Microsoft\EdgeWebView\Application",
-    ));
-    candidates.extend(existing_subdirectories(
-        r"C:\Program Files (x86)\Microsoft\EdgeCore",
-    ));
-    candidates.extend(existing_subdirectories(
-        r"C:\Program Files (x86)\Microsoft\Edge\Application",
-    ));
-    candidates.extend(existing_subdirectories(
-        r"C:\Program Files\Google\Chrome\Application",
-    ));
-    candidates.push(PathBuf::from(
-        r"C:\Program Files (x86)\Microsoft\EdgeCore\Optimized",
-    ));
-    candidates.push(PathBuf::from(r"C:\Program Files\Mozilla Firefox"));
-    candidates.push(PathBuf::from(r"C:\Program Files\Firefox Developer Edition"));
-    candidates
-}
-
-#[cfg(target_os = "windows")]
-fn existing_subdirectories(root: &str) -> Vec<PathBuf> {
-    std::fs::read_dir(root)
-        .ok()
-        .into_iter()
-        .flat_map(|entries| entries.filter_map(Result::ok))
-        .map(|entry| entry.path())
-        .filter(|path| path.is_dir())
-        .collect()
-}
-
-fn parse_target(args: &[String]) -> Result<Url, String> {
+fn parse_target(args: &[String], default_target: Option<&Url>) -> Result<Url, String> {
     if let Some(index) = args.iter().position(|arg| arg == "--url") {
         if let Some(value) = args.get(index + 1) {
             return Url::parse(value).map_err(|error| error.to_string());
@@ -268,7 +128,18 @@ fn parse_target(args: &[String]) -> Result<Url, String> {
     {
         return Url::parse(value).map_err(|error| error.to_string());
     }
+    if let Some(default_target) = default_target {
+        return Ok(default_target.clone());
+    }
     Url::parse(DEFAULT_URL).map_err(|error| error.to_string())
+}
+
+fn has_explicit_target(args: &[String]) -> bool {
+    args.iter().any(|arg| arg == "--url")
+        || args
+            .iter()
+            .skip(1)
+            .any(|arg| !arg.starts_with("--") && arg.parse::<u64>().is_err())
 }
 
 fn parse_timeout(args: &[String]) -> Result<Duration, String> {
@@ -282,11 +153,22 @@ fn parse_timeout(args: &[String]) -> Result<Duration, String> {
     Ok(Duration::from_secs(seconds.max(1)))
 }
 
-fn format_duration(duration: Duration) -> String {
-    let millis = duration.as_millis();
-    if millis >= 1000 {
-        format!("{:.1}s", millis as f64 / 1000.0)
-    } else {
-        format!("{millis}ms")
-    }
+fn parse_scripted_text(args: &[String]) -> Option<String> {
+    let index = args.iter().position(|arg| arg == "--input-smoke-text")?;
+    args.get(index + 1).cloned()
+}
+
+fn parse_scripted_location(args: &[String]) -> Option<String> {
+    let index = args.iter().position(|arg| arg == "--location-smoke")?;
+    args.get(index + 1).cloned()
+}
+
+fn parse_scripted_history(args: &[String]) -> Option<String> {
+    let index = args.iter().position(|arg| arg == "--history-smoke")?;
+    args.get(index + 1).cloned()
+}
+
+fn parse_config_dir(args: &[String]) -> Option<std::path::PathBuf> {
+    let index = args.iter().position(|arg| arg == "--config-dir")?;
+    args.get(index + 1).map(std::path::PathBuf::from)
 }

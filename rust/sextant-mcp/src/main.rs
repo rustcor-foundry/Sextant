@@ -686,6 +686,42 @@ fn tools() -> Value {
                         "type": "boolean",
                         "description": "When true, after first frame, focus the browser viewport, type through the visible input lane, wait for the follow-up bridge frame, and report input timings."
                     },
+                    "first_interaction_smoke": {
+                        "type": "boolean",
+                        "description": "Direct-render only. Send a tiny text interaction immediately after first direct present, without waiting for page load completion, and report the follow-up direct frame timing."
+                    },
+                    "verified_input_smoke": {
+                        "type": "boolean",
+                        "description": "Direct-render only. Click a controlled page input, type through the raw Servo input path, verify the page received the text, and report timing."
+                    },
+                    "search_submit_smoke": {
+                        "type": "boolean",
+                        "description": "Direct-render only. Type into a controlled search form, submit through the raw Servo input path, verify the resulting query page, and report timing."
+                    },
+                    "live_search_smoke": {
+                        "type": "boolean",
+                        "description": "Direct-render only. Type into a representative live search page, submit through the raw Servo input path, verify the resulting query page, and report timing."
+                    },
+                    "location_smoke": {
+                        "type": "string",
+                        "description": "Direct-render only. After first direct present, drive the raw direct address/location path with this URL, bare domain, or search text and report location timing."
+                    },
+                    "history_smoke": {
+                        "type": "string",
+                        "description": "Direct-render only. After first direct present, navigate to this second target through the raw direct address path, then drive back and forward and report history timings."
+                    },
+                    "load_smoke": {
+                        "type": "boolean",
+                        "description": "Direct-render only. Wait for the initial raw direct WebView load to report complete and return load completion timing."
+                    },
+                    "reload_smoke": {
+                        "type": "boolean",
+                        "description": "Direct-render only. After the first direct page load completes, call Servo reload through the raw direct control path and report reload timing."
+                    },
+                    "resize_smoke": {
+                        "type": "boolean",
+                        "description": "Direct-render only. After first direct present, request a native window resize, resize raw Servo WebViews, and report the first post-resize direct frame."
+                    },
                     "mode": browser_mode_property(),
                     "render_path": render_path_property(),
                     "pre_size_navigation": {
@@ -937,7 +973,7 @@ fn render_path_property() -> Value {
     json!({
         "type": "string",
         "enum": ["bridge", "direct"],
-        "description": "Optional production user render path. `bridge` is currently integrated; `direct` is parsed by sextant-browser but intentionally rejected until production integration lands."
+        "description": "Optional production user render path. `bridge` runs the chrome/tabs/AI shell through the temporary frame-capture bridge; `direct` runs the raw Servo WindowRenderingContext lane in Direct/Incognito mode."
     })
 }
 
@@ -986,13 +1022,14 @@ fn resource_text(uri: &str) -> Option<String> {
                 "- Perception probes: bounded `--perception-probe` path for page type, semantic counts, key nodes, source metadata, and timings",
                 "- Performance probes: bounded `--perf-probe` and `--perf-baseline` timing paths for navigation, distillation, Wake, viewport resize, and frame capture",
                 "- Direct presentation proof: bounded `browser_direct_present_smoke` path for Servo `WindowRenderingContext` + `present()` without the production frame-capture bridge",
+                "- Raw direct production lane: `browser_window_smoke` with `render_path=direct` runs `sextant-browser --render-path direct` in Direct/Incognito mode for URL/search browsing, direct input, tabs, location, history, reload, resize, and Incognito storage checks",
                 "- Render-path baseline: bounded `browser_render_path_baseline` path comparing direct-present timing with the production bridge-backed visible smoke",
                 "- Intent automation: bounded `--intent-run` mode for native Intent Bar workflows",
                 "- Authorized intent automation: bounded `--consent-run` mode for Captain's Key consent/resume workflows",
                 "- Visible shell checks: bounded `--window-smoke` launch/draw/navigation mode",
                 "- Browser modes: Agent, Assisted, Observe, Direct, and Incognito",
                 "- Mode boundary: Direct and Incognito block AI DOM/frame observation, Wake reads/writes, Captain's Log content persistence, and MCP exposure",
-                "- Render boundary: `sextant-browser` still uses the temporary frame-capture render bridge for user display; `sextant-servo-direct` proves direct Servo presentation separately until the compositor path is integrated into the production shell",
+                "- Render boundary: `sextant-browser` uses the temporary frame-capture bridge for chrome/tabs/AI shell display, while `sextant-browser --render-path direct` exposes the raw Direct/Incognito Servo window-present lane until full shell composition lands",
                 "- Viewport input lane: visible mouse, wheel, and text input is queued/coalesced before engine enqueue, then Servo prioritizes that input ahead of pending frame capture work",
                 "- Persistence: Digital Wake and Captain's Log under the browser data directory",
                 "- Current MCP posture: local stdio server, no network listener, tool calls audited to Captain's Log when the data store is available",
@@ -1054,7 +1091,7 @@ fn resource_text(uri: &str) -> Option<String> {
                 "- Authorized sensitive intent work is routed through `sextant-browser --consent-run`.",
                 "- Visible shell validation is routed through `sextant-browser --window-smoke`.",
                 "- Browser modes are advertised as scope boundaries: Agent has full control/observation/persistence, Assisted observes with human-first control, Observe observes without persistence, Direct is the user performance path with AI observation disabled, and Incognito is the human-only path with AI observation and content persistence disabled.",
-                "- Current production visible rendering still uses the temporary frame-capture render bridge in every mode; AI frame observation is a separate gated capability. The experimental direct-present proof is exposed separately until production shell integration lands.",
+                "- Production chrome/tabs/AI rendering still uses the temporary frame-capture bridge; raw Direct/Incognito browsing can use `sextant-browser --render-path direct`, and AI frame observation remains a separate gated capability.",
                 "- Operator tools are bounded by `timeout_seconds` and return captured stdout/stderr.",
                 "- Tool calls are recorded with the `sextant-mcp-stdio` signature when Captain's Log is writable.",
                 "- Long-lived shared browser sessions are intentionally deferred until the browser runtime is extracted into reusable session code.",
@@ -1197,14 +1234,17 @@ fn browser_runtime_loops() -> Value {
             "modeBoundary": "available in every mode for user display until direct Servo compositor rendering replaces it"
         },
         "directPresentationLoop": {
-            "status": "experimental proof",
-            "owner": "sextant-servo-direct",
+            "status": "experimental production lane",
+            "owner": "sextant-browser --render-path direct and sextant-servo-direct",
             "responsibilities": [
                 "create Servo WindowRenderingContext",
                 "paint WebView directly",
-                "present through Servo rendering context without frame readback"
+                "present through Servo rendering context without frame readback",
+                "direct user input forwarding",
+                "raw direct tabs",
+                "ephemeral Servo config storage for Incognito"
             ],
-            "modeBoundary": "not integrated into production browser modes yet; intended replacement for the render bridge in Direct and Incognito"
+            "modeBoundary": "available only in Direct and Incognito until shell chrome/AI surfaces can be composited over direct Servo presentation"
         },
         "aiObservationLoop": {
             "status": "baseline",
@@ -1244,10 +1284,10 @@ fn browser_capabilities() -> Value {
             "renderingBoundary": {
                 "userDisplay": "temporary frame-capture render bridge",
                 "aiObservation": "separate capability-gated DOM/frame observation path",
-                "directCompositor": "experimental proof via sextant-servo-direct",
+                "directCompositor": "experimental production raw lane via sextant-browser --render-path direct",
                 "directPresentSmoke": true,
                 "renderPathBaseline": true,
-                "directAndIncognito": "AI observation and content persistence disabled; render bridge remains only for user display until direct compositor integration lands"
+                "directAndIncognito": "AI observation and content persistence disabled; raw direct Servo presentation is available, while full chrome/tabs/AI shell composition still uses the bridge path"
             },
             "operatorBridge": {
                 "smoke": true,
@@ -1406,6 +1446,101 @@ fn optional_render_path(arguments: &Value) -> Result<Option<String>, String> {
 }
 
 fn window_smoke_mode_boundary_error(arguments: &Value, mode: Option<&str>) -> Option<String> {
+    let render_path = arguments
+        .get("render_path")
+        .and_then(Value::as_str)
+        .unwrap_or("bridge");
+    if render_path == "direct" && !matches!(mode.unwrap_or("assisted"), "direct" | "incognito") {
+        return Some(format!(
+            "browser_window_smoke render_path 'direct' requires mode 'direct' or 'incognito'; mode '{}' still needs the bridge shell for AI observation/control surfaces",
+            mode.unwrap_or("assisted")
+        ));
+    }
+    if arguments
+        .get("first_interaction_smoke")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        && render_path != "direct"
+    {
+        return Some(
+            "browser_window_smoke first_interaction_smoke requires render_path 'direct'"
+                .to_string(),
+        );
+    }
+    if arguments
+        .get("verified_input_smoke")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        && render_path != "direct"
+    {
+        return Some(
+            "browser_window_smoke verified_input_smoke requires render_path 'direct'".to_string(),
+        );
+    }
+    if arguments
+        .get("search_submit_smoke")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        && render_path != "direct"
+    {
+        return Some(
+            "browser_window_smoke search_submit_smoke requires render_path 'direct'".to_string(),
+        );
+    }
+    if arguments
+        .get("live_search_smoke")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        && render_path != "direct"
+    {
+        return Some(
+            "browser_window_smoke live_search_smoke requires render_path 'direct'".to_string(),
+        );
+    }
+    if arguments
+        .get("location_smoke")
+        .and_then(Value::as_str)
+        .is_some()
+        && render_path != "direct"
+    {
+        return Some(
+            "browser_window_smoke location_smoke requires render_path 'direct'".to_string(),
+        );
+    }
+    if arguments
+        .get("history_smoke")
+        .and_then(Value::as_str)
+        .is_some()
+        && render_path != "direct"
+    {
+        return Some(
+            "browser_window_smoke history_smoke requires render_path 'direct'".to_string(),
+        );
+    }
+    if arguments
+        .get("load_smoke")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        && render_path != "direct"
+    {
+        return Some("browser_window_smoke load_smoke requires render_path 'direct'".to_string());
+    }
+    if arguments
+        .get("reload_smoke")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        && render_path != "direct"
+    {
+        return Some("browser_window_smoke reload_smoke requires render_path 'direct'".to_string());
+    }
+    if arguments
+        .get("resize_smoke")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        && render_path != "direct"
+    {
+        return Some("browser_window_smoke resize_smoke requires render_path 'direct'".to_string());
+    }
     if browser_mode_allows_control_work(mode) {
         return None;
     }
@@ -1427,7 +1562,11 @@ fn window_smoke_mode_boundary_error(arguments: &Value, mode: Option<&str>) -> Op
         .and_then(Value::as_bool)
         .unwrap_or(false)
     {
-        Some("shell-interaction seeding")
+        if render_path == "direct" {
+            None
+        } else {
+            Some("shell-interaction seeding")
+        }
     } else if required_string(arguments, "target")
         .as_deref()
         .map(is_native_intent_target)
@@ -1588,6 +1727,58 @@ fn browser_window_smoke_cli_arguments(args: &[String]) -> Result<Option<Value>, 
         .any(|arg| arg == "--input-latency" || arg == "--window-input-smoke")
     {
         arguments["input_latency"] = Value::Bool(true);
+    }
+    if args
+        .iter()
+        .any(|arg| arg == "--first-interaction-smoke" || arg == "--window-first-interaction-smoke")
+    {
+        arguments["first_interaction_smoke"] = Value::Bool(true);
+    }
+    if args
+        .iter()
+        .any(|arg| arg == "--verified-input-smoke" || arg == "--window-verified-input-smoke")
+    {
+        arguments["verified_input_smoke"] = Value::Bool(true);
+    }
+    if args
+        .iter()
+        .any(|arg| arg == "--search-submit-smoke" || arg == "--window-search-submit-smoke")
+    {
+        arguments["search_submit_smoke"] = Value::Bool(true);
+    }
+    if args
+        .iter()
+        .any(|arg| arg == "--live-search-smoke" || arg == "--window-live-search-smoke")
+    {
+        arguments["live_search_smoke"] = Value::Bool(true);
+    }
+    if let Some(target) = operator_arg_value(args, "--location-smoke")
+        .or_else(|| operator_arg_value(args, "--window-location-smoke"))
+    {
+        arguments["location_smoke"] = Value::String(target);
+    }
+    if let Some(target) = operator_arg_value(args, "--history-smoke")
+        .or_else(|| operator_arg_value(args, "--window-history-smoke"))
+    {
+        arguments["history_smoke"] = Value::String(target);
+    }
+    if args
+        .iter()
+        .any(|arg| arg == "--load-smoke" || arg == "--window-load-smoke")
+    {
+        arguments["load_smoke"] = Value::Bool(true);
+    }
+    if args
+        .iter()
+        .any(|arg| arg == "--reload-smoke" || arg == "--window-reload-smoke")
+    {
+        arguments["reload_smoke"] = Value::Bool(true);
+    }
+    if args
+        .iter()
+        .any(|arg| arg == "--resize-smoke" || arg == "--window-resize-smoke")
+    {
+        arguments["resize_smoke"] = Value::Bool(true);
     }
     if args
         .iter()
@@ -1986,6 +2177,61 @@ fn run_browser_window_smoke_tool(arguments: Value) -> Result<Value, String> {
         .unwrap_or(false)
     {
         full_args.push("--window-input-smoke".to_string());
+    }
+    if arguments
+        .get("first_interaction_smoke")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        full_args.push("--first-interaction-smoke".to_string());
+    }
+    if arguments
+        .get("verified_input_smoke")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        full_args.push("--verified-input-smoke".to_string());
+    }
+    if arguments
+        .get("search_submit_smoke")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        full_args.push("--search-submit-smoke".to_string());
+    }
+    if arguments
+        .get("live_search_smoke")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        full_args.push("--live-search-smoke".to_string());
+    }
+    if let Some(target) = required_string(&arguments, "location_smoke") {
+        full_args.extend(["--location-smoke".to_string(), target]);
+    }
+    if let Some(target) = required_string(&arguments, "history_smoke") {
+        full_args.extend(["--history-smoke".to_string(), target]);
+    }
+    if arguments
+        .get("load_smoke")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        full_args.push("--load-smoke".to_string());
+    }
+    if arguments
+        .get("reload_smoke")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        full_args.push("--reload-smoke".to_string());
+    }
+    if arguments
+        .get("resize_smoke")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        full_args.push("--resize-smoke".to_string());
     }
     if arguments
         .get("pre_size_navigation")
@@ -3166,6 +3412,7 @@ fn window_report_lines(stdout: &str) -> Vec<String> {
             line.starts_with("[window-smoke]")
                 || line.starts_with("[window-start]")
                 || line.starts_with("[window-user]")
+                || line.starts_with("[window-direct]")
                 || line.starts_with("[sextant-browser]")
         })
         .map(str::to_string)
@@ -3229,13 +3476,55 @@ fn window_smoke_summary(report: &[String]) -> Value {
         "frameQueueMs": Value::Null,
         "inputEnqueueMs": Value::Null,
         "inputFrameMs": Value::Null,
+        "locationFrameMs": Value::Null,
+        "historyNavigationFrameMs": Value::Null,
+        "historyBackFrameMs": Value::Null,
+        "historyForwardFrameMs": Value::Null,
+        "loadCompleteMs": Value::Null,
+        "reloadFrameMs": Value::Null,
+        "resizeFrameMs": Value::Null,
+        "tabFrameMs": Value::Null,
+        "servoConfigDir": Value::Null,
+        "servoHttpCacheDisabled": Value::Null,
         "slowestPerfEvent": Value::Null,
         "slowPerfEvents": [],
         "latestFrameWidth": Value::Null,
         "latestFrameHeight": Value::Null,
         "latestFramePixels": Value::Null,
+        "directPresentMs": Value::Null,
         "firstFrameMs": Value::Null,
     });
+    summary["firstInteractionFrameMs"] = Value::Null;
+    summary["firstInteractionBeforeLoadComplete"] = Value::Null;
+    summary["verifiedInputFrameMs"] = Value::Null;
+    summary["verifiedInput"] = Value::Null;
+    summary["verifiedInputBeforeLoadComplete"] = Value::Null;
+    summary["searchSubmitFrameMs"] = Value::Null;
+    summary["searchSubmit"] = Value::Null;
+    summary["searchSubmitUrl"] = Value::Null;
+    summary["searchSubmitTitle"] = Value::Null;
+    summary["liveSearchFrameMs"] = Value::Null;
+    summary["liveSearch"] = Value::Null;
+    summary["liveSearchUrl"] = Value::Null;
+    summary["liveSearchTitle"] = Value::Null;
+    summary["liveSearchAttempts"] = Value::Array(Vec::new());
+    summary["liveSearchSubmitted"] = Value::Null;
+    summary["liveSearchSubmittedUrl"] = Value::Null;
+    summary["liveSearchBlocked"] = Value::Null;
+    summary["liveSearchBlockReason"] = Value::Null;
+    summary["timeoutPhase"] = Value::Null;
+    summary["timeoutTitle"] = Value::Null;
+    summary["timeoutUrl"] = Value::Null;
+    summary["locationUrl"] = Value::Null;
+    summary["locationTitle"] = Value::Null;
+    summary["historyFinalUrl"] = Value::Null;
+    summary["historyFinalTitle"] = Value::Null;
+    summary["loadUrl"] = Value::Null;
+    summary["loadTitle"] = Value::Null;
+    summary["reloadUrl"] = Value::Null;
+    summary["reloadTitle"] = Value::Null;
+    summary["tabUrl"] = Value::Null;
+    summary["tabTitle"] = Value::Null;
 
     for line in report {
         if let Some((mode, status)) = window_mode_line(line) {
@@ -3251,16 +3540,86 @@ fn window_smoke_summary(report: &[String]) -> Value {
         } else if let Some(path) = line.split("ephemeral browser data dir ").nth(1) {
             summary["storage"] = Value::String("ephemeral".to_string());
             summary["ephemeralDataDir"] = Value::String(path.trim().to_string());
+        } else if let Some(path) = line.split("direct Servo config dir ").nth(1) {
+            summary["servoConfigDir"] = Value::String(path.trim().to_string());
+        } else if let Some(value) = line.split("direct Servo http cache disabled ").nth(1) {
+            summary["servoHttpCacheDisabled"] = Value::Bool(value.trim() == "true");
         } else if let Some(value) = line.split("visible shell draw passed in ").nth(1) {
             summary["firstDrawMs"] = duration_token_to_value(value.trim());
         } else if let Some(value) = line.split("startup/navigation work ").nth(1) {
             summary["startupWorkMs"] = duration_token_to_value(value.trim());
         } else if let Some(value) = line.split("draw cost total ").nth(1) {
             apply_window_draw_costs(&mut summary, value);
+        } else if let Some(value) = line.split("verified input frame ").nth(1) {
+            summary["verifiedInputFrameMs"] = duration_token_to_value(value.trim());
+        } else if let Some(value) = line.split("verified input before load complete ").nth(1) {
+            summary["verifiedInputBeforeLoadComplete"] = Value::Bool(value.trim() == "true");
+        } else if let Some(value) = line.split("verified input ").nth(1) {
+            summary["verifiedInput"] = Value::Bool(value.trim() == "true");
+        } else if let Some(value) = line.split("search submit frame ").nth(1) {
+            summary["searchSubmitFrameMs"] = duration_token_to_value(value.trim());
+        } else if let Some(value) = line.strip_prefix("[window-smoke] search submit url ") {
+            summary["searchSubmitUrl"] = Value::String(value.trim().to_string());
+        } else if let Some(value) = line.strip_prefix("[window-smoke] search submit title ") {
+            summary["searchSubmitTitle"] = Value::String(value.trim().to_string());
+        } else if let Some(value) = line.split("search submit ").nth(1) {
+            summary["searchSubmit"] = Value::Bool(value.trim() == "true");
+        } else if let Some(value) = line.split("live search frame ").nth(1) {
+            summary["liveSearchFrameMs"] = duration_token_to_value(value.trim());
+        } else if let Some(value) = line.strip_prefix("[window-smoke] live search url ") {
+            summary["liveSearchUrl"] = Value::String(value.trim().to_string());
+        } else if let Some(value) = line.strip_prefix("[window-direct] live search attempt ") {
+            if let Some(attempts) = summary["liveSearchAttempts"].as_array_mut() {
+                attempts.push(Value::String(value.trim().to_string()));
+            }
+        } else if let Some(value) = line.strip_prefix("[window-smoke] live search title ") {
+            summary["liveSearchTitle"] = Value::String(value.trim().to_string());
+        } else if let Some(value) = line.split("live search ").nth(1) {
+            summary["liveSearch"] = Value::Bool(value.trim() == "true");
         } else if let Some(value) = line.split("input enqueue ").nth(1) {
             summary["inputEnqueueMs"] = duration_token_to_value(value.trim());
         } else if let Some(value) = line.split("input frame ").nth(1) {
             summary["inputFrameMs"] = duration_token_to_value(value.trim());
+        } else if let Some(value) = line.split("first interaction frame ").nth(1) {
+            summary["firstInteractionFrameMs"] = duration_token_to_value(value.trim());
+        } else if let Some(value) = line.split("first interaction before load complete ").nth(1) {
+            summary["firstInteractionBeforeLoadComplete"] = Value::Bool(value.trim() == "true");
+        } else if let Some(value) = line.split("location frame ").nth(1) {
+            summary["locationFrameMs"] = duration_token_to_value(value.trim());
+        } else if let Some(value) = line.strip_prefix("[window-smoke] location url ") {
+            summary["locationUrl"] = Value::String(value.trim().to_string());
+        } else if let Some(value) = line.strip_prefix("[window-smoke] location title ") {
+            summary["locationTitle"] = Value::String(value.trim().to_string());
+        } else if let Some(value) = line.split("history navigation frame ").nth(1) {
+            summary["historyNavigationFrameMs"] = duration_token_to_value(value.trim());
+        } else if let Some(value) = line.split("history back frame ").nth(1) {
+            summary["historyBackFrameMs"] = duration_token_to_value(value.trim());
+        } else if let Some(value) = line.split("history forward frame ").nth(1) {
+            summary["historyForwardFrameMs"] = duration_token_to_value(value.trim());
+        } else if let Some(value) = line.strip_prefix("[window-smoke] history final url ") {
+            summary["historyFinalUrl"] = Value::String(value.trim().to_string());
+        } else if let Some(value) = line.strip_prefix("[window-smoke] history final title ") {
+            summary["historyFinalTitle"] = Value::String(value.trim().to_string());
+        } else if let Some(value) = line.split("load complete ").nth(1) {
+            summary["loadCompleteMs"] = duration_token_to_value(value.trim());
+        } else if let Some(value) = line.split("reload frame ").nth(1) {
+            summary["reloadFrameMs"] = duration_token_to_value(value.trim());
+        } else if let Some(value) = line.strip_prefix("[window-smoke] reload url ") {
+            summary["reloadUrl"] = Value::String(value.trim().to_string());
+        } else if let Some(value) = line.strip_prefix("[window-smoke] reload title ") {
+            summary["reloadTitle"] = Value::String(value.trim().to_string());
+        } else if let Some(value) = line.strip_prefix("[window-smoke] load url ") {
+            summary["loadUrl"] = Value::String(value.trim().to_string());
+        } else if let Some(value) = line.strip_prefix("[window-smoke] load title ") {
+            summary["loadTitle"] = Value::String(value.trim().to_string());
+        } else if let Some(value) = line.split("resize frame ").nth(1) {
+            summary["resizeFrameMs"] = duration_token_to_value(value.trim());
+        } else if let Some(value) = line.split("tab frame ").nth(1) {
+            summary["tabFrameMs"] = duration_token_to_value(value.trim());
+        } else if let Some(value) = line.strip_prefix("[window-smoke] tab url ") {
+            summary["tabUrl"] = Value::String(value.trim().to_string());
+        } else if let Some(value) = line.strip_prefix("[window-smoke] tab title ") {
+            summary["tabTitle"] = Value::String(value.trim().to_string());
         } else if let Some(value) = line.strip_prefix("[window-smoke] slowest perf ") {
             summary["slowestPerfEvent"] = window_slowest_perf_event(value).unwrap_or(Value::Null);
             let event = summary["slowestPerfEvent"].clone();
@@ -3277,12 +3636,93 @@ fn window_smoke_summary(report: &[String]) -> Value {
             summary["latestFrameWidth"] = Value::from(frame.0);
             summary["latestFrameHeight"] = Value::from(frame.1);
             summary["latestFramePixels"] = Value::from(frame.2);
+        } else if let Some(value) = line.split("first direct present in ").nth(1) {
+            summary["directPresentMs"] = duration_token_to_value(value.trim());
         } else if let Some(value) = line.split("first Servo frame in ").nth(1) {
             summary["firstFrameMs"] = duration_token_to_value(value.trim());
+        } else if let Some(value) = line.strip_prefix("[window-direct] timed out after ") {
+            apply_direct_timeout_summary(&mut summary, value);
         }
     }
 
+    apply_live_search_diagnostics(&mut summary);
     summary
+}
+
+fn apply_direct_timeout_summary(summary: &mut Value, value: &str) {
+    if let Some((_duration, rest)) = value.split_once(" during ") {
+        if let Some((phase, detail)) = rest.split_once(" (last title ") {
+            summary["timeoutPhase"] = Value::String(phase.trim().to_string());
+            let detail = detail.trim().strip_suffix(')').unwrap_or(detail.trim());
+            let (title, url) = detail
+                .split_once(", last url ")
+                .map(|(title, url)| (title, Some(url)))
+                .unwrap_or((detail, None));
+            summary["timeoutTitle"] = direct_debug_option_string(title);
+            if let Some(url) = url {
+                summary["timeoutUrl"] = direct_debug_option_string(url);
+            }
+        } else {
+            summary["timeoutPhase"] = Value::String(rest.trim().to_string());
+        }
+    }
+}
+
+fn direct_debug_option_string(value: &str) -> Value {
+    let trimmed = value.trim();
+    if trimmed == "None" {
+        return Value::Null;
+    }
+    if let Some(inner) = trimmed
+        .strip_prefix("Some(\"")
+        .and_then(|value| value.strip_suffix("\")"))
+    {
+        return Value::String(inner.to_string());
+    }
+    if let Some(inner) = trimmed
+        .strip_prefix("Some(\"")
+        .and_then(|value| value.strip_suffix("\"))"))
+    {
+        return Value::String(inner.to_string());
+    }
+    let trimmed = trimmed.strip_suffix(')').unwrap_or(trimmed);
+    Value::String(trimmed.to_string())
+}
+
+fn apply_live_search_diagnostics(summary: &mut Value) {
+    let source = summary["liveSearchUrl"]
+        .as_str()
+        .or_else(|| summary["timeoutUrl"].as_str())
+        .or_else(|| summary["timeoutTitle"].as_str())
+        .map(str::to_string);
+    let Some(source) = source else {
+        return;
+    };
+    let lower = source.to_ascii_lowercase();
+    let submitted = lower.contains("/search?")
+        || lower.contains("?q=")
+        || lower.contains("&q=")
+        || lower.contains("search?q=");
+    if submitted && summary["liveSearchSubmitted"].is_null() {
+        summary["liveSearchSubmitted"] = Value::Bool(true);
+        summary["liveSearchSubmittedUrl"] = Value::String(source.clone());
+    }
+
+    let blocked = lower.contains("sorry")
+        || lower.contains("captcha")
+        || lower.contains("recaptcha")
+        || lower.contains("unsupported")
+        || lower.contains("consent")
+        || lower.contains("not recognized");
+    if blocked && summary["liveSearchBlocked"].is_null() {
+        summary["liveSearchBlocked"] = Value::Bool(true);
+        summary["liveSearchBlockReason"] =
+            Value::String("challenge-or-unsupported-browser".to_string());
+    } else if submitted && summary["liveSearch"].as_bool() != Some(true) {
+        summary["liveSearchBlocked"] = Value::Bool(true);
+        summary["liveSearchBlockReason"] =
+            Value::String("submitted-without-query-verification".to_string());
+    }
 }
 
 fn window_render_path_line(line: &str) -> Option<(String, String)> {
@@ -3784,6 +4224,18 @@ mod tests {
             window_smoke["inputSchema"]["properties"]["input_latency"]["type"],
             "boolean"
         );
+        assert_eq!(
+            window_smoke["inputSchema"]["properties"]["verified_input_smoke"]["type"],
+            "boolean"
+        );
+        assert_eq!(
+            window_smoke["inputSchema"]["properties"]["search_submit_smoke"]["type"],
+            "boolean"
+        );
+        assert_eq!(
+            window_smoke["inputSchema"]["properties"]["live_search_smoke"]["type"],
+            "boolean"
+        );
     }
 
     #[test]
@@ -3858,11 +4310,11 @@ mod tests {
         );
         assert_eq!(
             capabilities["browser"]["runtimeLoops"]["directPresentationLoop"]["status"],
-            "experimental proof"
+            "experimental production lane"
         );
         assert_eq!(
             capabilities["browser"]["renderingBoundary"]["directCompositor"],
-            "experimental proof via sextant-servo-direct"
+            "experimental production raw lane via sextant-browser --render-path direct"
         );
         assert_eq!(
             capabilities["browser"]["operatorBridge"]["directPresentSmoke"],
@@ -3911,13 +4363,33 @@ mod tests {
             "--timeout-seconds".to_string(),
             "30".to_string(),
             "--render-path".to_string(),
-            "bridge".to_string(),
+            "direct".to_string(),
+            "--first-interaction-smoke".to_string(),
+            "--verified-input-smoke".to_string(),
+            "--search-submit-smoke".to_string(),
+            "--live-search-smoke".to_string(),
+            "--location-smoke".to_string(),
+            "example.com".to_string(),
+            "--history-smoke".to_string(),
+            "https://example.org".to_string(),
+            "--load-smoke".to_string(),
+            "--reload-smoke".to_string(),
+            "--resize-smoke".to_string(),
         ];
         let arguments = browser_window_smoke_cli_arguments(&args).unwrap().unwrap();
 
         assert_eq!(arguments["target"], "https://example.com");
         assert_eq!(arguments["mode"], "incognito");
-        assert_eq!(arguments["render_path"], "bridge");
+        assert_eq!(arguments["render_path"], "direct");
+        assert_eq!(arguments["first_interaction_smoke"], Value::Bool(true));
+        assert_eq!(arguments["verified_input_smoke"], Value::Bool(true));
+        assert_eq!(arguments["search_submit_smoke"], Value::Bool(true));
+        assert_eq!(arguments["live_search_smoke"], Value::Bool(true));
+        assert_eq!(arguments["location_smoke"], "example.com");
+        assert_eq!(arguments["history_smoke"], "https://example.org");
+        assert_eq!(arguments["load_smoke"], Value::Bool(true));
+        assert_eq!(arguments["reload_smoke"], Value::Bool(true));
+        assert_eq!(arguments["resize_smoke"], Value::Bool(true));
         assert_eq!(arguments["timeout_seconds"], 30);
     }
 
@@ -4010,6 +4482,52 @@ mod tests {
             "target": "intent: open https://example.com and distill"
         });
         let normal_page = json!({"mode": "direct", "target": "https://example.com"});
+        let direct_tab_smoke =
+            json!({"mode": "direct", "render_path": "direct", "shell_interaction": true});
+        let incognito_direct_tab_smoke =
+            json!({"mode": "incognito", "render_path": "direct", "shell_interaction": true});
+        let assisted_direct_render = json!({"mode": "assisted", "render_path": "direct"});
+        let direct_first_interaction_smoke = json!({
+            "mode": "direct",
+            "render_path": "direct",
+            "first_interaction_smoke": true
+        });
+        let bridge_first_interaction_smoke =
+            json!({"mode": "direct", "first_interaction_smoke": true});
+        let direct_verified_input_smoke = json!({
+            "mode": "direct",
+            "render_path": "direct",
+            "verified_input_smoke": true
+        });
+        let bridge_verified_input_smoke = json!({"mode": "direct", "verified_input_smoke": true});
+        let direct_search_submit_smoke = json!({
+            "mode": "direct",
+            "render_path": "direct",
+            "search_submit_smoke": true
+        });
+        let bridge_search_submit_smoke = json!({"mode": "direct", "search_submit_smoke": true});
+        let direct_live_search_smoke = json!({
+            "mode": "direct",
+            "render_path": "direct",
+            "live_search_smoke": true
+        });
+        let bridge_live_search_smoke = json!({"mode": "direct", "live_search_smoke": true});
+        let direct_location_smoke =
+            json!({"mode": "direct", "render_path": "direct", "location_smoke": "example.com"});
+        let bridge_location_smoke = json!({"mode": "direct", "location_smoke": "example.com"});
+        let direct_history_smoke =
+            json!({"mode": "direct", "render_path": "direct", "history_smoke": "example.com"});
+        let bridge_history_smoke = json!({"mode": "direct", "history_smoke": "example.com"});
+        let direct_load_smoke =
+            json!({"mode": "direct", "render_path": "direct", "load_smoke": true});
+        let bridge_load_smoke = json!({"mode": "direct", "load_smoke": true});
+        let direct_reload_smoke =
+            json!({"mode": "direct", "render_path": "direct", "reload_smoke": true});
+        let bridge_reload_smoke = json!({"mode": "direct", "reload_smoke": true});
+        let direct_resize_smoke =
+            json!({"mode": "direct", "render_path": "direct", "resize_smoke": true});
+        let bridge_resize_smoke = json!({"mode": "direct", "resize_smoke": true});
+        let bridge_shell_interaction = json!({"mode": "direct", "shell_interaction": true});
         let assisted_showcase = json!({"mode": "assisted", "showcase": true});
         let observe_distill = json!({"mode": "observe", "user_distill": true});
         let direct_distill = json!({"mode": "direct", "user_distill": true});
@@ -4021,6 +4539,85 @@ mod tests {
             .unwrap()
             .contains("native intent target"));
         assert!(window_smoke_mode_boundary_error(&normal_page, Some("direct")).is_none());
+        assert!(window_smoke_mode_boundary_error(&direct_tab_smoke, Some("direct")).is_none());
+        assert!(
+            window_smoke_mode_boundary_error(&incognito_direct_tab_smoke, Some("incognito"))
+                .is_none()
+        );
+        assert!(
+            window_smoke_mode_boundary_error(&assisted_direct_render, Some("assisted"))
+                .unwrap()
+                .contains("render_path 'direct' requires mode 'direct' or 'incognito'")
+        );
+        assert!(
+            window_smoke_mode_boundary_error(&direct_first_interaction_smoke, Some("direct"))
+                .is_none()
+        );
+        assert!(
+            window_smoke_mode_boundary_error(&bridge_first_interaction_smoke, Some("direct"))
+                .unwrap()
+                .contains("first_interaction_smoke requires render_path 'direct'")
+        );
+        assert!(
+            window_smoke_mode_boundary_error(&direct_verified_input_smoke, Some("direct"))
+                .is_none()
+        );
+        assert!(
+            window_smoke_mode_boundary_error(&bridge_verified_input_smoke, Some("direct"))
+                .unwrap()
+                .contains("verified_input_smoke requires render_path 'direct'")
+        );
+        assert!(
+            window_smoke_mode_boundary_error(&direct_search_submit_smoke, Some("direct")).is_none()
+        );
+        assert!(
+            window_smoke_mode_boundary_error(&bridge_search_submit_smoke, Some("direct"))
+                .unwrap()
+                .contains("search_submit_smoke requires render_path 'direct'")
+        );
+        assert!(
+            window_smoke_mode_boundary_error(&direct_live_search_smoke, Some("direct")).is_none()
+        );
+        assert!(
+            window_smoke_mode_boundary_error(&bridge_live_search_smoke, Some("direct"))
+                .unwrap()
+                .contains("live_search_smoke requires render_path 'direct'")
+        );
+        assert!(window_smoke_mode_boundary_error(&direct_location_smoke, Some("direct")).is_none());
+        assert!(
+            window_smoke_mode_boundary_error(&bridge_location_smoke, Some("direct"))
+                .unwrap()
+                .contains("location_smoke requires render_path 'direct'")
+        );
+        assert!(window_smoke_mode_boundary_error(&direct_history_smoke, Some("direct")).is_none());
+        assert!(
+            window_smoke_mode_boundary_error(&bridge_history_smoke, Some("direct"))
+                .unwrap()
+                .contains("history_smoke requires render_path 'direct'")
+        );
+        assert!(window_smoke_mode_boundary_error(&direct_load_smoke, Some("direct")).is_none());
+        assert!(
+            window_smoke_mode_boundary_error(&bridge_load_smoke, Some("direct"))
+                .unwrap()
+                .contains("load_smoke requires render_path 'direct'")
+        );
+        assert!(window_smoke_mode_boundary_error(&direct_reload_smoke, Some("direct")).is_none());
+        assert!(
+            window_smoke_mode_boundary_error(&bridge_reload_smoke, Some("direct"))
+                .unwrap()
+                .contains("reload_smoke requires render_path 'direct'")
+        );
+        assert!(window_smoke_mode_boundary_error(&direct_resize_smoke, Some("direct")).is_none());
+        assert!(
+            window_smoke_mode_boundary_error(&bridge_resize_smoke, Some("direct"))
+                .unwrap()
+                .contains("resize_smoke requires render_path 'direct'")
+        );
+        assert!(
+            window_smoke_mode_boundary_error(&bridge_shell_interaction, Some("direct"))
+                .unwrap()
+                .contains("shell-interaction seeding")
+        );
         assert!(window_smoke_mode_boundary_error(&assisted_showcase, Some("assisted")).is_none());
         assert!(window_smoke_mode_boundary_error(&observe_distill, Some("observe")).is_none());
         assert!(
@@ -4102,13 +4699,14 @@ mod tests {
     #[test]
     fn extracts_window_smoke_lines() {
         let output =
-            "noise\n[window-start] running launch showcase\n[window-user] Distilling active page...\n[window-smoke] visible shell draw passed\n[sextant-browser] failed: window start failed\n[operator-run] ignored";
+            "noise\n[window-start] running launch showcase\n[window-user] Distilling active page...\n[window-smoke] visible shell draw passed\n[window-direct] first direct present in 122ms\n[sextant-browser] failed: window start failed\n[operator-run] ignored";
         assert_eq!(
             window_report_lines(output),
             vec![
                 "[window-start] running launch showcase",
                 "[window-user] Distilling active page...",
                 "[window-smoke] visible shell draw passed",
+                "[window-direct] first direct present in 122ms",
                 "[sextant-browser] failed: window start failed"
             ]
         );
@@ -4122,15 +4720,53 @@ mod tests {
             "[window-smoke] render gap direct compositor pending".to_string(),
             "[window-smoke] pre-size navigation true".to_string(),
             "[window-smoke] ephemeral browser data dir C:\\Temp\\sextant-browser-incognito-123".to_string(),
+            "[window-smoke] direct Servo config dir C:\\Temp\\sextant-browser-incognito-123".to_string(),
+            "[window-smoke] direct Servo http cache disabled true".to_string(),
             "[window-smoke] visible shell draw passed in 38ms".to_string(),
             "[window-smoke] startup/navigation work 414ms".to_string(),
             "[window-smoke] draw cost total 30ms | frame blit 9ms | present 0ms".to_string(),
             "[window-smoke] input enqueue 1ms".to_string(),
             "[window-smoke] input frame 64ms".to_string(),
+            "[window-smoke] first interaction frame 3ms".to_string(),
+            "[window-smoke] first interaction before load complete true".to_string(),
+            "[window-smoke] verified input frame 4ms".to_string(),
+            "[window-smoke] verified input true".to_string(),
+            "[window-smoke] verified input before load complete true".to_string(),
+            "[window-smoke] search submit frame 55ms".to_string(),
+            "[window-smoke] search submit true".to_string(),
+            "[window-smoke] search submit url http://127.0.0.1:1234/search?q=sextant"
+                .to_string(),
+            "[window-smoke] search submit title search:sextant".to_string(),
+            "[window-smoke] live search frame 61ms".to_string(),
+            "[window-smoke] live search true".to_string(),
+            "[window-smoke] live search url https://en.wikipedia.org/wiki/Sextant".to_string(),
+            "[window-smoke] live search title Sextant - Wikipedia".to_string(),
+            "[window-direct] live search attempt keyboard focus".to_string(),
+            "[window-direct] live search attempt center click".to_string(),
+            "[window-direct] timed out after 75.0s during scripted smoke (last title Some(\"https://www.google.com/search?q=northern+lights&sei=abc\"))".to_string(),
+            "[window-smoke] location frame 22ms".to_string(),
+            "[window-smoke] location url https://example.com/".to_string(),
+            "[window-smoke] location title Example Domain".to_string(),
+            "[window-smoke] history navigation frame 31ms".to_string(),
+            "[window-smoke] history back frame 12ms".to_string(),
+            "[window-smoke] history forward frame 14ms".to_string(),
+            "[window-smoke] history final url https://example.org/".to_string(),
+            "[window-smoke] history final title Example Domain".to_string(),
+            "[window-smoke] load complete 15ms".to_string(),
+            "[window-smoke] load url https://example.com/".to_string(),
+            "[window-smoke] load title Example Domain".to_string(),
+            "[window-smoke] reload frame 16ms".to_string(),
+            "[window-smoke] reload url https://example.com/".to_string(),
+            "[window-smoke] reload title Example Domain".to_string(),
+            "[window-smoke] resize frame 17ms".to_string(),
+            "[window-smoke] tab frame 18ms".to_string(),
+            "[window-smoke] tab url data:text/html,tab".to_string(),
+            "[window-smoke] tab title Sextant-Direct-Tab-Smoke".to_string(),
             "[window-smoke] perf nav 414ms | distill pending | wake pending | resize 390ms | frame 438ms".to_string(),
             "[window-smoke] slowest perf frame-total 472ms | capture render bridge".to_string(),
             "[window-smoke] slow perf frame-total 472ms capture render bridge | frame 438ms capture render bridge | frame-queue 34ms capture queue render bridge | nav-phase 414ms open servo navigation | nav-phase 275ms open servo url wait | nav-phase 250ms open servo load wait | resize 390ms viewport render bridge async".to_string(),
             "[window-smoke] latest Servo frame 776x292 (226592 pixels)".to_string(),
+            "[window-smoke] first direct present in 149ms".to_string(),
             "[window-smoke] first Servo frame in 950ms".to_string(),
         ];
 
@@ -4149,6 +4785,11 @@ mod tests {
             summary["ephemeralDataDir"],
             "C:\\Temp\\sextant-browser-incognito-123"
         );
+        assert_eq!(
+            summary["servoConfigDir"],
+            "C:\\Temp\\sextant-browser-incognito-123"
+        );
+        assert_eq!(summary["servoHttpCacheDisabled"], Value::Bool(true));
         assert_eq!(summary["firstDrawMs"], Value::from(38));
         assert_eq!(summary["startupWorkMs"], Value::from(414));
         assert_eq!(summary["drawTotalMs"], Value::from(30));
@@ -4156,6 +4797,56 @@ mod tests {
         assert_eq!(summary["presentMs"], Value::from(0));
         assert_eq!(summary["inputEnqueueMs"], Value::from(1));
         assert_eq!(summary["inputFrameMs"], Value::from(64));
+        assert_eq!(summary["firstInteractionFrameMs"], Value::from(3));
+        assert_eq!(
+            summary["firstInteractionBeforeLoadComplete"],
+            Value::Bool(true)
+        );
+        assert_eq!(summary["verifiedInputFrameMs"], Value::from(4));
+        assert_eq!(summary["verifiedInput"], Value::Bool(true));
+        assert_eq!(
+            summary["verifiedInputBeforeLoadComplete"],
+            Value::Bool(true)
+        );
+        assert_eq!(summary["searchSubmitFrameMs"], Value::from(55));
+        assert_eq!(summary["searchSubmit"], Value::Bool(true));
+        assert_eq!(
+            summary["searchSubmitUrl"],
+            "http://127.0.0.1:1234/search?q=sextant"
+        );
+        assert_eq!(summary["searchSubmitTitle"], "search:sextant");
+        assert_eq!(summary["liveSearchFrameMs"], Value::from(61));
+        assert_eq!(summary["liveSearch"], Value::Bool(true));
+        assert_eq!(
+            summary["liveSearchUrl"],
+            "https://en.wikipedia.org/wiki/Sextant"
+        );
+        assert_eq!(summary["liveSearchTitle"], "Sextant - Wikipedia");
+        assert_eq!(summary["liveSearchAttempts"][0], "keyboard focus");
+        assert_eq!(summary["liveSearchAttempts"][1], "center click");
+        assert_eq!(summary["timeoutPhase"], "scripted smoke");
+        assert_eq!(
+            summary["timeoutTitle"],
+            "https://www.google.com/search?q=northern+lights&sei=abc"
+        );
+        assert_eq!(summary["locationFrameMs"], Value::from(22));
+        assert_eq!(summary["locationUrl"], "https://example.com/");
+        assert_eq!(summary["locationTitle"], "Example Domain");
+        assert_eq!(summary["historyNavigationFrameMs"], Value::from(31));
+        assert_eq!(summary["historyBackFrameMs"], Value::from(12));
+        assert_eq!(summary["historyForwardFrameMs"], Value::from(14));
+        assert_eq!(summary["historyFinalUrl"], "https://example.org/");
+        assert_eq!(summary["historyFinalTitle"], "Example Domain");
+        assert_eq!(summary["loadCompleteMs"], Value::from(15));
+        assert_eq!(summary["loadUrl"], "https://example.com/");
+        assert_eq!(summary["loadTitle"], "Example Domain");
+        assert_eq!(summary["reloadFrameMs"], Value::from(16));
+        assert_eq!(summary["reloadUrl"], "https://example.com/");
+        assert_eq!(summary["reloadTitle"], "Example Domain");
+        assert_eq!(summary["resizeFrameMs"], Value::from(17));
+        assert_eq!(summary["tabFrameMs"], Value::from(18));
+        assert_eq!(summary["tabUrl"], "data:text/html,tab");
+        assert_eq!(summary["tabTitle"], "Sextant-Direct-Tab-Smoke");
         assert_eq!(summary["navigationMs"], Value::from(414));
         assert_eq!(summary["distillMs"], Value::Null);
         assert_eq!(summary["slowestPerfEvent"]["phase"], "frame-total");
@@ -4176,7 +4867,38 @@ mod tests {
         assert_eq!(summary["latestFrameWidth"], Value::from(776));
         assert_eq!(summary["latestFrameHeight"], Value::from(292));
         assert_eq!(summary["latestFramePixels"], Value::from(226592));
+        assert_eq!(summary["directPresentMs"], Value::from(149));
         assert_eq!(summary["firstFrameMs"], Value::from(950));
+    }
+
+    #[test]
+    fn parses_live_search_submitted_without_verification() {
+        let report = vec![
+            "[window-direct] live search attempt keyboard focus".to_string(),
+            "[window-direct] live search attempt keyboard focus sweep".to_string(),
+            "[window-direct] live search attempt center click".to_string(),
+            "[window-direct] timed out after 45.0s during scripted smoke (last title Some(\"Google\"), last url Some(\"https://www.google.com/search?q=northern+lights&sei=abc\"))".to_string(),
+        ];
+
+        let summary = window_smoke_summary(&report);
+
+        assert_eq!(summary["liveSearchAttempts"][0], "keyboard focus");
+        assert_eq!(summary["liveSearchAttempts"][1], "keyboard focus sweep");
+        assert_eq!(summary["liveSearchAttempts"][2], "center click");
+        assert_eq!(summary["liveSearchSubmitted"], Value::Bool(true));
+        assert_eq!(
+            summary["liveSearchSubmittedUrl"],
+            "https://www.google.com/search?q=northern+lights&sei=abc"
+        );
+        assert_eq!(
+            summary["timeoutUrl"],
+            "https://www.google.com/search?q=northern+lights&sei=abc"
+        );
+        assert_eq!(summary["liveSearchBlocked"], Value::Bool(true));
+        assert_eq!(
+            summary["liveSearchBlockReason"],
+            "submitted-without-query-verification"
+        );
     }
 
     #[test]
