@@ -44,10 +44,11 @@ Smoke baselines:
 
 | Scenario | First present/frame | Follow-up | Load complete | Max paint | Notes |
 |---|---:|---:|---:|---:|---|
-| Direct baseline `simple_load` / `https://example.com` | `284ms` | n/a | `533ms` | `3ms` | Required; title `Example Domain`; slow frames `0`. |
-| Direct baseline `complex_load` / DuckDuckGo | `127ms` | n/a | `1.7s` | `936ms` | Required; slow phase `loading`; `780` elements, `2,904` CSS rules, `48` scripts, `74` resources. |
-| Direct baseline `appliance_load` / Pylon | `116ms` | n/a | `247ms` | `3ms` | Optional local appliance case; title `Login - Pylon`; local TLS override path still works. |
-| Direct baseline `live_search` / DuckDuckGo Lite | `98ms` | `767ms` | n/a | `542ms` | Required; title `Sextant at DuckDuckGo`; slow phase `idle`. |
+| Direct baseline `simple_load` / `https://example.com` | `162ms` | n/a | `477ms` | `6ms` | Required; title `Example Domain`; slow frames `0`. |
+| Direct baseline `complex_load` / DuckDuckGo | `165ms` | n/a | `2.2s` | `1.3s` | Required; slow phase `loading`; `816` elements, `2,413` CSS rules, `46` scripts, `76` resources. |
+| Direct baseline `appliance_load` / Pylon | `143ms` | n/a | `262ms` | `3ms` | Optional local appliance case; title `Login - Pylon`; local TLS override path still works. |
+| Direct baseline `live_search` / DuckDuckGo Lite | `155ms` | `841ms` | n/a | `582ms` | Required; title `Sextant at DuckDuckGo`; slow phase `idle`. |
+| Direct baseline `live_form` / httpbin | `144ms` | `492ms` | n/a | `762ms` | Required; DOM-located `input[name="custname"]`, submitted to `https://httpbin.org/post`; slow phase `idle`. |
 | Assisted bridge `example.com --user-distill` | shell draw `4ms` / Servo frame `758ms` | n/a | n/a | n/a | Nav `277ms`, distill `409ms`, Wake `60ms`, frame `23ms`. |
 
 Viewport and complexity read:
@@ -128,10 +129,11 @@ Command:
 
 | Scenario | Mode | First present/frame | Follow-up | Load complete | Notes |
 |---|---|---:|---:|---:|---|
-| baseline `simple_load` / `https://example.com` | Direct | `110ms` | n/a | `394ms` | Title `Example Domain`; `11` frames, max direct frame `4ms`, slow frames `0`. |
-| baseline `complex_load` / DuckDuckGo | Direct | `146ms` | n/a | `1.7s` | `23` frames; max direct frame `924ms`, slow frames `1`, phase `loading`; resource audit found `13` images, `0` broken images, `42` inline SVGs, `34` zero-size SVGs, `10` stylesheets, `0` canvases. |
-| baseline `appliance_load` / Pylon | Direct | `173ms` | n/a | `300ms` | Local TLS bypass case; title `Login - Pylon`; `12` frames; optional by default so offline appliances do not fail the whole baseline. |
-| baseline `live_search` / DuckDuckGo Lite | Direct | `119ms` | `766ms` | n/a | Title `Sextant at DuckDuckGo`; `26` frames after ready-frame pacing; max direct frame `618ms`, slow frames `1`, phase `idle`. |
+| baseline `simple_load` / `https://example.com` | Direct | `162ms` | n/a | `477ms` | Title `Example Domain`; `12` frames, max direct frame `7ms`, slow frames `0`. |
+| baseline `complex_load` / DuckDuckGo | Direct | `165ms` | n/a | `2.2s` | `23` frames; max direct frame `1.3s`, slow frames `1`, phase `loading`; resource audit found `18` images, `7` broken images, `40` inline SVGs, `33` zero-size SVGs, `10` stylesheets, `0` canvases. |
+| baseline `appliance_load` / Pylon | Direct | `143ms` | n/a | `262ms` | Local TLS bypass case; title `Login - Pylon`; `11` frames; optional by default so offline appliances do not fail the whole baseline. |
+| baseline `live_search` / DuckDuckGo Lite | Direct | `155ms` | `841ms` | n/a | Title `Sextant at DuckDuckGo`; `26` frames after ready-frame pacing; max direct frame `584ms`, slow frames `1`, phase `idle`. |
+| baseline `live_form` / httpbin | Direct | `144ms` | `492ms` | n/a | DOM-located `input[name="custname"]`, clicked `button:not([type])`, reached `https://httpbin.org/post`; `26` frames, max direct frame `763ms`, slow frames `1`, phase `idle`. |
 
 Required failures: none.
 

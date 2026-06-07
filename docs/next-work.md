@@ -36,8 +36,8 @@ The direct lane now proves fast first present, fast early interaction, verified 
    - Track `verifiedInputFrameMs`, `searchSubmitFrameMs`, `liveSearchFrameMs`, `liveFormFrameMs`, `locationUrl`, `historyFinalUrl`, `loadUrl`, `reloadUrl`, `tabUrl`, `firstInteractionFrameMs`, load state, and any focus/hit-test failure mode.
 
 3. **Keep the direct browsing baseline green**
-   - `browser_direct_browsing_baseline` covers simple load, complex page, optional local appliance load, and live search.
-   - Latest QA follow-up: example.com `270ms` first present / `581ms` complete, DuckDuckGo `114ms` first present / `1.6s` complete with a `799ms` loading paint, Pylon `110ms` first present / `249ms` complete, DuckDuckGo Lite search `703ms`.
+   - `browser_direct_browsing_baseline` covers simple load, complex page, optional local appliance load, live search, and hosted live form.
+   - Latest QA follow-up: example.com `162ms` first present / `477ms` complete, DuckDuckGo `165ms` first present / `2.2s` complete with a `1.3s` loading paint, Pylon `143ms` first present / `262ms` complete, DuckDuckGo Lite search `841ms`, and hosted `httpbin` form submit `492ms`.
    - Direct ready-frame pacing is active for non-input frame-ready floods; the baseline now records frame counts and slow-frame phases.
    - `browser_direct_viewport_baseline` now checks DuckDuckGo at `640x420`, `960x620`, and `1180x760`; latest max paints landed at `891ms`, `833ms`, and `837ms` with about `780` elements, `2,904` CSS rules, `48` scripts, and `74` resources, so the remaining heavy frame is still likely Servo/WebRender scene/content work rather than raw pixel fill.
    - `browser_direct_complexity_baseline` compares simple, lite, complex, and article pages at `960x620`; latest run separates audit-only paint from true loading paint and shows DuckDuckGo full `818ms` / MDN `903ms` loading paint.

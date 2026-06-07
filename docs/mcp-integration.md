@@ -24,7 +24,7 @@ The first layer is intentionally truthful and narrow:
 - `browser_perception_probe` opens and distills a target page, then returns page perception summary, semantic counts, key nodes, source metadata, and timings.
 - `browser_perf_probe` runs a timed single-page browser pass with navigation, distillation, Wake, viewport resize, first-frame, and warm-frame timings.
 - `browser_perf_baseline` runs the built-in normal-browsing performance baseline across simple and heavier representative pages.
-- `browser_direct_browsing_baseline` runs the direct Servo user-browsing baseline across simple load, complex load, optional local appliance load, and live search.
+- `browser_direct_browsing_baseline` runs the direct Servo user-browsing baseline across simple load, complex load, optional local appliance load, live search, and hosted live form.
 - `browser_hosted_direct_smoke` launches the Direct/Incognito parent chrome with an embedded Servo child and exits after first-present evidence.
 - `browser_local_appliance_cert_list` lists persisted profile-scoped local appliance certificate trust exceptions.
 - `browser_local_appliance_cert_forget` removes one profile-scoped local appliance certificate trust exception, or clears all persisted local appliance trust entries.
@@ -159,13 +159,13 @@ Use `browser_perf_probe` when the question is "where is this page spending time?
 
 Use `browser_perf_baseline` when the question is "what is the current normal-browsing timing baseline across representative pages?"
 
-Use `browser_direct_browsing_baseline` when the question is "is the direct Servo browsing path still fast and usable across simple, complex, appliance, and search cases?" A typical call is:
+Use `browser_direct_browsing_baseline` when the question is "is the direct Servo browsing path still fast and usable across simple, complex, appliance, search, and form cases?" A typical call is:
 
 ```json
 {"timeout_seconds":75}
 ```
 
-Optional arguments are `simple_target`, `complex_target`, `appliance_target`, `search_target`, and `appliance_required`. By default the local appliance case is optional so an offline lab box does not fail the whole baseline.
+Optional arguments are `simple_target`, `complex_target`, `appliance_target`, `search_target`, `form_target`, and `appliance_required`. By default the local appliance case is optional so an offline lab box does not fail the whole baseline.
 
 Use `browser_direct_viewport_baseline` when the question is "does the remaining heavy direct paint scale with viewport size?" A typical call is:
 

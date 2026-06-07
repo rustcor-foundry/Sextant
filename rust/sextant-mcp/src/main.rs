@@ -825,7 +825,7 @@ fn tools() -> Value {
         {
             "name": "browser_direct_browsing_baseline",
             "title": "Browser Direct Browsing Baseline",
-            "description": "Run the Direct/Incognito-free user performance matrix across simple, complex, appliance, and live-search browsing flows.",
+            "description": "Run the Direct/Incognito-free user performance matrix across simple, complex, appliance, live-search, and live-form browsing flows.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -844,6 +844,10 @@ fn tools() -> Value {
                     "search_target": {
                         "type": "string",
                         "description": "Optional live-search page target. When omitted, the direct live-search smoke uses its DuckDuckGo Lite default."
+                    },
+                    "form_target": {
+                        "type": "string",
+                        "description": "Optional hosted live-form page target. When omitted, the direct live-form smoke uses its httpbin.org form default."
                     },
                     "timeout_seconds": window_timeout_property(),
                     "appliance_required": {
@@ -1314,7 +1318,7 @@ fn resource_text(uri: &str) -> Option<String> {
                 "- Raw direct production lane: `browser_window_smoke` with `render_path=direct` runs `sextant-browser --render-path direct` in Direct/Incognito mode for URL/search browsing, direct input, tabs, location, history, reload, resize, and Incognito storage checks",
                 "- Local appliance TLS: direct smoke can opt into `allow_insecure_local_tls` for controlled localhost, `.local`, private-IP, or link-local appliance testing; public targets are refused and product UX should use fingerprint-bound certificate exceptions",
                 "- Render-path baseline: bounded `browser_render_path_baseline` path comparing direct-present timing with the production bridge-backed visible smoke",
-                "- Direct browsing baseline: bounded `browser_direct_browsing_baseline` matrix for simple, complex, appliance, and live-search Direct-mode user flows",
+                "- Direct browsing baseline: bounded `browser_direct_browsing_baseline` matrix for simple, complex, appliance, live-search, and live-form Direct-mode user flows",
                 "- Direct viewport baseline: bounded `browser_direct_viewport_baseline` matrix for complex-page paint cost across viewport sizes",
                 "- Direct complexity baseline: bounded `browser_direct_complexity_baseline` matrix comparing paint cost across simple, lite, complex, and article pages",
                 "- Intent automation: bounded `--intent-run` mode for native Intent Bar workflows",
@@ -1347,7 +1351,7 @@ fn resource_text(uri: &str) -> Option<String> {
                 "Use `browser_local_appliance_cert_list` when inspecting persisted local appliance certificate exceptions.",
                 "Use `browser_local_appliance_cert_forget` when revoking a trusted local appliance certificate exception by URL, or clearing all persisted local appliance trust.",
                 "Use `browser_render_path_baseline` when comparing direct Servo presentation timing against the production bridge path for one URL.",
-                "Use `browser_direct_browsing_baseline` when tuning real Direct-mode browsing across simple, complex, appliance, and search flows.",
+                "Use `browser_direct_browsing_baseline` when tuning real Direct-mode browsing across simple, complex, appliance, search, and form flows.",
                 "Use `browser_direct_viewport_baseline` when checking whether a heavy Direct paint scales with viewport area.",
                 "Use `browser_direct_complexity_baseline` when checking whether Direct paint cost follows page DOM/CSS/script/resource complexity.",
                 "Use `browser_intent_run` for Intent Bar workflows such as opening and distilling a page.",
@@ -2324,6 +2328,9 @@ fn browser_direct_browsing_baseline_cli_arguments(
     if let Some(target) = operator_arg_value(args, "--search-target") {
         arguments["search_target"] = Value::String(target);
     }
+    if let Some(target) = operator_arg_value(args, "--form-target") {
+        arguments["form_target"] = Value::String(target);
+    }
     if args.iter().any(|arg| arg == "--appliance-required") {
         arguments["appliance_required"] = Value::Bool(true);
     }
@@ -2545,6 +2552,7 @@ fn browser_direct_browsing_baseline_tool(arguments: Value) -> Value {
         .or_else(|| env::var("SEXTANT_BASELINE_APPLIANCE_URL").ok())
         .unwrap_or_else(|| "https://192.0.2.130:8080/app/login".to_string());
     let search_target = required_string(&arguments, "search_target");
+    let form_target = required_string(&arguments, "form_target");
     let appliance_required = arguments
         .get("appliance_required")
         .and_then(Value::as_bool)
@@ -2600,6 +2608,16 @@ fn browser_direct_browsing_baseline_tool(arguments: Value) -> Value {
         true,
         search_arguments,
     ));
+    let mut form_arguments = json!({
+        "mode": "direct",
+        "render_path": "direct",
+        "live_form_smoke": true,
+        "timeout_seconds": timeout_seconds,
+    });
+    if let Some(form_target) = form_target {
+        form_arguments["target"] = Value::String(form_target);
+    }
+    cases.push(run_direct_baseline_case("live_form", true, form_arguments));
 
     let required_failures: Vec<Value> = cases
         .iter()
@@ -6242,6 +6260,8 @@ mod tests {
             "https://192.0.2.130:8080/app/login".to_string(),
             "--search-target".to_string(),
             "https://lite.duckduckgo.com/lite/".to_string(),
+            "--form-target".to_string(),
+            "https://httpbin.org/forms/post".to_string(),
             "--appliance-required".to_string(),
             "--timeout-seconds".to_string(),
             "45".to_string(),
@@ -6260,6 +6280,7 @@ mod tests {
             arguments["search_target"],
             "https://lite.duckduckgo.com/lite/"
         );
+        assert_eq!(arguments["form_target"], "https://httpbin.org/forms/post");
         assert_eq!(arguments["appliance_required"], Value::Bool(true));
         assert_eq!(arguments["timeout_seconds"], 45);
     }

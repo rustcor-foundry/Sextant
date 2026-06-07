@@ -39,7 +39,7 @@ Latest QA pass: Rust build/test green across the default workspace, no-default f
 
 | Metric | Latest useful checkpoint |
 |---|---:|
-| Direct browsing baseline | Required failures `0`; simple, complex, appliance, and live-search cases passing |
+| Direct browsing baseline | Required failures `0`; simple, complex, appliance, live-search, and live-form cases passing |
 | Hosted direct smoke | Parent shell ready, embedded child first-present `156ms`, active URL `https://example.com/` |
 | Direct viewport baseline | DuckDuckGo max paint stayed in the `833-891ms` range across `640x420`, `960x620`, and `1180x760`; still points toward scene/content work more than raw viewport fill |
 | Direct complexity baseline | Separates loading paint from audit overhead: DuckDuckGo full `818ms` loading paint, MDN `903ms` loading paint, DuckDuckGo Lite max paint `3ms`, example.com max paint is audit-only |
@@ -49,15 +49,15 @@ Latest QA pass: Rust build/test green across the default workspace, no-default f
 | Google first interaction frame | `6ms` before load complete |
 | Verified direct input | `413ms`, clicked/focused/typed through live localhost fixture |
 | Verified form submit | `304-520ms`, typed, submitted, and verified `/search?q=sextant` URL/title |
-| Live direct search | `766ms`, `26` frames, DuckDuckGo Lite title confirmed `Sextant at DuckDuckGo` in the baseline |
+| Live direct search | `841ms`, `26` frames, DuckDuckGo Lite title confirmed `Sextant at DuckDuckGo` in the baseline |
 | Google live search | Passing current smoke; first present `156ms`, DOM-located search box click found `textarea[name="q"]`, submitted `/search?q=Sextant`, live-search frame `6.1s`; MCP still classifies no-query and submitted-unverified failures when they occur |
 | Bing live search | Passing after local Servo `NodeList` defensive patch: first present `190ms`, DOM-located search box found `textarea[name="q"]` at `560,172`, normal page submit reached `https://www.bing.com/search?q=Sextant...`, live-search frame `6.3s`; patched rerun had no `nodelist.rs` panic |
-| Live hosted form smoke | Passing against `https://httpbin.org/forms/post`: first present `163ms`, DOM-located `input[name="custname"]`, clicked `button:not([type])`, reached `https://httpbin.org/post`, `liveFormFrameMs=484` |
+| Live hosted form smoke | Passing in the direct baseline against `https://httpbin.org/forms/post`: first present `144ms`, DOM-located `input[name="custname"]`, clicked `button:not([type])`, reached `https://httpbin.org/post`, `liveFormFrameMs=492` |
 | Google load complete | `5.1s` |
-| example.com first direct present | `110ms` in the baseline |
-| example.com load complete | `394ms`, final title `Example Domain` |
-| DuckDuckGo complex first direct present | `114ms` in the latest baseline |
-| DuckDuckGo complex load complete | `1.6s`, `18` frames, max direct frame `800ms`, slow phase `loading`; post-load audit paint `107ms` |
+| example.com first direct present | `162ms` in the baseline |
+| example.com load complete | `477ms`, final title `Example Domain` |
+| DuckDuckGo complex first direct present | `165ms` in the latest baseline |
+| DuckDuckGo complex load complete | `2.2s`, `23` frames, max direct frame `1.3s`, slow phase `loading`; page complexity about `816` elements, `2,413` CSS rules, `46` scripts, and `76` resources |
 | DuckDuckGo viewport scale check | Max paint `891ms` at `640x420`, `833ms` at `960x620`, `837ms` at `1180x760`; page complexity is about `780` elements, `2,904` CSS rules, `48` scripts, and `74` resources |
 | Complexity comparison at `960x620` | example.com `346ms` audit-only paint, DuckDuckGo Lite `3ms`, DuckDuckGo full `818ms` loading paint, MDN `903ms` loading paint |
 | DuckDuckGo resource audit | `13` images, `0` broken images, `42` inline SVGs, `34` zero-size SVGs, `10` stylesheets |
