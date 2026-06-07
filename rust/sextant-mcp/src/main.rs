@@ -957,6 +957,10 @@ fn tools() -> Value {
                         "type": "boolean",
                         "description": "Direct-render only. Type into a representative live search page, submit through the raw Servo input path, verify the resulting query page, and report timing."
                     },
+                    "live_form_smoke": {
+                        "type": "boolean",
+                        "description": "Direct-render only. Type into a representative hosted HTML form, submit through the raw Servo input path, verify the posted form page, and report timing."
+                    },
                     "location_smoke": {
                         "type": "string",
                         "description": "Direct-render only. After first direct present, drive the raw direct address/location path with this URL, bare domain, or search text and report location timing."
@@ -1808,6 +1812,16 @@ fn window_smoke_mode_boundary_error(arguments: &Value, mode: Option<&str>) -> Op
         );
     }
     if arguments
+        .get("live_form_smoke")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        && render_path != "direct"
+    {
+        return Some(
+            "browser_window_smoke live_form_smoke requires render_path 'direct'".to_string(),
+        );
+    }
+    if arguments
         .get("location_smoke")
         .and_then(Value::as_str)
         .is_some()
@@ -2118,6 +2132,12 @@ fn browser_window_smoke_cli_arguments(args: &[String]) -> Result<Option<Value>, 
         .any(|arg| arg == "--live-search-smoke" || arg == "--window-live-search-smoke")
     {
         arguments["live_search_smoke"] = Value::Bool(true);
+    }
+    if args
+        .iter()
+        .any(|arg| arg == "--live-form-smoke" || arg == "--window-live-form-smoke")
+    {
+        arguments["live_form_smoke"] = Value::Bool(true);
     }
     if let Some(target) = operator_arg_value(args, "--location-smoke")
         .or_else(|| operator_arg_value(args, "--window-location-smoke"))
@@ -2841,6 +2861,7 @@ fn direct_baseline_metrics(window_smoke: &Value) -> Value {
         "verifiedInputFrameMs": window_smoke.get("verifiedInputFrameMs").cloned().unwrap_or(Value::Null),
         "searchSubmitFrameMs": window_smoke.get("searchSubmitFrameMs").cloned().unwrap_or(Value::Null),
         "liveSearchFrameMs": window_smoke.get("liveSearchFrameMs").cloned().unwrap_or(Value::Null),
+        "liveFormFrameMs": window_smoke.get("liveFormFrameMs").cloned().unwrap_or(Value::Null),
         "loadCompleteMs": window_smoke.get("loadCompleteMs").cloned().unwrap_or(Value::Null),
         "reloadFrameMs": window_smoke.get("reloadFrameMs").cloned().unwrap_or(Value::Null),
         "resizeFrameMs": window_smoke.get("resizeFrameMs").cloned().unwrap_or(Value::Null),
@@ -2853,6 +2874,9 @@ fn direct_baseline_metrics(window_smoke: &Value) -> Value {
         "liveSearchDomFormTargetUrl": window_smoke.get("liveSearchDomFormTargetUrl").cloned().unwrap_or(Value::Null),
         "liveSearchBlocked": window_smoke.get("liveSearchBlocked").cloned().unwrap_or(Value::Null),
         "liveSearchBlockReason": window_smoke.get("liveSearchBlockReason").cloned().unwrap_or(Value::Null),
+        "liveForm": window_smoke.get("liveForm").cloned().unwrap_or(Value::Null),
+        "liveFormUrl": window_smoke.get("liveFormUrl").cloned().unwrap_or(Value::Null),
+        "liveFormTitle": window_smoke.get("liveFormTitle").cloned().unwrap_or(Value::Null),
         "timeoutPhase": window_smoke.get("timeoutPhase").cloned().unwrap_or(Value::Null),
         "timeoutTitle": window_smoke.get("timeoutTitle").cloned().unwrap_or(Value::Null),
         "timeoutUrl": window_smoke.get("timeoutUrl").cloned().unwrap_or(Value::Null),
@@ -3110,6 +3134,13 @@ fn run_browser_window_smoke_tool(arguments: Value) -> Result<Value, String> {
         .unwrap_or(false)
     {
         full_args.push("--live-search-smoke".to_string());
+    }
+    if arguments
+        .get("live_form_smoke")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        full_args.push("--live-form-smoke".to_string());
     }
     if let Some(target) = required_string(&arguments, "location_smoke") {
         full_args.extend(["--location-smoke".to_string(), target]);
@@ -4801,6 +4832,10 @@ fn window_smoke_summary(report: &[String]) -> Value {
     summary["liveSearchSubmittedUrl"] = Value::Null;
     summary["liveSearchBlocked"] = Value::Null;
     summary["liveSearchBlockReason"] = Value::Null;
+    summary["liveFormFrameMs"] = Value::Null;
+    summary["liveForm"] = Value::Null;
+    summary["liveFormUrl"] = Value::Null;
+    summary["liveFormTitle"] = Value::Null;
     summary["timeoutPhase"] = Value::Null;
     summary["timeoutTitle"] = Value::Null;
     summary["timeoutUrl"] = Value::Null;
@@ -4890,6 +4925,14 @@ fn window_smoke_summary(report: &[String]) -> Value {
             summary["liveSearchTitle"] = Value::String(value.trim().to_string());
         } else if let Some(value) = line.split("live search ").nth(1) {
             summary["liveSearch"] = Value::Bool(value.trim() == "true");
+        } else if let Some(value) = line.split("live form frame ").nth(1) {
+            summary["liveFormFrameMs"] = duration_token_to_value(value.trim());
+        } else if let Some(value) = line.strip_prefix("[window-smoke] live form url ") {
+            summary["liveFormUrl"] = Value::String(value.trim().to_string());
+        } else if let Some(value) = line.strip_prefix("[window-smoke] live form title ") {
+            summary["liveFormTitle"] = Value::String(value.trim().to_string());
+        } else if let Some(value) = line.strip_prefix("[window-smoke] live form ") {
+            summary["liveForm"] = Value::Bool(value.trim() == "true");
         } else if let Some(value) = line.split("input enqueue ").nth(1) {
             summary["inputEnqueueMs"] = duration_token_to_value(value.trim());
         } else if let Some(value) = line.split("input frame ").nth(1) {
@@ -5866,6 +5909,10 @@ mod tests {
             "boolean"
         );
         assert_eq!(
+            window_smoke["inputSchema"]["properties"]["live_form_smoke"]["type"],
+            "boolean"
+        );
+        assert_eq!(
             window_smoke["inputSchema"]["properties"]["resource_audit"]["type"],
             "boolean"
         );
@@ -6005,6 +6052,7 @@ mod tests {
             "--verified-input-smoke".to_string(),
             "--search-submit-smoke".to_string(),
             "--live-search-smoke".to_string(),
+            "--live-form-smoke".to_string(),
             "--location-smoke".to_string(),
             "example.com".to_string(),
             "--history-smoke".to_string(),
@@ -6032,6 +6080,7 @@ mod tests {
         assert_eq!(arguments["verified_input_smoke"], Value::Bool(true));
         assert_eq!(arguments["search_submit_smoke"], Value::Bool(true));
         assert_eq!(arguments["live_search_smoke"], Value::Bool(true));
+        assert_eq!(arguments["live_form_smoke"], Value::Bool(true));
         assert_eq!(arguments["location_smoke"], "example.com");
         assert_eq!(arguments["history_smoke"], "https://example.org");
         assert_eq!(arguments["load_smoke"], Value::Bool(true));
@@ -6323,6 +6372,12 @@ mod tests {
             "live_search_smoke": true
         });
         let bridge_live_search_smoke = json!({"mode": "direct", "live_search_smoke": true});
+        let direct_live_form_smoke = json!({
+            "mode": "direct",
+            "render_path": "direct",
+            "live_form_smoke": true
+        });
+        let bridge_live_form_smoke = json!({"mode": "direct", "live_form_smoke": true});
         let direct_location_smoke =
             json!({"mode": "direct", "render_path": "direct", "location_smoke": "example.com"});
         let bridge_location_smoke = json!({"mode": "direct", "location_smoke": "example.com"});
@@ -6396,6 +6451,14 @@ mod tests {
             window_smoke_mode_boundary_error(&bridge_live_search_smoke, Some("direct"))
                 .unwrap()
                 .contains("live_search_smoke requires render_path 'direct'")
+        );
+        assert!(
+            window_smoke_mode_boundary_error(&direct_live_form_smoke, Some("direct")).is_none()
+        );
+        assert!(
+            window_smoke_mode_boundary_error(&bridge_live_form_smoke, Some("direct"))
+                .unwrap()
+                .contains("live_form_smoke requires render_path 'direct'")
         );
         assert!(window_smoke_mode_boundary_error(&direct_location_smoke, Some("direct")).is_none());
         assert!(
@@ -6567,6 +6630,11 @@ mod tests {
             "[window-direct] live search dom search box target x=517 y=306 selector textarea[name=\"q\"] size 446x38".to_string(),
             "[window-direct] live search dom form target url https://www.google.com/search?q=Sextant".to_string(),
             "[window-direct] live search attempt center click".to_string(),
+            "[window-direct] live form target x=225 y=180 selector input[name=\"custname\"] size 320x28 submit x=110 y=520 selector button:not([type])".to_string(),
+            "[window-smoke] live form frame 73ms".to_string(),
+            "[window-smoke] live form true".to_string(),
+            "[window-smoke] live form url https://httpbin.org/post".to_string(),
+            "[window-smoke] live form title httpbin.org".to_string(),
             "[window-direct] timed out after 75.0s during scripted smoke (last title Some(\"https://www.google.com/search?q=northern+lights&sei=abc\"))".to_string(),
             "[window-smoke] location frame 22ms".to_string(),
             "[window-smoke] location url https://example.com/".to_string(),
@@ -6671,6 +6739,10 @@ mod tests {
             summary["liveSearchDomFormTargetUrl"],
             "https://www.google.com/search?q=Sextant"
         );
+        assert_eq!(summary["liveFormFrameMs"], Value::from(73));
+        assert_eq!(summary["liveForm"], Value::Bool(true));
+        assert_eq!(summary["liveFormUrl"], "https://httpbin.org/post");
+        assert_eq!(summary["liveFormTitle"], "httpbin.org");
         assert_eq!(summary["timeoutPhase"], "scripted smoke");
         assert_eq!(
             summary["timeoutTitle"],

@@ -377,6 +377,7 @@ struct WindowSmokeSpec {
     verified_input_smoke: bool,
     search_submit_smoke: bool,
     live_search_smoke: bool,
+    live_form_smoke: bool,
     load_smoke: bool,
     resize_smoke: bool,
     allow_insecure_local_tls: bool,
@@ -5423,6 +5424,13 @@ fn main() {
         || args
             .iter()
             .any(|arg| arg == "--live-search-smoke" || arg == "--window-live-search-smoke");
+    let start_live_form_smoke = window_smoke
+        .as_ref()
+        .map(|smoke| smoke.live_form_smoke)
+        .unwrap_or(false)
+        || args
+            .iter()
+            .any(|arg| arg == "--live-form-smoke" || arg == "--window-live-form-smoke");
     let direct_resource_audit = args
         .iter()
         .any(|arg| arg == "--direct-resource-audit" || arg == "--resource-audit");
@@ -5518,6 +5526,7 @@ fn main() {
             start_verified_input_smoke,
             start_search_submit_smoke,
             start_live_search_smoke,
+            start_live_form_smoke,
             direct_resource_audit,
             start_load_smoke,
             start_reload_smoke,
@@ -5568,6 +5577,7 @@ fn run_direct_servo_browser(
     start_verified_input_smoke: bool,
     start_search_submit_smoke: bool,
     start_live_search_smoke: bool,
+    start_live_form_smoke: bool,
     direct_resource_audit: bool,
     start_load_smoke: bool,
     start_reload_smoke: bool,
@@ -5623,6 +5633,9 @@ fn run_direct_servo_browser(
         if smoke.input_latency && start_live_search_smoke {
             unsupported.push("combined direct input and live-search smoke");
         }
+        if smoke.input_latency && start_live_form_smoke {
+            unsupported.push("combined direct input and live-form smoke");
+        }
         if smoke.input_latency && start_load_smoke {
             unsupported.push("combined direct input and load smoke");
         }
@@ -5650,6 +5663,9 @@ fn run_direct_servo_browser(
         if start_shell_interaction && start_live_search_smoke {
             unsupported.push("combined direct tab and live-search smoke");
         }
+        if start_shell_interaction && start_live_form_smoke {
+            unsupported.push("combined direct tab and live-form smoke");
+        }
         if start_shell_interaction && start_load_smoke {
             unsupported.push("combined direct tab and load smoke");
         }
@@ -5670,6 +5686,9 @@ fn run_direct_servo_browser(
         }
         if start_location_smoke.is_some() && start_live_search_smoke {
             unsupported.push("combined direct location and live-search smoke");
+        }
+        if start_location_smoke.is_some() && start_live_form_smoke {
+            unsupported.push("combined direct location and live-form smoke");
         }
         if start_location_smoke.is_some() && start_load_smoke {
             unsupported.push("combined direct location and load smoke");
@@ -5692,6 +5711,9 @@ fn run_direct_servo_browser(
         if start_history_smoke.is_some() && start_live_search_smoke {
             unsupported.push("combined direct history and live-search smoke");
         }
+        if start_history_smoke.is_some() && start_live_form_smoke {
+            unsupported.push("combined direct history and live-form smoke");
+        }
         if start_first_interaction_smoke && start_load_smoke {
             unsupported.push("combined direct first-interaction and load smoke");
         }
@@ -5703,6 +5725,9 @@ fn run_direct_servo_browser(
         }
         if start_first_interaction_smoke && start_live_search_smoke {
             unsupported.push("combined direct first-interaction and live-search smoke");
+        }
+        if start_first_interaction_smoke && start_live_form_smoke {
+            unsupported.push("combined direct first-interaction and live-form smoke");
         }
         if start_verified_input_smoke && start_load_smoke {
             unsupported.push("combined direct verified-input and load smoke");
@@ -5716,8 +5741,14 @@ fn run_direct_servo_browser(
         if start_verified_input_smoke && start_live_search_smoke {
             unsupported.push("combined direct verified-input and live-search smoke");
         }
+        if start_verified_input_smoke && start_live_form_smoke {
+            unsupported.push("combined direct verified-input and live-form smoke");
+        }
         if start_search_submit_smoke && start_live_search_smoke {
             unsupported.push("combined direct search-submit and live-search smoke");
+        }
+        if start_search_submit_smoke && start_live_form_smoke {
+            unsupported.push("combined direct search-submit and live-form smoke");
         }
         if start_search_submit_smoke && start_load_smoke {
             unsupported.push("combined direct search-submit and load smoke");
@@ -5730,6 +5761,15 @@ fn run_direct_servo_browser(
         }
         if start_live_search_smoke && start_resize_smoke {
             unsupported.push("combined direct live-search and resize smoke");
+        }
+        if start_live_search_smoke && start_live_form_smoke {
+            unsupported.push("combined direct live-search and live-form smoke");
+        }
+        if start_live_form_smoke && start_load_smoke {
+            unsupported.push("combined direct live-form and load smoke");
+        }
+        if start_live_form_smoke && start_resize_smoke {
+            unsupported.push("combined direct live-form and resize smoke");
         }
         if start_history_smoke.is_some() && start_resize_smoke {
             unsupported.push("combined direct history and resize smoke");
@@ -5745,6 +5785,7 @@ fn run_direct_servo_browser(
                 || start_verified_input_smoke
                 || start_search_submit_smoke
                 || start_live_search_smoke
+                || start_live_form_smoke
                 || start_load_smoke
                 || start_resize_smoke)
         {
@@ -5800,6 +5841,8 @@ fn run_direct_servo_browser(
                 .to_string()
         } else if start_live_search_smoke {
             "https://lite.duckduckgo.com/lite/".to_string()
+        } else if start_live_form_smoke {
+            "https://httpbin.org/forms/post".to_string()
         } else {
             "https://example.com".to_string()
         }
@@ -5935,6 +5978,7 @@ fn run_direct_servo_browser(
         scripted_verified_input_repeat_smoke: false,
         scripted_search_submit_smoke: start_search_submit_smoke,
         scripted_live_search_smoke: start_live_search_smoke,
+        scripted_live_form_smoke: start_live_form_smoke,
         scripted_retained_navigation_smoke: false,
         scripted_location: start_location_smoke,
         scripted_history: start_history_smoke,
@@ -6099,6 +6143,21 @@ fn run_direct_servo_browser(
         }
         if let Some(live_search_title) = outcome.live_search_title {
             println!("[window-smoke] live search title {}", live_search_title);
+        }
+        if let Some(live_form_frame) = outcome.live_form_frame {
+            println!(
+                "[window-smoke] live form frame {}",
+                direct_servo::format_duration(live_form_frame)
+            );
+        }
+        if let Some(live_form) = outcome.live_form {
+            println!("[window-smoke] live form {}", live_form);
+        }
+        if let Some(live_form_url) = outcome.live_form_url {
+            println!("[window-smoke] live form url {}", live_form_url);
+        }
+        if let Some(live_form_title) = outcome.live_form_title {
+            println!("[window-smoke] live form title {}", live_form_title);
         }
         if let Some(location_frame) = outcome.location_frame {
             println!(
@@ -8169,6 +8228,7 @@ fn run_direct_servo_browser(
     _start_verified_input_smoke: bool,
     _start_search_submit_smoke: bool,
     _start_live_search_smoke: bool,
+    _start_live_form_smoke: bool,
     _direct_resource_audit: bool,
     _start_load_smoke: bool,
     _start_reload_smoke: bool,
@@ -10354,6 +10414,9 @@ fn parse_window_smoke(args: &[String]) -> Result<Option<WindowSmokeSpec>, String
     let live_search_smoke = args
         .iter()
         .any(|arg| arg == "--live-search-smoke" || arg == "--window-live-search-smoke");
+    let live_form_smoke = args
+        .iter()
+        .any(|arg| arg == "--live-form-smoke" || arg == "--window-live-form-smoke");
     let load_smoke = args
         .iter()
         .any(|arg| arg == "--load-smoke" || arg == "--window-load-smoke");
@@ -10370,6 +10433,7 @@ fn parse_window_smoke(args: &[String]) -> Result<Option<WindowSmokeSpec>, String
         verified_input_smoke,
         search_submit_smoke,
         live_search_smoke,
+        live_form_smoke,
         load_smoke,
         resize_smoke,
         allow_insecure_local_tls,
@@ -12506,6 +12570,7 @@ mod tests {
             "--window-verified-input-smoke".to_string(),
             "--window-search-submit-smoke".to_string(),
             "--window-live-search-smoke".to_string(),
+            "--window-live-form-smoke".to_string(),
             "--allow-insecure-local-tls".to_string(),
             "--window-smoke-timeout".to_string(),
             "30".to_string(),
@@ -12519,6 +12584,7 @@ mod tests {
         assert!(spec.verified_input_smoke);
         assert!(spec.search_submit_smoke);
         assert!(spec.live_search_smoke);
+        assert!(spec.live_form_smoke);
         assert!(spec.allow_insecure_local_tls);
         assert!(input_latency_fixture_url().starts_with("data:text/html,"));
     }

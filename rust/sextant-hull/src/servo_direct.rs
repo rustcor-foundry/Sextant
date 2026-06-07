@@ -17,6 +17,7 @@ fn main() -> Result<(), String> {
         verified_input_repeat_smoke || args.iter().any(|arg| arg == "--verified-input-smoke");
     let search_submit_smoke = args.iter().any(|arg| arg == "--search-submit-smoke");
     let live_search_smoke = args.iter().any(|arg| arg == "--live-search-smoke");
+    let live_form_smoke = args.iter().any(|arg| arg == "--live-form-smoke");
     let retained_navigation_smoke = args.iter().any(|arg| arg == "--retained-navigation-smoke");
     let local_fixture = if verified_input_smoke && !has_explicit_target(&args) {
         Some(direct_servo::start_verified_input_fixture_server()?)
@@ -27,9 +28,13 @@ fn main() -> Result<(), String> {
     } else {
         None
     };
-    let live_default = live_search_smoke.then(|| {
-        Url::parse("https://lite.duckduckgo.com/lite/").expect("live search URL should parse")
-    });
+    let live_default = if live_search_smoke {
+        Some(Url::parse("https://lite.duckduckgo.com/lite/").expect("live search URL should parse"))
+    } else if live_form_smoke {
+        Some(Url::parse("https://httpbin.org/forms/post").expect("live form URL should parse"))
+    } else {
+        None
+    };
     let target = parse_target(
         &args,
         local_fixture
@@ -41,6 +46,7 @@ fn main() -> Result<(), String> {
         || verified_input_smoke
         || search_submit_smoke
         || live_search_smoke
+        || live_form_smoke
         || retained_navigation_smoke
         || args.iter().any(|arg| {
             matches!(
@@ -70,6 +76,7 @@ fn main() -> Result<(), String> {
         scripted_verified_input_repeat_smoke: verified_input_repeat_smoke,
         scripted_search_submit_smoke: search_submit_smoke,
         scripted_live_search_smoke: live_search_smoke,
+        scripted_live_form_smoke: live_form_smoke,
         scripted_retained_navigation_smoke: retained_navigation_smoke,
         scripted_location: parse_scripted_location(&args),
         scripted_history: parse_scripted_history(&args),

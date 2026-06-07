@@ -17,6 +17,7 @@ Current high-signal history only. Older detailed session logs are archived under
 - Added a verified direct input smoke that serves a controlled localhost page, clicks/focuses an input, types through Servo, and verifies page-observed text via title change.
 - Added a direct form-submit smoke that types into a controlled search form, submits with Enter through Servo input, and verifies the submit handler through page title.
 - Added a live direct search smoke that drives DuckDuckGo Lite through raw Servo keyboard input and verifies the result through page title.
+- Added a live direct form smoke that drives a hosted `httpbin.org` HTML form through raw Servo click/type/submit and verifies the final `/post` URL.
 - Added raw direct tab isolation: inactive tabs no longer wake the direct redraw loop, all direct WebViews resize on window resize, and focused tabs get a fresh resize.
 - Added direct Incognito isolation: ephemeral Servo `config_dir`, HTTP cache disabled, MCP reporting for storage/cache state, and guarded cleanup for Windows-held files.
 - Added MCP/window-smoke coverage for direct first present, input, first interaction, load complete, location navigation, history, reload, resize, tab switching, and Incognito storage.
@@ -35,6 +36,7 @@ Latest direct smoke checkpoints:
 | Verified direct form submit fixture | `304-520ms`, page confirmed `/search?q=sextant` URL/title |
 | Live direct search smoke | `753ms-1.4s`, page confirmed `Sextant at DuckDuckGo` |
 | Google live-search diagnostics | first present `136-179ms`, attempts tracked, timeout title/URL captured, submitted/blocked diagnostics parsed when available |
+| Live direct hosted form smoke | `484ms`, DOM-located `input[name="custname"]`, submit click reached `https://httpbin.org/post` |
 | Built-in input fixture first interaction | `5ms`, before load complete |
 | Load-complete-gated direct input follow-up | about `1ms` |
 | Direct location follow-up | about `464ms` |

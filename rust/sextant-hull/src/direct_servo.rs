@@ -48,6 +48,7 @@ const VERIFIED_INPUT_CLICK_X: f32 = 180.0;
 const VERIFIED_INPUT_CLICK_Y: f32 = 128.0;
 const SEARCH_SUBMIT_TEXT: &str = "sextant";
 const SEARCH_SUBMIT_TITLE: &str = "search:sextant";
+const LIVE_FORM_TEXT: &str = "Sextant";
 const DIRECT_TAB_SMOKE_TITLE: &str = "Sextant-Direct-Tab-Smoke";
 const RETAINED_NAVIGATION_SMOKE_TITLE: &str = "SextantRetainedNavigationSmoke";
 const RETAINED_NAVIGATION_TARGET_TITLE: &str = "SextantRetainedNavigationTarget";
@@ -60,6 +61,8 @@ const LIVE_SEARCH_GOOGLE_CLICK_Y: f32 = 285.0;
 const LIVE_SEARCH_READY_DELAY: Duration = Duration::from_millis(3500);
 const LIVE_SEARCH_CLICK_SETTLE_DELAY: Duration = Duration::from_millis(350);
 const LIVE_SEARCH_FALLBACK_DELAY: Duration = Duration::from_secs(6);
+const LIVE_FORM_READY_DELAY: Duration = Duration::from_millis(1500);
+const LIVE_FORM_CLICK_SETTLE_DELAY: Duration = Duration::from_millis(350);
 const APPLIANCE_CERT_TRUST_ONCE_TITLE: &str = "SextantTrustOnce";
 const APPLIANCE_CERT_REMEMBER_TITLE: &str = "SextantTrustThisAppliance";
 const RETAINED_NAVIGATION_TITLE_PREFIX: &str = "SextantRetainedNavigate:";
@@ -114,6 +117,7 @@ pub struct DirectServoOptions {
     pub scripted_verified_input_repeat_smoke: bool,
     pub scripted_search_submit_smoke: bool,
     pub scripted_live_search_smoke: bool,
+    pub scripted_live_form_smoke: bool,
     pub scripted_retained_navigation_smoke: bool,
     pub scripted_location: Option<String>,
     pub scripted_history: Option<String>,
@@ -164,6 +168,10 @@ pub struct DirectServoOutcome {
     pub live_search: Option<bool>,
     pub live_search_url: Option<String>,
     pub live_search_title: Option<String>,
+    pub live_form_frame: Option<Duration>,
+    pub live_form: Option<bool>,
+    pub live_form_url: Option<String>,
+    pub live_form_title: Option<String>,
     pub retained_navigation_frame: Option<Duration>,
     #[allow(dead_code)]
     pub retained_navigation_url: Option<String>,
@@ -222,6 +230,7 @@ struct DirectServoApp {
     scripted_verified_input_repeat_smoke: bool,
     scripted_search_submit_smoke: bool,
     scripted_live_search_smoke: bool,
+    scripted_live_form_smoke: bool,
     scripted_location: Option<String>,
     scripted_history: Option<String>,
     scripted_load_smoke: bool,
@@ -259,6 +268,10 @@ struct DirectServoApp {
     live_search_dom_navigation_used: bool,
     scripted_live_search_sent: bool,
     scripted_live_search_done: bool,
+    live_form_started: Option<Instant>,
+    live_form_submit_pending_since: Option<Instant>,
+    scripted_live_form_sent: bool,
+    scripted_live_form_done: bool,
     retained_navigation_started: Option<Instant>,
     scripted_retained_navigation_smoke: bool,
     scripted_retained_navigation_sent: bool,
@@ -324,6 +337,9 @@ struct DirectServoState {
     live_search_frame: Cell<Option<Duration>>,
     live_search: Cell<Option<bool>>,
     live_search_dom_fallback_url: RefCell<Option<Url>>,
+    live_form_frame: Cell<Option<Duration>>,
+    live_form: Cell<Option<bool>>,
+    live_form_submit_target: RefCell<Option<(f32, f32)>>,
     retained_navigation_frame: Cell<Option<Duration>>,
     input_frame: Cell<Option<Duration>>,
     location_frame: Cell<Option<Duration>>,
@@ -475,6 +491,7 @@ impl DirectServoApp {
             scripted_verified_input_repeat_smoke: options.scripted_verified_input_repeat_smoke,
             scripted_search_submit_smoke: options.scripted_search_submit_smoke,
             scripted_live_search_smoke: options.scripted_live_search_smoke,
+            scripted_live_form_smoke: options.scripted_live_form_smoke,
             scripted_retained_navigation_smoke: options.scripted_retained_navigation_smoke,
             scripted_location: options.scripted_location,
             scripted_history: options.scripted_history,
@@ -513,6 +530,10 @@ impl DirectServoApp {
             live_search_dom_navigation_used: false,
             scripted_live_search_sent: false,
             scripted_live_search_done: false,
+            live_form_started: None,
+            live_form_submit_pending_since: None,
+            scripted_live_form_sent: false,
+            scripted_live_form_done: false,
             retained_navigation_started: None,
             scripted_retained_navigation_sent: false,
             scripted_retained_navigation_done: false,
@@ -686,6 +707,37 @@ impl DirectServoApp {
 
     fn live_search_title(&self) -> Option<String> {
         if self.live_search() == Some(true) {
+            self.state
+                .as_ref()
+                .and_then(|state| state.active_page_title())
+        } else {
+            None
+        }
+    }
+
+    fn live_form_frame(&self) -> Option<Duration> {
+        self.state
+            .as_ref()
+            .and_then(|state| state.live_form_frame.get())
+    }
+
+    fn live_form(&self) -> Option<bool> {
+        self.state.as_ref().and_then(|state| state.live_form.get())
+    }
+
+    fn live_form_url(&self) -> Option<String> {
+        if self.live_form() == Some(true) {
+            self.state
+                .as_ref()
+                .and_then(|state| state.active_url())
+                .map(|url| url.to_string())
+        } else {
+            None
+        }
+    }
+
+    fn live_form_title(&self) -> Option<String> {
+        if self.live_form() == Some(true) {
             self.state
                 .as_ref()
                 .and_then(|state| state.active_page_title())
@@ -1297,6 +1349,119 @@ impl DirectServoApp {
         true
     }
 
+    fn drive_live_form_smoke(
+        &mut self,
+        state: &Rc<DirectServoState>,
+        event_loop: &ActiveEventLoop,
+    ) -> bool {
+        if !self.scripted_live_form_smoke || self.scripted_live_form_done {
+            return false;
+        }
+        if state.first_present.get().is_none() {
+            return false;
+        }
+
+        if !self.scripted_live_form_sent {
+            let ready_for_input =
+                self.started.elapsed() >= LIVE_FORM_READY_DELAY && state.active_load_complete();
+            if ready_for_input {
+                self.live_form_started = Some(Instant::now());
+                self.scripted_live_form_sent = true;
+                println!(
+                    "[{}] live form attempt dom form field click",
+                    self.log_prefix
+                );
+                if state.click_live_form_field(self.log_prefix) {
+                    self.live_form_submit_pending_since = Some(Instant::now());
+                } else {
+                    state.live_form.set(Some(false));
+                    self.scripted_live_form_done = true;
+                    eprintln!(
+                        "[{}] live form failed before input target (last title {:?}, last url {:?})",
+                        self.log_prefix,
+                        state.active_page_title(),
+                        state.active_url()
+                    );
+                    if self.smoke {
+                        event_loop.exit();
+                    }
+                }
+            } else if self.started.elapsed() >= self.timeout {
+                state.live_form.set(Some(false));
+                self.scripted_live_form_done = true;
+                eprintln!(
+                    "[{}] live form failed before input-ready state (last title {:?}, last url {:?})",
+                    self.log_prefix,
+                    state.active_page_title(),
+                    state.active_url()
+                );
+                if self.smoke {
+                    event_loop.exit();
+                }
+            }
+            return true;
+        }
+
+        if state.active_live_form_verified() {
+            if let Some(started) = self.live_form_started {
+                let elapsed = started.elapsed();
+                state.live_form_frame.set(Some(elapsed));
+                state.live_form.set(Some(true));
+                self.scripted_live_form_done = true;
+                println!(
+                    "[{}] live form direct frame in {}",
+                    self.log_prefix,
+                    format_duration(elapsed)
+                );
+                println!("[{}] live form true", self.log_prefix);
+                if let Some(url) = state.active_url() {
+                    println!("[{}] live form url {}", self.log_prefix, url);
+                }
+                if let Some(title) = state.active_page_title() {
+                    println!("[{}] live form title {}", self.log_prefix, title);
+                }
+                if self.smoke {
+                    event_loop.exit();
+                }
+            }
+        } else {
+            if self
+                .live_form_submit_pending_since
+                .map(|started| started.elapsed() >= LIVE_FORM_CLICK_SETTLE_DELAY)
+                .unwrap_or(false)
+            {
+                self.live_form_submit_pending_since = None;
+                if let Some((x, y)) = state.live_form_submit_target.borrow_mut().take() {
+                    println!("[{}] live form attempt submit click", self.log_prefix);
+                    state.click_at(x, y);
+                } else {
+                    println!("[{}] live form attempt submit enter", self.log_prefix);
+                    state.send_named_key(ServoNamedKey::Enter);
+                }
+                state.window.request_redraw();
+                return true;
+            }
+            let timed_out = self
+                .live_form_started
+                .map(|started| started.elapsed() >= self.timeout)
+                .unwrap_or(false);
+            if timed_out {
+                state.live_form.set(Some(false));
+                self.scripted_live_form_done = true;
+                eprintln!(
+                    "[{}] live form failed before post verification (last title {:?}, last url {:?})",
+                    self.log_prefix,
+                    state.active_page_title(),
+                    state.active_url()
+                );
+                if self.smoke {
+                    event_loop.exit();
+                }
+            }
+        }
+        true
+    }
+
     fn send_live_search_attempt(&mut self, state: &Rc<DirectServoState>) {
         self.live_search_attempts = self.live_search_attempts.saturating_add(1);
         self.live_search_last_attempt = Some(Instant::now());
@@ -1554,6 +1719,9 @@ impl ApplicationHandler<DirectServoUserEvent> for DirectServoApp {
             live_search_frame: Cell::new(None),
             live_search: Cell::new(None),
             live_search_dom_fallback_url: RefCell::new(None),
+            live_form_frame: Cell::new(None),
+            live_form: Cell::new(None),
+            live_form_submit_target: RefCell::new(None),
             retained_navigation_frame: Cell::new(None),
             input_frame: Cell::new(None),
             location_frame: Cell::new(None),
@@ -1748,6 +1916,8 @@ impl ApplicationHandler<DirectServoUserEvent> for DirectServoApp {
                             state.send_named_key(ServoNamedKey::Enter);
                             state.window.request_redraw();
                         } else if self.scripted_live_search_smoke {
+                            state.window.request_redraw();
+                        } else if self.scripted_live_form_smoke {
                             state.window.request_redraw();
                         } else if self.scripted_retained_navigation_smoke {
                             state.window.request_redraw();
@@ -2047,6 +2217,7 @@ impl ApplicationHandler<DirectServoUserEvent> for DirectServoApp {
                         }
                     } else if self.drive_retained_navigation_smoke(&state, event_loop) {
                     } else if self.drive_live_search_smoke(&state, event_loop) {
+                    } else if self.drive_live_form_smoke(&state, event_loop) {
                     } else if self.scripted_text.is_some() && !self.scripted_text_sent {
                         if let Some(text) = self.scripted_text.clone() {
                             if state.active_load_complete() {
@@ -2102,6 +2273,7 @@ impl ApplicationHandler<DirectServoUserEvent> for DirectServoApp {
                 && !self.scripted_verified_input_done)
                 || (self.scripted_search_submit_smoke && !self.scripted_search_submit_done)
                 || (self.scripted_live_search_smoke && !self.scripted_live_search_done)
+                || (self.scripted_live_form_smoke && !self.scripted_live_form_done)
                 || (self.scripted_retained_navigation_smoke
                     && !self.scripted_retained_navigation_done);
             if self.embed_parent_hwnd.is_some() && self.started.elapsed() <= EMBEDDED_STARTUP_PUMP {
@@ -2141,6 +2313,9 @@ impl ApplicationHandler<DirectServoUserEvent> for DirectServoApp {
             }
             if self.scripted_live_search_smoke && !self.scripted_live_search_done {
                 self.drive_live_search_smoke(&state, event_loop);
+            }
+            if self.scripted_live_form_smoke && !self.scripted_live_form_done {
+                self.drive_live_form_smoke(&state, event_loop);
             }
             if self.scripted_retained_navigation_smoke && !self.scripted_retained_navigation_done {
                 self.drive_retained_navigation_smoke(&state, event_loop);
@@ -2201,8 +2376,14 @@ pub fn run(mut options: DirectServoOptions) -> Result<DirectServoOutcome, String
     let verified_input_smoke = options.scripted_verified_input_smoke;
     let search_submit_smoke = options.scripted_search_submit_smoke;
     let live_search_smoke = options.scripted_live_search_smoke;
+    let live_form_smoke = options.scripted_live_form_smoke;
     let embedded = options.embed_parent_hwnd.is_some();
-    if embedded || verified_input_smoke || search_submit_smoke || live_search_smoke {
+    if embedded
+        || verified_input_smoke
+        || search_submit_smoke
+        || live_search_smoke
+        || live_form_smoke
+    {
         event_loop.set_control_flow(ControlFlow::Poll);
     } else {
         event_loop.set_control_flow(ControlFlow::Wait);
@@ -2234,6 +2415,10 @@ pub fn run(mut options: DirectServoOptions) -> Result<DirectServoOutcome, String
         live_search: app.live_search(),
         live_search_url: app.live_search_url(),
         live_search_title: app.live_search_title(),
+        live_form_frame: app.live_form_frame(),
+        live_form: app.live_form(),
+        live_form_url: app.live_form_url(),
+        live_form_title: app.live_form_title(),
         retained_navigation_frame: app.retained_navigation_frame(),
         retained_navigation_url: app.retained_navigation_url(),
         retained_navigation_title: app.retained_navigation_title(),
@@ -2299,6 +2484,12 @@ pub fn run(mut options: DirectServoOptions) -> Result<DirectServoOutcome, String
         && (outcome.live_search_frame.is_none() || outcome.live_search != Some(true))
     {
         return Err("direct Servo live-search smoke exited without verified query".to_string());
+    }
+    if smoke
+        && app.scripted_live_form_smoke
+        && (outcome.live_form_frame.is_none() || outcome.live_form != Some(true))
+    {
+        return Err("direct Servo live-form smoke exited without verified post".to_string());
     }
     if smoke
         && app.scripted_retained_navigation_smoke
@@ -3142,6 +3333,12 @@ impl DirectServoState {
         title_matches || url_matches
     }
 
+    fn active_live_form_verified(&self) -> bool {
+        self.active_url()
+            .map(|url| url.path() == "/post")
+            .unwrap_or(false)
+    }
+
     fn active_tab_smoke_ready(&self) -> bool {
         self.active_url_matches(&direct_tab_smoke_url())
             && self.active_title_matches(DIRECT_TAB_SMOKE_TITLE)
@@ -3460,6 +3657,143 @@ impl DirectServoState {
                 }
                 Err(error) => {
                     println!("[{log_prefix}] live search dom search box failed {error:?}");
+                }
+            },
+        );
+        true
+    }
+
+    fn click_live_form_field(self: &Rc<Self>, log_prefix: &'static str) -> bool {
+        let Some(webview) = self.active_webview() else {
+            return false;
+        };
+        let state = Rc::clone(self);
+        webview.evaluate_javascript(
+            r#"
+(() => {
+  const fieldSelectors = [
+    'input[name="custname"]',
+    'input[type="text"]',
+    'input:not([type])',
+    'textarea'
+  ];
+  const visible = (el) => {
+    if (!el || !el.getBoundingClientRect) return false;
+    const rect = el.getBoundingClientRect();
+    const style = getComputedStyle(el);
+    return rect.width >= 30 && rect.height >= 10 && style.visibility !== 'hidden' && style.display !== 'none' && style.pointerEvents !== 'none';
+  };
+  const center = (el) => {
+    const rect = el.getBoundingClientRect();
+    return {
+      x: Math.round(rect.left + rect.width / 2),
+      y: Math.round(rect.top + rect.height / 2),
+      w: Math.round(rect.width),
+      h: Math.round(rect.height)
+    };
+  };
+  const submitCandidate = (field) => {
+    const form = field.form || field.closest('form');
+    const selectors = [
+      'button[type="submit"]',
+      'button:not([type])',
+      'input[type="submit"]'
+    ];
+    const root = form || document;
+    for (const selector of selectors) {
+      for (const el of Array.from(root.querySelectorAll(selector))) {
+        if (visible(el)) return { el, selector };
+      }
+    }
+    if (form && visible(form)) return { el: form, selector: 'form' };
+    return null;
+  };
+  for (const selector of fieldSelectors) {
+    for (const field of Array.from(document.querySelectorAll(selector))) {
+      if (!visible(field) || field.disabled || field.readOnly) continue;
+      try { field.scrollIntoView({block: 'center', inline: 'center'}); } catch (_) {}
+      try { field.focus({preventScroll: true}); } catch (_) { try { field.focus(); } catch (_) {} }
+      const input = center(field);
+      const submit = submitCandidate(field);
+      const result = {
+        selector,
+        tag: field.tagName || '',
+        name: field.getAttribute('name') || '',
+        type: field.getAttribute('type') || '',
+        x: input.x,
+        y: input.y,
+        w: input.w,
+        h: input.h
+      };
+      if (submit) {
+        const submitCenter = center(submit.el);
+        result.submitSelector = submit.selector;
+        result.submitX = submitCenter.x;
+        result.submitY = submitCenter.y;
+        result.submitW = submitCenter.w;
+        result.submitH = submitCenter.h;
+      }
+      return JSON.stringify(result);
+    }
+  }
+  return '';
+})()
+"#,
+            move |result| match result {
+                Ok(JSValue::String(value)) => {
+                    let value = value.trim();
+                    if value.is_empty() {
+                        println!("[{log_prefix}] live form field not found");
+                        return;
+                    }
+                    let Ok(candidate) = serde_json::from_str::<Value>(value) else {
+                        println!("[{log_prefix}] live form field parse failed {value}");
+                        return;
+                    };
+                    let x = candidate.get("x").and_then(Value::as_f64).unwrap_or(0.0) as f32;
+                    let y = candidate.get("y").and_then(Value::as_f64).unwrap_or(0.0) as f32;
+                    let submit_x = candidate.get("submitX").and_then(Value::as_f64);
+                    let submit_y = candidate.get("submitY").and_then(Value::as_f64);
+                    if let (Some(submit_x), Some(submit_y)) = (submit_x, submit_y) {
+                        *state.live_form_submit_target.borrow_mut() =
+                            Some((submit_x as f32, submit_y as f32));
+                    }
+                    println!(
+                        "[{log_prefix}] live form target x={} y={} selector {} size {}x{} submit x={} y={} selector {}",
+                        x.round() as i32,
+                        y.round() as i32,
+                        candidate
+                            .get("selector")
+                            .and_then(Value::as_str)
+                            .unwrap_or("?"),
+                        candidate.get("w").and_then(Value::as_i64).unwrap_or(0),
+                        candidate.get("h").and_then(Value::as_i64).unwrap_or(0),
+                        candidate
+                            .get("submitX")
+                            .and_then(Value::as_f64)
+                            .map(|value| value.round() as i32)
+                            .unwrap_or(0),
+                        candidate
+                            .get("submitY")
+                            .and_then(Value::as_f64)
+                            .map(|value| value.round() as i32)
+                            .unwrap_or(0),
+                        candidate
+                            .get("submitSelector")
+                            .and_then(Value::as_str)
+                            .unwrap_or("?")
+                    );
+                    if x > 0.0 && y > 0.0 {
+                        state.click_at(x, y);
+                    }
+                    state.send_text(LIVE_FORM_TEXT.to_string());
+                    state.window.request_redraw();
+                }
+                Ok(other) => {
+                    println!("[{log_prefix}] live form field unexpected result {other:?}");
+                }
+                Err(error) => {
+                    println!("[{log_prefix}] live form field failed {error:?}");
                 }
             },
         );
