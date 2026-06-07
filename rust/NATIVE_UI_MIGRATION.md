@@ -12,7 +12,7 @@ This document maps the AI Studio web preview to the real native Hull described i
 
 ## Discard
 
-- The TypeScript simulator as an application surface
+- The removed TypeScript simulator as historical context only
 - Fake MCP, vault, wake, and WebLLM implementations
 - Simulated browser content masquerading as a real page renderer
 - Browser-only environment assumptions and web build plumbing

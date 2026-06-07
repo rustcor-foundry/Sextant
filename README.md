@@ -2,7 +2,7 @@
 
 Sextant is a local-first, privacy-preserving browser where an AI Pilot reasons about user intent, navigates autonomously, distills page content, and builds a persistent Digital Wake without requiring a cloud service unless the user explicitly enables one.
 
-This repo is the active product workspace for Sextant. It contains both the Rust native product path and the older TypeScript simulator/prototype.
+This repo is the active product workspace for Sextant. It now contains the Rust native product path only; the older TypeScript UI mockup has been removed.
 
 ## Read This First
 
@@ -27,7 +27,7 @@ If you only read five docs, read these in order:
 
 | Layer | Technology | Current State |
 |-------|------------|---------------|
-| Native UI shell | Rust + `winit` + `softbuffer` | Active `sextant-browser` shell with direct drawing, Intent/URL input, tabs, Wake, Log, GUARD, SENSE, Perf, Validation, MCP-backed operator tooling, and Servo frame display |
+| Native UI shell | Rust + `winit` + `softbuffer` | Active `sextant-browser` shell with direct drawing, Intent/URL input, tabs, Wake, Log, GUARD, SENSE, Perf, Validation, local appliance trust settings, MCP-backed operator tooling, and Servo frame display |
 | Legacy native hull | Rust + Xilem 0.1.0 | Parked reference shell; Windows interactive use exposed toolkit access violations |
 | Pilot orchestration | `sextant-pilot` | Real intent flow, consent gating, regression coverage |
 | Engine | `sextant-engine` | Real fetch/distill path plus Servo-backed live navigation, frame capture, input forwarding, history, and live DOM distillation |
@@ -35,7 +35,6 @@ If you only read five docs, read these in order:
 | Security root | `sextant-vault` | Persona, identity, secrets, consent signing scaffold |
 | Audit trail | `sextant-log` | Persistent Captain's Log in SQLite |
 | Cloud/local inference | Gemini / OpenAI / Anthropic / local | Provider switching and config UI in hull |
-| TypeScript simulator | React + Vite + Tailwind | Legacy prototype/reference surface |
 
 ## Repo Structure
 
@@ -51,8 +50,6 @@ If you only read five docs, read these in order:
 
 ### Supporting Surfaces
 
-- [src](src) — React simulator/prototype
-- [components](components) — simulator UI components
 - [docs](docs) — product, architecture, workflow, and session docs
 
 ## Build And Run
@@ -122,15 +119,6 @@ cargo run -p sextant-hull --bin sextant-hull
 ```
 
 The Xilem/Masonry hull is retained for reference and async-command work, but it is not the current interactive product lane on Windows.
-
-### TypeScript Simulator
-
-```bash
-npm install
-npm run dev
-```
-
-If using the simulator's Gemini path, set `GEMINI_API_KEY` first.
 
 ## Docs By Use Case
 

@@ -4,7 +4,7 @@ These are the working guardrails for Sextant development. They are here to keep 
 
 ## Read This Before Editing the Hull
 
-The Rust native hull is the product target. The TypeScript simulator is still useful for reference, but it should not drive architecture decisions for the production path.
+The Rust native hull is the product target. The old TypeScript simulator has been removed, so architecture and implementation decisions should stay anchored in the Rust product path.
 
 When choosing what to work on next:
 
@@ -43,6 +43,21 @@ Sextant should advance through real product plumbing, not fake polish.
 3. Finish a lane to a reasonable stopping point, then return to the next item in [next-work.md](next-work.md).
 4. Build user-facing status and error feedback when wiring real systems so failures are visible and debuggable.
 5. Persist important state to disk instead of relying on in-memory placeholders once a feature starts becoming real.
+
+## Servo Patch Guardrails
+
+Servo is currently pulled from the Cargo-locked upstream git revision. Sextant carries one documented local patch for the Bing live-search `NodeList` panic:
+
+- Patch artifact: [servo-nodelist-bing-panic.patch](patches/servo-nodelist-bing-panic.patch)
+- Helper: `rust/scripts/apply-servo-patches.ps1`
+
+Run the helper after a fresh Cargo Servo checkout or after moving the locked Servo revision:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\rust\scripts\apply-servo-patches.ps1
+```
+
+Keep this as a temporary bridge. Prefer an upstream Servo PR or an explicit pinned/forked Servo dependency over relying on an edited Cargo checkout long term.
 
 ## Runtime Guardrails
 

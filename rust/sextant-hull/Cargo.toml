@@ -3,6 +3,7 @@ name = "sextant-hull"
 version = "0.1.0"
 edition = "2021"
 description = "Hardware-accelerated UI shell for Sextant Browser"
+build = "build.rs"
 
 [features]
 default = ["xilem-shell", "servo-backend"]
@@ -29,8 +30,13 @@ xilem-shell = [
 ]
 servo-backend = [
     "sextant-engine/servo-backend",
+    "dep:base64",
     "dep:rustls",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:sha2",
     "dep:servo",
+    "dep:windows-sys",
     "dep:winit30",
 ]
 
@@ -61,11 +67,14 @@ vello = { version = "0.1", optional = true }
 wgpu = { version = "0.19", optional = true }
 winit = "0.29"
 winit30 = { package = "winit", version = "0.30", optional = true }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"], optional = true }
+base64 = { version = "0.22", optional = true }
 softbuffer = "0.4"
 tokio = { version = "1.0", features = ["full"], optional = true }
 tracing = "0.1"
 tracing-subscriber = "0.3"
 rustls = { version = "0.23", features = ["ring"], optional = true }
+sha2 = { version = "0.10", optional = true }
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.3", features = ["v4", "serde"] }
 serde = { version = "1.0", features = ["derive"], optional = true }
@@ -88,3 +97,6 @@ sextant-pq = { path = "../sextant-pq", optional = true }
 sextant-privacy = { path = "../sextant-privacy", optional = true }
 sextant-inference = { path = "../sextant-inference", optional = true }
 url = "2.5"
+
+[build-dependencies]
+embed-resource = "3.0.9"

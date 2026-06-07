@@ -1,6 +1,6 @@
 # Current State
 
-Snapshot date: `2026-05-24`
+Snapshot date: `2026-06-06`
 
 This file is the short working snapshot. Detailed older state is archived in [archive/2026-05-24-current-state-raw-direct-long.md](archive/2026-05-24-current-state-raw-direct-long.md).
 
@@ -21,34 +21,56 @@ The direct lane is starting to feel like a real browser: first pixels arrive qui
 |---|---|---|
 | Canonical binary | Working | `sextant-browser` is the native product binary. |
 | Bridge shell | Working / tuning | Full chrome/tabs/AI path still uses the frame-capture bridge. |
-| Raw direct lane | Experimental / promising | `sextant-browser --render-path direct --mode direct|incognito`. |
+| Hosted direct lane | Experimental / promising | `sextant-browser --render-path direct --mode direct|incognito` now launches a parent Sextant chrome window hosting the Servo child. |
 | Direct first present | Fast | Google and example.com regularly first-present under 200ms in debug. |
 | Direct first interaction | Fast | Google follow-up interaction frame about 6ms after first present, before load complete. |
 | Direct load completion | Measured tail | Google can take about 5.1s to report `LoadStatus::Complete`. |
 | Direct controls | Baseline | Input, verified click/type, verified form submit, live search, location, tabs, reload, back/forward, resize, Incognito storage all have bounded smokes with URL/title evidence where relevant. |
-| MCP browser layer | Working | Tools/resources advertise modes, render paths, smokes, perf probes, guard/perception, and operator flows. |
+| Hosted direct chrome | First usable slice | Parent chrome owns address input, state-aware back/forward/reload, new/previous/next/close tab controls, load progress, active tab count/title, child PID, native certificate trust actions, and log-derived perf state while Servo remains in the embedded child window. |
+| Local appliance TLS | First user-facing slice | Direct Servo can explicitly bypass self-signed/bootstrap certificate failures for localhost, `.local`, private, and link-local targets with `--allow-insecure-local-tls`; public targets are refused. Strict local-appliance certificate failures report the SHA-256 fingerprint, decorate Servo's certificate page with Sextant `Go Back` / `Trust Once` / `Trust This Appliance` actions, and now surface fingerprint-bound `BACK` / `ONCE` / `TRUST` actions in hosted direct chrome. Persisted origin+fingerprint trust writes to `appliance-cert-trust.json` outside Incognito, with list/forget hooks for MCP and a Guard-tab settings/revocation surface. Hosted direct smoke can now drive the native certificate actions and report requested/completed/relaunched evidence. |
+| MCP browser layer | Working | Tools/resources advertise modes, render paths, hosted direct smoke, local appliance cert list/forget, smokes, perf probes, guard/perception, operator flows, and the repeatable `browser_direct_browsing_baseline` suite. |
 | AI modes | Working boundary | Agent/Assisted/Observe use bridge shell; Direct/Incognito disable AI observation/persistence. |
 | Reader fallback | Working | `sextant-browser --no-default-features` remains the fast fallback lane. |
+| Dependency hygiene | Improved / upstream follow-up | Removed the legacy npm surface and old Rust `reqwest 0.11` / `readability` / `xml5ever 0.16` path. `cargo audit` is down to Servo-owned `ml-dsa` and `rsa` advisories plus warnings. |
 
 ## Key Direct Metrics
 
+Latest QA pass: Rust build/test green across the default workspace, no-default fallback lane, MCP/direct smoke baselines, hosted direct smoke, assisted bridge smoke, and direct first-interaction/load smokes. The legacy TypeScript simulator has been removed.
+
 | Metric | Latest useful checkpoint |
 |---|---:|
+| Direct browsing baseline | Required failures `0`; simple, complex, appliance, and live-search cases passing |
+| Hosted direct smoke | Parent shell ready, embedded child first-present `156ms`, active URL `https://example.com/` |
+| Direct viewport baseline | DuckDuckGo max paint stayed in the `833-891ms` range across `640x420`, `960x620`, and `1180x760`; still points toward scene/content work more than raw viewport fill |
+| Direct complexity baseline | Separates loading paint from audit overhead: DuckDuckGo full `818ms` loading paint, MDN `903ms` loading paint, DuckDuckGo Lite max paint `3ms`, example.com max paint is audit-only |
+| Native-only repo cleanup | Done | Legacy TypeScript/Vite simulator source and npm package files removed. |
+| Assisted bridge smoke | `example.com` assisted user-distill passed: first shell draw `4ms`, first Servo frame `758ms`, nav `277ms`, distill `409ms`, Wake `60ms` |
 | Google first direct present | `149ms` |
 | Google first interaction frame | `6ms` before load complete |
 | Verified direct input | `413ms`, clicked/focused/typed through live localhost fixture |
 | Verified form submit | `304-520ms`, typed, submitted, and verified `/search?q=sextant` URL/title |
-| Live direct search | `753ms-1.4s`, DuckDuckGo Lite title confirmed `Sextant at DuckDuckGo` |
-| Google live search | Partial / blocked | First present `136-179ms`; MCP now separates no-input, submitted-unverified, and challenge/unsupported-browser evidence via attempts, timeout title, and timeout URL. |
+| Live direct search | `766ms`, `26` frames, DuckDuckGo Lite title confirmed `Sextant at DuckDuckGo` in the baseline |
+| Google live search | Passing current smoke; first present `156ms`, DOM-located search box click found `textarea[name="q"]`, submitted `/search?q=Sextant`, live-search frame `6.1s`; MCP still classifies no-query and submitted-unverified failures when they occur |
+| Bing live search | Passing after local Servo `NodeList` defensive patch: first present `190ms`, DOM-located search box found `textarea[name="q"]` at `560,172`, normal page submit reached `https://www.bing.com/search?q=Sextant...`, live-search frame `6.3s`; patched rerun had no `nodelist.rs` panic |
 | Google load complete | `5.1s` |
-| example.com first direct present | `138ms` on latest load smoke |
-| example.com load complete | `563ms`, final `https://example.com/` / `Example Domain` |
+| example.com first direct present | `110ms` in the baseline |
+| example.com load complete | `394ms`, final title `Example Domain` |
+| DuckDuckGo complex first direct present | `114ms` in the latest baseline |
+| DuckDuckGo complex load complete | `1.6s`, `18` frames, max direct frame `800ms`, slow phase `loading`; post-load audit paint `107ms` |
+| DuckDuckGo viewport scale check | Max paint `891ms` at `640x420`, `833ms` at `960x620`, `837ms` at `1180x760`; page complexity is about `780` elements, `2,904` CSS rules, `48` scripts, and `74` resources |
+| Complexity comparison at `960x620` | example.com `346ms` audit-only paint, DuckDuckGo Lite `3ms`, DuckDuckGo full `818ms` loading paint, MDN `903ms` loading paint |
+| DuckDuckGo resource audit | `13` images, `0` broken images, `42` inline SVGs, `34` zero-size SVGs, `10` stylesheets |
 | Direct resize follow-up | `27ms` |
 | Direct reload follow-up | `411ms`, final `https://example.com/` / `Example Domain` |
 | Direct history back/forward | `31ms / 31ms` |
 | Direct location final evidence | `625ms`, final `https://example.org/` / `Example Domain` |
 | Direct history final evidence | `660ms`, final `https://example.org/` / `Example Domain` |
 | Direct tab follow-up | `134ms`, selected tab URL/title confirmed |
+| Pylon local appliance login page | `173ms` first present, `300ms` load complete with local TLS override, final title `Login - Pylon` |
+| Pylon strict certificate failure | `188ms` first present, `559ms` load complete, fingerprint `5526c07eed59d052c7c48b7e8bdf1d3685b43e2b127de45e94abbdd2bcef8cb5` |
+| Pylon hosted certificate `BACK` smoke | Parent shell ready, action requested/completed, active URL `about:blank`, fingerprint `5526c07eed59d052c7c48b7e8bdf1d3685b43e2b127de45e94abbdd2bcef8cb5` |
+| Pylon hosted certificate `ONCE` smoke | Parent shell ready, action requested/completed/relaunched, first present `112ms`, active URL `https://192.0.2.130:8080/app/login` |
+| Pylon hosted certificate `TRUST` smoke | Isolated profile, action requested/completed/relaunched, first present `136ms`, active URL `https://192.0.2.130:8080/app/login`, temp profile removed |
 
 ## Current Interpretation
 
@@ -65,18 +87,21 @@ That split is why Google can feel snappy even while Servo continues background p
 
 | Gap | Priority | Notes |
 |---|---|---|
-| Direct shell composition | High | Need chrome/tabs/address overlay around the direct Servo window path. |
-| Live-site direct interaction depth | High | Controlled click/type and form-submit proof works; next step is representative live search/input behavior. |
-| Complex-page Servo tail | High | Google load-complete tail remains long; now measurable separately. |
+| Direct shell composition | High | Hosted parent chrome now exists for Direct/Incognito; next is manual QA, polish, and replacing remaining raw-window smoke wording with hosted-shell evidence where appropriate. |
+| Appliance certificate UX | High | Hosted direct chrome now parses certificate fingerprints from the child, shows a native warning/control strip, can leave the warning without trusting, relaunches the trusted child embedded after `Trust Once` / `Trust This Appliance`, exposes persisted trust entries in the Guard tab, and has hosted-shell smoke coverage for native `BACK` / `ONCE` / `TRUST` actions; next is manual appliance QA and visual polish. |
+| Live-site direct interaction depth | High | Controlled click/type and form-submit proof works; Google live search passes through normal input, and Bing now passes through a logged form-derived navigation fallback after input attempts stall. |
+| Complex-page Servo tail | High | Google load-complete tail remains long; DuckDuckGo and MDN now show loading-phase heavy paint frames around `811-890ms`. Viewport and complexity matrices suggest this is content/scene work more than raw fill-rate or audit overhead. |
 | Bridge shell polish | High | Full Agent/Assisted shell still depends on bridge and should stay stable. |
 | Manual QA pass | High | Run the actual debug browser and validate normal browsing feel. |
+| Servo dependency advisories | Medium | `ml-dsa 0.0.4` and `rsa 0.9.10` are pulled through Servo's `servo-script`; `ml-dsa` has a fixed prerelease but Servo currently constrains `^0.0.4`, and `rsa` has no fixed upgrade. |
 | Xilem/Vello | Parked | Diagnostic ladder remains archived/reference until direct path is further along. |
 
 ## Practical Recommendation
 
 Next work should keep moving down [next-work.md](next-work.md):
 
-1. Broaden live-page search/input proof beyond DuckDuckGo Lite and capture failures by site.
-2. Start designing the direct chrome/tab/address overlay path.
-3. Keep bridge shell smokes green while direct grows into the main user path.
-4. Use `performance-log.md` for timing deltas and avoid relying on feel alone.
+1. Keep the direct browsing baseline green and use it as the scoreboard for user-side browsing.
+2. Broaden live-page search/input proof beyond DuckDuckGo Lite and capture failures by site.
+3. Start designing the direct chrome/tab/address overlay path.
+4. Keep bridge shell smokes green while direct grows into the main user path.
+5. Use `performance-log.md` for timing deltas and avoid relying on feel alone.

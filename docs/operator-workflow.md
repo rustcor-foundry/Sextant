@@ -19,7 +19,7 @@ Follow [next-work.md](next-work.md) as the active execution guide unless the tea
 
 1. Confirm which lane in [next-work.md](next-work.md) you are advancing.
 2. Inspect the relevant Rust crates before changing anything.
-3. Prefer the native Rust hull and supporting Rust crates over the TypeScript simulator for real product work.
+3. Work in the native Rust hull and supporting Rust crates.
 4. Make the smallest coherent change that advances the actual product path.
 5. Verify with the most relevant command:
    - `cargo check -p sextant-hull`
@@ -216,7 +216,7 @@ Prefer changes that make this loop more real, more observable, or more reliable.
 - hiding failures behind fake success states
 - growing giant inline Xilem view trees
 - putting orchestration logic directly inside widget callbacks
-- treating the TypeScript simulator as the main product path
+- reintroducing mock UI surfaces as the main product path
 
 ## Commit And Push
 

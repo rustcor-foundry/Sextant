@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 use chrono::Utc;
 use serde_json::{json, Value};
 use sextant_firewall::FirewallPolicy;
@@ -131,6 +133,96 @@ fn run() -> Result<(), String> {
     }
     if let Some(arguments) = browser_direct_present_smoke_cli_arguments(&args)? {
         let result = run_browser_direct_present_smoke_tool(arguments)?;
+        if args.iter().any(|arg| arg == "--json") {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&result).map_err(|error| error.to_string())?
+            );
+        } else {
+            println!("{}", tool_text(&result));
+        }
+        if tool_result_failed(&result) {
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+    if let Some(arguments) = browser_hosted_direct_smoke_cli_arguments(&args)? {
+        let result = run_browser_hosted_direct_smoke_tool(arguments)?;
+        if args.iter().any(|arg| arg == "--json") {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&result).map_err(|error| error.to_string())?
+            );
+        } else {
+            println!("{}", tool_text(&result));
+        }
+        if tool_result_failed(&result) {
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+    if let Some(arguments) = browser_local_appliance_cert_list_cli_arguments(&args)? {
+        let result = run_browser_local_appliance_cert_list_tool(arguments)?;
+        if args.iter().any(|arg| arg == "--json") {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&result).map_err(|error| error.to_string())?
+            );
+        } else {
+            println!("{}", tool_text(&result));
+        }
+        if tool_result_failed(&result) {
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+    if let Some(arguments) = browser_local_appliance_cert_forget_cli_arguments(&args)? {
+        let result = run_browser_local_appliance_cert_forget_tool(arguments)?;
+        if args.iter().any(|arg| arg == "--json") {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&result).map_err(|error| error.to_string())?
+            );
+        } else {
+            println!("{}", tool_text(&result));
+        }
+        if tool_result_failed(&result) {
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+    if let Some(arguments) = browser_direct_browsing_baseline_cli_arguments(&args)? {
+        let result = browser_direct_browsing_baseline_tool(arguments);
+        if args.iter().any(|arg| arg == "--json") {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&result).map_err(|error| error.to_string())?
+            );
+        } else {
+            println!("{}", tool_text(&result));
+        }
+        if tool_result_failed(&result) {
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+    if let Some(arguments) = browser_direct_viewport_baseline_cli_arguments(&args)? {
+        let result = browser_direct_viewport_baseline_tool(arguments);
+        if args.iter().any(|arg| arg == "--json") {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&result).map_err(|error| error.to_string())?
+            );
+        } else {
+            println!("{}", tool_text(&result));
+        }
+        if tool_result_failed(&result) {
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+    if let Some(arguments) = browser_direct_complexity_baseline_cli_arguments(&args)? {
+        let result = browser_direct_complexity_baseline_tool(arguments);
         if args.iter().any(|arg| arg == "--json") {
             println!(
                 "{}",
@@ -344,7 +436,7 @@ fn handle_message(message: Value) -> Option<Value> {
                     "protocolVersion": PROTOCOL_VERSION,
                     "capabilities": server_capabilities(),
                     "serverInfo": server_info(),
-                    "instructions": "Sextant exposes local browser automation through the native sextant-browser operator bridge and a separate direct Servo presentation proof. Start with browser_capabilities, then use browser_direct_present_smoke for direct compositor proof, or browser_real_browsing_smoke, browser_perception_probe, browser_perf_probe, browser_intent_run, browser_operator_probe, or browser_operator_run for bounded real browsing checks.",
+                    "instructions": "Sextant exposes local browser automation through the native sextant-browser operator bridge and direct Servo presentation proofs. Start with browser_capabilities, then use browser_direct_present_smoke for raw direct compositor proof, browser_hosted_direct_smoke for hosted parent chrome proof, browser_local_appliance_cert_list/browser_local_appliance_cert_forget for local appliance trust inspection and revocation, or browser_real_browsing_smoke, browser_perception_probe, browser_perf_probe, browser_intent_run, browser_operator_probe, or browser_operator_run for bounded real browsing checks.",
                     "browserModes": browser_modes(),
                 }),
             )
@@ -395,6 +487,18 @@ fn handle_tool_call(id: Value, params: Option<Value>) -> Value {
         "browser_real_browsing_smoke" => Ok(browser_real_browsing_smoke_tool(arguments)),
         "browser_render_path_baseline" => run_browser_render_path_baseline_tool(arguments),
         "browser_direct_present_smoke" => run_browser_direct_present_smoke_tool(arguments),
+        "browser_hosted_direct_smoke" => run_browser_hosted_direct_smoke_tool(arguments),
+        "browser_local_appliance_cert_list" => {
+            run_browser_local_appliance_cert_list_tool(arguments)
+        }
+        "browser_local_appliance_cert_forget" => {
+            run_browser_local_appliance_cert_forget_tool(arguments)
+        }
+        "browser_direct_browsing_baseline" => Ok(browser_direct_browsing_baseline_tool(arguments)),
+        "browser_direct_viewport_baseline" => Ok(browser_direct_viewport_baseline_tool(arguments)),
+        "browser_direct_complexity_baseline" => {
+            Ok(browser_direct_complexity_baseline_tool(arguments))
+        }
         "browser_window_smoke" => run_browser_window_smoke_tool(arguments),
         "browser_intent_run" => {
             let Some(intent) = required_string(&arguments, "intent") else {
@@ -640,6 +744,69 @@ fn tools() -> Value {
             },
         },
         {
+            "name": "browser_hosted_direct_smoke",
+            "title": "Browser Hosted Direct Smoke",
+            "description": "Run the hosted Direct-mode browser shell with parent chrome and an embedded Servo child, then exit after the first direct present evidence.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": "Optional URL to load in the hosted Direct smoke. Defaults to https://example.com."
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["direct", "incognito"],
+                        "description": "Hosted direct smoke mode. Defaults to direct."
+                    },
+                    "timeout_seconds": window_timeout_property(),
+                    "allow_insecure_local_tls": {
+                        "type": "boolean",
+                        "description": "Allow insecure TLS for local appliance targets only."
+                    },
+                    "local_appliance_cert_fingerprint": {
+                        "type": "string",
+                        "description": "Optional trusted local appliance SHA-256 certificate fingerprint."
+                    },
+                    "certificate_action": {
+                        "type": "string",
+                        "enum": ["back", "once", "trust"],
+                        "description": "Optional native certificate chrome action to drive after a local appliance certificate fingerprint is detected."
+                    },
+                    "isolated_profile": {
+                        "type": "boolean",
+                        "description": "Run this hosted smoke with an isolated temporary browser data root, then clean it up after the command exits."
+                    }
+                },
+                "required": [],
+            },
+        },
+        {
+            "name": "browser_local_appliance_cert_forget",
+            "title": "Browser Local Appliance Cert Forget",
+            "description": "Forget one profile-scoped local appliance certificate trust exception, or clear all persisted local appliance certificate exceptions.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": "Local appliance URL to forget, or the literal value all to clear every persisted local appliance certificate exception."
+                    }
+                },
+                "required": ["target"],
+            },
+        },
+        {
+            "name": "browser_local_appliance_cert_list",
+            "title": "Browser Local Appliance Cert List",
+            "description": "List persisted profile-scoped local appliance certificate trust exceptions.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+        {
             "name": "browser_render_path_baseline",
             "title": "Browser Render Path Baseline",
             "description": "Compare direct Servo presentation proof timing against the production bridge-backed visible browser smoke for the same target.",
@@ -649,6 +816,94 @@ fn tools() -> Value {
                     "target": {
                         "type": "string",
                         "description": "Optional URL to load in both render-path checks. Defaults to https://example.com."
+                    },
+                    "timeout_seconds": window_timeout_property(),
+                },
+                "required": [],
+            },
+        },
+        {
+            "name": "browser_direct_browsing_baseline",
+            "title": "Browser Direct Browsing Baseline",
+            "description": "Run the Direct/Incognito-free user performance matrix across simple, complex, appliance, and live-search browsing flows.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "simple_target": {
+                        "type": "string",
+                        "description": "Simple page target. Defaults to https://example.com."
+                    },
+                    "complex_target": {
+                        "type": "string",
+                        "description": "Complex representative page target. Defaults to https://duckduckgo.com/."
+                    },
+                    "appliance_target": {
+                        "type": "string",
+                        "description": "Optional local appliance target. Defaults to SEXTANT_BASELINE_APPLIANCE_URL or https://192.0.2.130:8080/app/login."
+                    },
+                    "search_target": {
+                        "type": "string",
+                        "description": "Optional live-search page target. When omitted, the direct live-search smoke uses its DuckDuckGo Lite default."
+                    },
+                    "timeout_seconds": window_timeout_property(),
+                    "appliance_required": {
+                        "type": "boolean",
+                        "description": "When true, appliance failure marks the whole baseline failed. Defaults to false because lab appliances may be offline."
+                    }
+                },
+                "required": [],
+            },
+        },
+        {
+            "name": "browser_direct_viewport_baseline",
+            "title": "Browser Direct Viewport Baseline",
+            "description": "Run a direct Servo complex-page load at several viewport sizes to measure whether heavy paint cost scales with pixel area.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": "Complex representative page target. Defaults to https://duckduckgo.com/."
+                    },
+                    "timeout_seconds": window_timeout_property(),
+                },
+                "required": [],
+            },
+        },
+        {
+            "name": "browser_direct_complexity_baseline",
+            "title": "Browser Direct Complexity Baseline",
+            "description": "Run direct Servo load/resource-audit checks across simple, lite, complex, and article-style pages at one viewport to compare paint cost with page complexity.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "simple_target": {
+                        "type": "string",
+                        "description": "Simple page target. Defaults to https://example.com."
+                    },
+                    "lite_target": {
+                        "type": "string",
+                        "description": "Lightweight public page target. Defaults to https://lite.duckduckgo.com/lite/."
+                    },
+                    "complex_target": {
+                        "type": "string",
+                        "description": "Complex representative page target. Defaults to https://duckduckgo.com/."
+                    },
+                    "article_target": {
+                        "type": "string",
+                        "description": "Article/documentation-style page target. Defaults to https://developer.mozilla.org/en-US/docs/Web/HTML."
+                    },
+                    "viewport_width": {
+                        "type": "integer",
+                        "minimum": 320,
+                        "maximum": 4096,
+                        "description": "Initial direct Servo viewport width in physical pixels. Defaults to 960."
+                    },
+                    "viewport_height": {
+                        "type": "integer",
+                        "minimum": 240,
+                        "maximum": 2160,
+                        "description": "Initial direct Servo viewport height in physical pixels. Defaults to 620."
                     },
                     "timeout_seconds": window_timeout_property(),
                 },
@@ -722,11 +977,39 @@ fn tools() -> Value {
                         "type": "boolean",
                         "description": "Direct-render only. After first direct present, request a native window resize, resize raw Servo WebViews, and report the first post-resize direct frame."
                     },
+                    "resource_audit": {
+                        "type": "boolean",
+                        "description": "Direct-render only. After load completion, collect browser-visible resource counts and broken-image evidence from the page."
+                    },
+                    "viewport_width": {
+                        "type": "integer",
+                        "minimum": 320,
+                        "maximum": 4096,
+                        "description": "Direct-render only. Initial direct Servo viewport width in physical pixels."
+                    },
+                    "viewport_height": {
+                        "type": "integer",
+                        "minimum": 240,
+                        "maximum": 2160,
+                        "description": "Direct-render only. Initial direct Servo viewport height in physical pixels."
+                    },
                     "mode": browser_mode_property(),
                     "render_path": render_path_property(),
                     "pre_size_navigation": {
                         "type": "boolean",
                         "description": "When true, pass the visible viewport size into Servo navigation before the first bridge capture. Experimental and site-dependent."
+                    },
+                    "allow_insecure_local_tls": {
+                        "type": "boolean",
+                        "description": "Direct-render only. Dev/test bridge for local appliances with bootstrap/self-signed certificates. Only localhost, .local, private-IP, and link-local targets are allowed; normal browsing stays strict."
+                    },
+                    "local_appliance_cert_fingerprint": {
+                        "type": "string",
+                        "description": "Direct-render only. SHA-256 certificate fingerprint to match against the profile-scoped local appliance trust store."
+                    },
+                    "remember_local_appliance_cert": {
+                        "type": "string",
+                        "description": "Direct-render only. Store this SHA-256 certificate fingerprint for the target local appliance origin, then allow the current smoke. Disabled in Incognito."
                     },
                     "timeout_seconds": window_timeout_property(),
                 },
@@ -1022,8 +1305,14 @@ fn resource_text(uri: &str) -> Option<String> {
                 "- Perception probes: bounded `--perception-probe` path for page type, semantic counts, key nodes, source metadata, and timings",
                 "- Performance probes: bounded `--perf-probe` and `--perf-baseline` timing paths for navigation, distillation, Wake, viewport resize, and frame capture",
                 "- Direct presentation proof: bounded `browser_direct_present_smoke` path for Servo `WindowRenderingContext` + `present()` without the production frame-capture bridge",
+                "- Hosted direct proof: bounded `browser_hosted_direct_smoke` path for parent Sextant chrome hosting the embedded Servo child, including first-present and certificate fingerprint telemetry",
+                "- Local appliance certificate management: `browser_local_appliance_cert_list` lists persisted trust entries and `browser_local_appliance_cert_forget` clears one profile-scoped exception or all persisted local appliance trust entries",
                 "- Raw direct production lane: `browser_window_smoke` with `render_path=direct` runs `sextant-browser --render-path direct` in Direct/Incognito mode for URL/search browsing, direct input, tabs, location, history, reload, resize, and Incognito storage checks",
+                "- Local appliance TLS: direct smoke can opt into `allow_insecure_local_tls` for controlled localhost, `.local`, private-IP, or link-local appliance testing; public targets are refused and product UX should use fingerprint-bound certificate exceptions",
                 "- Render-path baseline: bounded `browser_render_path_baseline` path comparing direct-present timing with the production bridge-backed visible smoke",
+                "- Direct browsing baseline: bounded `browser_direct_browsing_baseline` matrix for simple, complex, appliance, and live-search Direct-mode user flows",
+                "- Direct viewport baseline: bounded `browser_direct_viewport_baseline` matrix for complex-page paint cost across viewport sizes",
+                "- Direct complexity baseline: bounded `browser_direct_complexity_baseline` matrix comparing paint cost across simple, lite, complex, and article pages",
                 "- Intent automation: bounded `--intent-run` mode for native Intent Bar workflows",
                 "- Authorized intent automation: bounded `--consent-run` mode for Captain's Key consent/resume workflows",
                 "- Visible shell checks: bounded `--window-smoke` launch/draw/navigation mode",
@@ -1050,7 +1339,13 @@ fn resource_text(uri: &str) -> Option<String> {
                 "Use `browser_perception_probe` when an agent needs a structured semantic read of a target page.",
                 "Use `browser_perf_probe` or `browser_perf_baseline` when tuning normal-browsing performance.",
                 "Use `browser_direct_present_smoke` when validating whether Servo can present directly to a native window without the current frame-capture bridge.",
+                "Use `browser_hosted_direct_smoke` when validating the Direct/Incognito user path with parent chrome and an embedded Servo child.",
+                "Use `browser_local_appliance_cert_list` when inspecting persisted local appliance certificate exceptions.",
+                "Use `browser_local_appliance_cert_forget` when revoking a trusted local appliance certificate exception by URL, or clearing all persisted local appliance trust.",
                 "Use `browser_render_path_baseline` when comparing direct Servo presentation timing against the production bridge path for one URL.",
+                "Use `browser_direct_browsing_baseline` when tuning real Direct-mode browsing across simple, complex, appliance, and search flows.",
+                "Use `browser_direct_viewport_baseline` when checking whether a heavy Direct paint scales with viewport area.",
+                "Use `browser_direct_complexity_baseline` when checking whether Direct paint cost follows page DOM/CSS/script/resource complexity.",
                 "Use `browser_intent_run` for Intent Bar workflows such as opening and distilling a page.",
                 "Use `browser_authorized_intent_run` for sensitive Intent Bar workflows that should authorize pending consent and resume the bounded browser plan.",
                 "Use `browser_operator_probe` for page-level navigation and distillation checks.",
@@ -1286,6 +1581,7 @@ fn browser_capabilities() -> Value {
                 "aiObservation": "separate capability-gated DOM/frame observation path",
                 "directCompositor": "experimental production raw lane via sextant-browser --render-path direct",
                 "directPresentSmoke": true,
+                "hostedDirectSmoke": true,
                 "renderPathBaseline": true,
                 "directAndIncognito": "AI observation and content persistence disabled; raw direct Servo presentation is available, while full chrome/tabs/AI shell composition still uses the bridge path"
             },
@@ -1295,6 +1591,7 @@ fn browser_capabilities() -> Value {
                 "hardeningPreflight": true,
                 "realBrowsingSmoke": true,
                 "directPresentSmoke": true,
+                "hostedDirectSmoke": true,
                 "renderPathBaseline": true,
                 "guardProbe": true,
                 "perfProbe": true,
@@ -1330,7 +1627,13 @@ fn browser_capabilities() -> Value {
                 "browser_hardening_preflight",
                 "browser_real_browsing_smoke",
                 "browser_direct_present_smoke",
+                "browser_hosted_direct_smoke",
+                "browser_local_appliance_cert_list",
+                "browser_local_appliance_cert_forget",
                 "browser_render_path_baseline",
+                "browser_direct_browsing_baseline",
+                "browser_direct_viewport_baseline",
+                "browser_direct_complexity_baseline",
                 "browser_guard_probe",
                 "browser_guard_policy_read",
                 "browser_guard_policy_write",
@@ -1402,6 +1705,13 @@ fn required_string(arguments: &Value, key: &str) -> Option<String> {
         .and_then(Value::as_str)
         .filter(|value| !value.trim().is_empty())
         .map(str::to_string)
+}
+
+fn bounded_u64(arguments: &Value, key: &str, min: u64, max: u64) -> Option<u64> {
+    arguments
+        .get(key)
+        .and_then(Value::as_u64)
+        .filter(|value| *value >= min && *value <= max)
 }
 
 fn operator_timeout(arguments: &Value) -> u64 {
@@ -1540,6 +1850,63 @@ fn window_smoke_mode_boundary_error(arguments: &Value, mode: Option<&str>) -> Op
         && render_path != "direct"
     {
         return Some("browser_window_smoke resize_smoke requires render_path 'direct'".to_string());
+    }
+    if arguments
+        .get("resource_audit")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        && render_path != "direct"
+    {
+        return Some(
+            "browser_window_smoke resource_audit requires render_path 'direct'".to_string(),
+        );
+    }
+    if (arguments
+        .get("viewport_width")
+        .and_then(Value::as_u64)
+        .is_some()
+        || arguments
+            .get("viewport_height")
+            .and_then(Value::as_u64)
+            .is_some())
+        && render_path != "direct"
+    {
+        return Some(
+            "browser_window_smoke viewport sizing requires render_path 'direct'".to_string(),
+        );
+    }
+    if arguments
+        .get("allow_insecure_local_tls")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        && render_path != "direct"
+    {
+        return Some(
+            "browser_window_smoke allow_insecure_local_tls requires render_path 'direct'"
+                .to_string(),
+        );
+    }
+    if arguments
+        .get("local_appliance_cert_fingerprint")
+        .and_then(Value::as_str)
+        .is_some()
+        && render_path != "direct"
+    {
+        return Some(
+            "browser_window_smoke local_appliance_cert_fingerprint requires render_path 'direct'"
+                .to_string(),
+        );
+    }
+    if arguments
+        .get("remember_local_appliance_cert")
+        .and_then(Value::as_str)
+        .is_some()
+        && render_path != "direct"
+    {
+        return Some(
+            "browser_window_smoke remember_local_appliance_cert requires render_path 'direct'"
+                .to_string(),
+        );
     }
     if browser_mode_allows_control_work(mode) {
         return None;
@@ -1782,9 +2149,38 @@ fn browser_window_smoke_cli_arguments(args: &[String]) -> Result<Option<Value>, 
     }
     if args
         .iter()
+        .any(|arg| arg == "--resource-audit" || arg == "--direct-resource-audit")
+    {
+        arguments["resource_audit"] = Value::Bool(true);
+    }
+    if let Some(width) = operator_arg_value(args, "--viewport-width")
+        .or_else(|| operator_arg_value(args, "--embed-width"))
+    {
+        if let Ok(width) = width.parse::<u64>() {
+            arguments["viewport_width"] = Value::from(width);
+        }
+    }
+    if let Some(height) = operator_arg_value(args, "--viewport-height")
+        .or_else(|| operator_arg_value(args, "--embed-height"))
+    {
+        if let Ok(height) = height.parse::<u64>() {
+            arguments["viewport_height"] = Value::from(height);
+        }
+    }
+    if args
+        .iter()
         .any(|arg| arg == "--pre-size-navigation" || arg == "--pre-size-visible-navigation")
     {
         arguments["pre_size_navigation"] = Value::Bool(true);
+    }
+    if args.iter().any(|arg| arg == "--allow-insecure-local-tls") {
+        arguments["allow_insecure_local_tls"] = Value::Bool(true);
+    }
+    if let Some(fingerprint) = operator_arg_value(args, "--local-appliance-cert-fingerprint") {
+        arguments["local_appliance_cert_fingerprint"] = Value::String(fingerprint);
+    }
+    if let Some(fingerprint) = operator_arg_value(args, "--remember-local-appliance-cert") {
+        arguments["remember_local_appliance_cert"] = Value::String(fingerprint);
     }
 
     Ok(Some(arguments))
@@ -1824,6 +2220,146 @@ fn browser_direct_present_smoke_cli_arguments(args: &[String]) -> Result<Option<
         arguments["target"] = Value::String(target);
     }
     arguments["timeout_seconds"] = Value::from(parse_cli_timeout(args, "--timeout-seconds", 45)?);
+    Ok(Some(arguments))
+}
+
+fn browser_hosted_direct_smoke_cli_arguments(args: &[String]) -> Result<Option<Value>, String> {
+    let Some(smoke_index) = args
+        .iter()
+        .position(|arg| arg == "--hosted-direct-smoke" || arg == "--hosted-direct-browser-smoke")
+    else {
+        return Ok(None);
+    };
+
+    let mut arguments = json!({});
+    if let Some(target) = operator_arg_value(args, "--target").or_else(|| {
+        args.get(smoke_index + 1)
+            .filter(|value| !value.starts_with("--"))
+            .cloned()
+    }) {
+        arguments["target"] = Value::String(target);
+    }
+    if let Some(mode) = operator_arg_value(args, "--mode") {
+        arguments["mode"] = Value::String(mode);
+    }
+    if args.iter().any(|arg| arg == "--allow-insecure-local-tls") {
+        arguments["allow_insecure_local_tls"] = Value::Bool(true);
+    }
+    if let Some(fingerprint) = operator_arg_value(args, "--local-appliance-cert-fingerprint") {
+        arguments["local_appliance_cert_fingerprint"] = Value::String(fingerprint);
+    }
+    if let Some(action) = operator_arg_value(args, "--hosted-direct-smoke-cert-action") {
+        arguments["certificate_action"] = Value::String(action);
+    }
+    if args
+        .iter()
+        .any(|arg| arg == "--hosted-direct-smoke-isolated-profile")
+    {
+        arguments["isolated_profile"] = Value::Bool(true);
+    }
+    arguments["timeout_seconds"] = Value::from(parse_cli_timeout(args, "--timeout-seconds", 30)?);
+    Ok(Some(arguments))
+}
+
+fn browser_local_appliance_cert_list_cli_arguments(
+    args: &[String],
+) -> Result<Option<Value>, String> {
+    if args.iter().any(|arg| arg == "--list-local-appliance-certs") {
+        return Ok(Some(json!({})));
+    }
+    Ok(None)
+}
+
+fn browser_local_appliance_cert_forget_cli_arguments(
+    args: &[String],
+) -> Result<Option<Value>, String> {
+    let Some(target) = operator_arg_value(args, "--forget-local-appliance-cert") else {
+        return Ok(None);
+    };
+    Ok(Some(json!({ "target": target })))
+}
+
+fn browser_direct_browsing_baseline_cli_arguments(
+    args: &[String],
+) -> Result<Option<Value>, String> {
+    if !args
+        .iter()
+        .any(|arg| arg == "--direct-browsing-baseline" || arg == "--direct-baseline")
+    {
+        return Ok(None);
+    }
+
+    let mut arguments = json!({
+        "timeout_seconds": parse_cli_timeout(args, "--timeout-seconds", 60)?,
+    });
+    if let Some(target) = operator_arg_value(args, "--simple-target") {
+        arguments["simple_target"] = Value::String(target);
+    }
+    if let Some(target) = operator_arg_value(args, "--complex-target") {
+        arguments["complex_target"] = Value::String(target);
+    }
+    if let Some(target) = operator_arg_value(args, "--appliance-target") {
+        arguments["appliance_target"] = Value::String(target);
+    }
+    if let Some(target) = operator_arg_value(args, "--search-target") {
+        arguments["search_target"] = Value::String(target);
+    }
+    if args.iter().any(|arg| arg == "--appliance-required") {
+        arguments["appliance_required"] = Value::Bool(true);
+    }
+    Ok(Some(arguments))
+}
+
+fn browser_direct_viewport_baseline_cli_arguments(
+    args: &[String],
+) -> Result<Option<Value>, String> {
+    if !args.iter().any(|arg| arg == "--direct-viewport-baseline") {
+        return Ok(None);
+    }
+
+    let mut arguments = json!({
+        "timeout_seconds": parse_cli_timeout(args, "--timeout-seconds", 75)?,
+    });
+    if let Some(target) = operator_arg_value(args, "--target")
+        .or_else(|| operator_arg_value(args, "--viewport-target"))
+    {
+        arguments["target"] = Value::String(target);
+    }
+    Ok(Some(arguments))
+}
+
+fn browser_direct_complexity_baseline_cli_arguments(
+    args: &[String],
+) -> Result<Option<Value>, String> {
+    if !args.iter().any(|arg| arg == "--direct-complexity-baseline") {
+        return Ok(None);
+    }
+
+    let mut arguments = json!({
+        "timeout_seconds": parse_cli_timeout(args, "--timeout-seconds", 75)?,
+    });
+    if let Some(target) = operator_arg_value(args, "--simple-target") {
+        arguments["simple_target"] = Value::String(target);
+    }
+    if let Some(target) = operator_arg_value(args, "--lite-target") {
+        arguments["lite_target"] = Value::String(target);
+    }
+    if let Some(target) = operator_arg_value(args, "--complex-target") {
+        arguments["complex_target"] = Value::String(target);
+    }
+    if let Some(target) = operator_arg_value(args, "--article-target") {
+        arguments["article_target"] = Value::String(target);
+    }
+    if let Some(width) = operator_arg_value(args, "--viewport-width") {
+        if let Ok(width) = width.parse::<u64>() {
+            arguments["viewport_width"] = Value::from(width);
+        }
+    }
+    if let Some(height) = operator_arg_value(args, "--viewport-height") {
+        if let Ok(height) = height.parse::<u64>() {
+            arguments["viewport_height"] = Value::from(height);
+        }
+    }
     Ok(Some(arguments))
 }
 
@@ -1977,6 +2513,375 @@ fn browser_perf_baseline_tool(arguments: Value) -> Value {
         Ok(result) => result,
         Err(error) => tool_error(&error),
     }
+}
+
+fn browser_direct_browsing_baseline_tool(arguments: Value) -> Value {
+    let timeout_seconds = timeout_seconds(&arguments, 60, 180);
+    let simple_target = required_string(&arguments, "simple_target")
+        .unwrap_or_else(|| "https://example.com".to_string());
+    let complex_target = required_string(&arguments, "complex_target")
+        .unwrap_or_else(|| "https://duckduckgo.com/".to_string());
+    let appliance_target = required_string(&arguments, "appliance_target")
+        .or_else(|| env::var("SEXTANT_BASELINE_APPLIANCE_URL").ok())
+        .unwrap_or_else(|| "https://192.0.2.130:8080/app/login".to_string());
+    let search_target = required_string(&arguments, "search_target");
+    let appliance_required = arguments
+        .get("appliance_required")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
+    let mut cases = Vec::new();
+    cases.push(run_direct_baseline_case(
+        "simple_load",
+        true,
+        json!({
+            "target": simple_target,
+            "mode": "direct",
+            "render_path": "direct",
+            "load_smoke": true,
+            "timeout_seconds": timeout_seconds,
+        }),
+    ));
+    cases.push(run_direct_baseline_case(
+        "complex_load",
+        true,
+        json!({
+            "target": complex_target,
+            "mode": "direct",
+            "render_path": "direct",
+            "load_smoke": true,
+            "resource_audit": true,
+            "timeout_seconds": timeout_seconds,
+        }),
+    ));
+    cases.push(run_direct_baseline_case(
+        "appliance_load",
+        appliance_required,
+        json!({
+            "target": appliance_target,
+            "mode": "direct",
+            "render_path": "direct",
+            "load_smoke": true,
+            "allow_insecure_local_tls": true,
+            "timeout_seconds": timeout_seconds,
+        }),
+    ));
+    let mut search_arguments = json!({
+        "mode": "direct",
+        "render_path": "direct",
+        "live_search_smoke": true,
+        "timeout_seconds": timeout_seconds,
+    });
+    if let Some(search_target) = search_target {
+        search_arguments["target"] = Value::String(search_target);
+    }
+    cases.push(run_direct_baseline_case(
+        "live_search",
+        true,
+        search_arguments,
+    ));
+
+    let required_failures: Vec<Value> = cases
+        .iter()
+        .filter(|case| {
+            case.get("required")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        })
+        .filter(|case| {
+            !case
+                .get("success")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        })
+        .cloned()
+        .collect();
+    let success = required_failures.is_empty();
+    let structured = json!({
+        "success": success,
+        "generatedAt": Utc::now().to_rfc3339(),
+        "timeoutSeconds": timeout_seconds,
+        "cases": cases,
+        "requiredFailures": required_failures,
+        "interpretation": {
+            "directPresentMs": "first visible pixels/user-perceived startup",
+            "loadCompleteMs": "tail work for page completion",
+            "maxDirectFrameMs": "worst observed direct paint/present frame during the smoke",
+            "optionalAppliance": !appliance_required,
+        }
+    });
+    let _ = record_audit(
+        "browser_direct_browsing_baseline",
+        if success {
+            LogStatus::Success
+        } else {
+            LogStatus::Failure("required direct browsing baseline case failed".to_string())
+        },
+        json!({ "arguments": arguments, "structured": structured }),
+    );
+    let mut result = tool_success(structured);
+    if !success {
+        result["isError"] = Value::Bool(true);
+    }
+    result
+}
+
+fn browser_direct_viewport_baseline_tool(arguments: Value) -> Value {
+    let timeout_seconds = timeout_seconds(&arguments, 75, 120);
+    let target = required_string(&arguments, "target")
+        .unwrap_or_else(|| "https://duckduckgo.com/".to_string());
+    let sizes = [(640_u64, 420_u64), (960, 620), (1180, 760)];
+    let cases: Vec<Value> = sizes
+        .iter()
+        .map(|(width, height)| {
+            run_direct_baseline_case(
+                &format!("{width}x{height}"),
+                true,
+                json!({
+                    "target": target.clone(),
+                    "mode": "direct",
+                    "render_path": "direct",
+                    "load_smoke": true,
+                    "resource_audit": true,
+                    "viewport_width": width,
+                    "viewport_height": height,
+                    "timeout_seconds": timeout_seconds,
+                }),
+            )
+        })
+        .collect();
+    let required_failures: Vec<Value> = cases
+        .iter()
+        .filter(|case| {
+            !case
+                .get("success")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        })
+        .cloned()
+        .collect();
+    let success = required_failures.is_empty();
+    let structured = json!({
+        "success": success,
+        "generatedAt": Utc::now().to_rfc3339(),
+        "target": target,
+        "timeoutSeconds": timeout_seconds,
+        "cases": cases,
+        "requiredFailures": required_failures,
+        "interpretation": {
+            "maxDirectPaintMs": "worst paint observed at this viewport size",
+            "viewportPixels": "initial direct Servo viewport area in physical pixels",
+            "paintPerMegapixelMs": "maxDirectPaintMs normalized by viewportPixels",
+        }
+    });
+    let _ = record_audit(
+        "browser_direct_viewport_baseline",
+        if success {
+            LogStatus::Success
+        } else {
+            LogStatus::Failure("direct viewport baseline case failed".to_string())
+        },
+        json!({ "arguments": arguments, "structured": structured }),
+    );
+    let mut result = tool_success(structured);
+    if !success {
+        result["isError"] = Value::Bool(true);
+    }
+    result
+}
+
+fn browser_direct_complexity_baseline_tool(arguments: Value) -> Value {
+    let timeout_seconds = timeout_seconds(&arguments, 75, 120);
+    let viewport_width = bounded_u64(&arguments, "viewport_width", 320, 4096).unwrap_or(960);
+    let viewport_height = bounded_u64(&arguments, "viewport_height", 240, 2160).unwrap_or(620);
+    let targets = [
+        (
+            "simple",
+            required_string(&arguments, "simple_target")
+                .unwrap_or_else(|| "https://example.com".to_string()),
+        ),
+        (
+            "lite_search",
+            required_string(&arguments, "lite_target")
+                .unwrap_or_else(|| "https://lite.duckduckgo.com/lite/".to_string()),
+        ),
+        (
+            "complex_search",
+            required_string(&arguments, "complex_target")
+                .unwrap_or_else(|| "https://duckduckgo.com/".to_string()),
+        ),
+        (
+            "article",
+            required_string(&arguments, "article_target")
+                .unwrap_or_else(|| "https://developer.mozilla.org/en-US/docs/Web/HTML".to_string()),
+        ),
+    ];
+    let cases: Vec<Value> = targets
+        .iter()
+        .map(|(label, target)| {
+            run_direct_baseline_case(
+                label,
+                true,
+                json!({
+                    "target": target,
+                    "mode": "direct",
+                    "render_path": "direct",
+                    "load_smoke": true,
+                    "resource_audit": true,
+                    "viewport_width": viewport_width,
+                    "viewport_height": viewport_height,
+                    "timeout_seconds": timeout_seconds,
+                }),
+            )
+        })
+        .collect();
+    let required_failures: Vec<Value> = cases
+        .iter()
+        .filter(|case| {
+            !case
+                .get("success")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        })
+        .cloned()
+        .collect();
+    let success = required_failures.is_empty();
+    let structured = json!({
+        "success": success,
+        "generatedAt": Utc::now().to_rfc3339(),
+        "timeoutSeconds": timeout_seconds,
+        "viewportWidth": viewport_width,
+        "viewportHeight": viewport_height,
+        "cases": cases,
+        "requiredFailures": required_failures,
+        "interpretation": {
+            "maxDirectPaintMs": "worst observed paint for the page class at the fixed viewport",
+            "resourceAuditSummary": "compact page complexity counters captured after load",
+            "goal": "correlate direct paint cost with DOM/CSS/script/resource complexity",
+        }
+    });
+    let _ = record_audit(
+        "browser_direct_complexity_baseline",
+        if success {
+            LogStatus::Success
+        } else {
+            LogStatus::Failure("direct complexity baseline case failed".to_string())
+        },
+        json!({ "arguments": arguments, "structured": structured }),
+    );
+    let mut result = tool_success(structured);
+    if !success {
+        result["isError"] = Value::Bool(true);
+    }
+    result
+}
+
+fn run_direct_baseline_case(label: &str, required: bool, arguments: Value) -> Value {
+    let started = Instant::now();
+    let result = match run_browser_window_smoke_tool(arguments.clone()) {
+        Ok(result) => result,
+        Err(error) => tool_error(&error),
+    };
+    let elapsed_ms = started.elapsed().as_millis() as u64;
+    let success = !tool_result_failed(&result);
+    let structured = result
+        .get("structuredContent")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let mut window_smoke = structured
+        .get("windowSmoke")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let metrics = direct_baseline_metrics(&window_smoke);
+    if let Some(object) = window_smoke.as_object_mut() {
+        object.remove("resourceAudit");
+    }
+    let mut case = json!({
+        "label": label,
+        "required": required,
+        "success": success,
+        "elapsedMs": elapsed_ms,
+        "target": arguments.get("target").cloned().unwrap_or(Value::Null),
+        "metrics": metrics,
+        "windowSmoke": window_smoke,
+        "command": structured.get("command").cloned().unwrap_or(Value::Null),
+    });
+    if !success {
+        case["error"] = Value::String(tool_text(&result));
+        case["isError"] = Value::Bool(true);
+    }
+    case
+}
+
+fn direct_baseline_metrics(window_smoke: &Value) -> Value {
+    let viewport_width = window_smoke.get("viewportWidth").and_then(Value::as_u64);
+    let viewport_height = window_smoke.get("viewportHeight").and_then(Value::as_u64);
+    let viewport_pixels = viewport_width
+        .zip(viewport_height)
+        .map(|(w, h)| w.saturating_mul(h));
+    let paint_per_megapixel = window_smoke
+        .get("maxDirectPaintMs")
+        .and_then(Value::as_u64)
+        .zip(viewport_pixels)
+        .and_then(|(paint, pixels)| {
+            if pixels == 0 {
+                None
+            } else {
+                Some((paint as f64) / (pixels as f64 / 1_000_000.0))
+            }
+        });
+    let max_loading_paint_ms = direct_slow_frame_phase_max(window_smoke, "loading", "paintMs");
+    let max_input_paint_ms = direct_slow_frame_phase_max(window_smoke, "input", "paintMs");
+    let max_idle_paint_ms = direct_slow_frame_phase_max(window_smoke, "idle", "paintMs");
+    let max_post_load_audit_paint_ms =
+        direct_slow_frame_phase_max(window_smoke, "post-load-audit", "paintMs");
+    json!({
+        "directPresentMs": window_smoke.get("directPresentMs").cloned().unwrap_or(Value::Null),
+        "firstInteractionFrameMs": window_smoke.get("firstInteractionFrameMs").cloned().unwrap_or(Value::Null),
+        "verifiedInputFrameMs": window_smoke.get("verifiedInputFrameMs").cloned().unwrap_or(Value::Null),
+        "searchSubmitFrameMs": window_smoke.get("searchSubmitFrameMs").cloned().unwrap_or(Value::Null),
+        "liveSearchFrameMs": window_smoke.get("liveSearchFrameMs").cloned().unwrap_or(Value::Null),
+        "loadCompleteMs": window_smoke.get("loadCompleteMs").cloned().unwrap_or(Value::Null),
+        "reloadFrameMs": window_smoke.get("reloadFrameMs").cloned().unwrap_or(Value::Null),
+        "resizeFrameMs": window_smoke.get("resizeFrameMs").cloned().unwrap_or(Value::Null),
+        "tabFrameMs": window_smoke.get("tabFrameMs").cloned().unwrap_or(Value::Null),
+        "loadUrl": window_smoke.get("loadUrl").cloned().unwrap_or(Value::Null),
+        "loadTitle": window_smoke.get("loadTitle").cloned().unwrap_or(Value::Null),
+        "liveSearch": window_smoke.get("liveSearch").cloned().unwrap_or(Value::Null),
+        "liveSearchAttempts": window_smoke.get("liveSearchAttempts").cloned().unwrap_or(Value::Null),
+        "liveSearchDomTarget": window_smoke.get("liveSearchDomTarget").cloned().unwrap_or(Value::Null),
+        "liveSearchDomFormTargetUrl": window_smoke.get("liveSearchDomFormTargetUrl").cloned().unwrap_or(Value::Null),
+        "liveSearchBlocked": window_smoke.get("liveSearchBlocked").cloned().unwrap_or(Value::Null),
+        "liveSearchBlockReason": window_smoke.get("liveSearchBlockReason").cloned().unwrap_or(Value::Null),
+        "timeoutPhase": window_smoke.get("timeoutPhase").cloned().unwrap_or(Value::Null),
+        "timeoutTitle": window_smoke.get("timeoutTitle").cloned().unwrap_or(Value::Null),
+        "timeoutUrl": window_smoke.get("timeoutUrl").cloned().unwrap_or(Value::Null),
+        "certificateFingerprintSha256": window_smoke.get("certificateFingerprintSha256").cloned().unwrap_or(Value::Null),
+        "resourceAuditSummary": window_smoke.get("resourceAuditSummary").cloned().unwrap_or(Value::Null),
+        "maxDirectFrameMs": window_smoke.get("maxDirectFrameMs").cloned().unwrap_or(Value::Null),
+        "maxDirectPaintMs": window_smoke.get("maxDirectPaintMs").cloned().unwrap_or(Value::Null),
+        "directFrameCount": window_smoke.get("directFrameCount").cloned().unwrap_or(Value::Null),
+        "directSlowFrameCount": window_smoke.get("directSlowFrameCount").cloned().unwrap_or(Value::Null),
+        "directSlowFrames": window_smoke.get("directSlowFrames").cloned().unwrap_or(Value::Null),
+        "maxLoadingPaintMs": max_loading_paint_ms.map(Value::from).unwrap_or(Value::Null),
+        "maxInputPaintMs": max_input_paint_ms.map(Value::from).unwrap_or(Value::Null),
+        "maxIdlePaintMs": max_idle_paint_ms.map(Value::from).unwrap_or(Value::Null),
+        "maxPostLoadAuditPaintMs": max_post_load_audit_paint_ms.map(Value::from).unwrap_or(Value::Null),
+        "viewportWidth": window_smoke.get("viewportWidth").cloned().unwrap_or(Value::Null),
+        "viewportHeight": window_smoke.get("viewportHeight").cloned().unwrap_or(Value::Null),
+        "viewportPixels": viewport_pixels.map(Value::from).unwrap_or(Value::Null),
+        "paintPerMegapixelMs": paint_per_megapixel.map(Value::from).unwrap_or(Value::Null),
+    })
+}
+
+fn direct_slow_frame_phase_max(window_smoke: &Value, phase: &str, field: &str) -> Option<u64> {
+    window_smoke
+        .get("directSlowFrames")
+        .and_then(Value::as_array)?
+        .iter()
+        .filter(|frame| frame.get("phase").and_then(Value::as_str) == Some(phase))
+        .filter_map(|frame| frame.get(field).and_then(Value::as_u64))
+        .max()
 }
 
 fn browser_perception_probe_tool(arguments: Value) -> Result<Value, String> {
@@ -2234,11 +3139,45 @@ fn run_browser_window_smoke_tool(arguments: Value) -> Result<Value, String> {
         full_args.push("--resize-smoke".to_string());
     }
     if arguments
+        .get("resource_audit")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        full_args.push("--direct-resource-audit".to_string());
+    }
+    if let (Some(width), Some(height)) = (
+        bounded_u64(&arguments, "viewport_width", 320, 4096),
+        bounded_u64(&arguments, "viewport_height", 240, 2160),
+    ) {
+        full_args.extend([
+            "--embed-width".to_string(),
+            width.to_string(),
+            "--embed-height".to_string(),
+            height.to_string(),
+        ]);
+    }
+    if arguments
         .get("pre_size_navigation")
         .and_then(Value::as_bool)
         .unwrap_or(false)
     {
         full_args.push("--pre-size-navigation".to_string());
+    }
+    if arguments
+        .get("allow_insecure_local_tls")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        full_args.push("--allow-insecure-local-tls".to_string());
+    }
+    if let Some(fingerprint) = required_string(&arguments, "local_appliance_cert_fingerprint") {
+        full_args.extend([
+            "--local-appliance-cert-fingerprint".to_string(),
+            fingerprint,
+        ]);
+    }
+    if let Some(fingerprint) = required_string(&arguments, "remember_local_appliance_cert") {
+        full_args.extend(["--remember-local-appliance-cert".to_string(), fingerprint]);
     }
     full_args.push("--window-smoke".to_string());
     if let Some(target) = required_string(&arguments, "target") {
@@ -2379,6 +3318,272 @@ fn run_browser_direct_present_smoke_tool(arguments: Value) -> Result<Value, Stri
         exit_code,
         structured.get("directPresentReport"),
         "sextant-servo-direct direct present smoke",
+    );
+    let mut result = json!({
+        "content": [{
+            "type": "text",
+            "text": text,
+        }],
+        "structuredContent": structured,
+    });
+    if !success {
+        result["isError"] = Value::Bool(true);
+    }
+    Ok(result)
+}
+
+fn run_browser_hosted_direct_smoke_tool(arguments: Value) -> Result<Value, String> {
+    let timeout_seconds = window_smoke_timeout(&arguments).max(1);
+    let target =
+        required_string(&arguments, "target").unwrap_or_else(|| "https://example.com".to_string());
+    let mode = required_string(&arguments, "mode").unwrap_or_else(|| "direct".to_string());
+    if !matches!(mode.as_str(), "direct" | "incognito") {
+        return Ok(tool_error(
+            "browser_hosted_direct_smoke mode must be direct or incognito",
+        ));
+    }
+
+    let mut full_args = vec![
+        "--browser-mode".to_string(),
+        mode,
+        "--render-path".to_string(),
+        "direct".to_string(),
+        "--hosted-direct-smoke".to_string(),
+        "--start".to_string(),
+        target,
+        "--hosted-direct-smoke-timeout".to_string(),
+        timeout_seconds.to_string(),
+    ];
+    if arguments
+        .get("allow_insecure_local_tls")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        full_args.push("--allow-insecure-local-tls".to_string());
+    }
+    if let Some(fingerprint) = required_string(&arguments, "local_appliance_cert_fingerprint") {
+        full_args.extend([
+            "--local-appliance-cert-fingerprint".to_string(),
+            fingerprint,
+        ]);
+    }
+    if let Some(action) = required_string(&arguments, "certificate_action") {
+        if !matches!(action.as_str(), "back" | "once" | "trust") {
+            return Ok(tool_error(
+                "browser_hosted_direct_smoke certificate_action must be back, once, or trust",
+            ));
+        }
+        full_args.extend(["--hosted-direct-smoke-cert-action".to_string(), action]);
+    }
+
+    let isolated_profile_root = arguments
+        .get("isolated_profile")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        .then(|| env::temp_dir().join(format!("sextant-hosted-direct-profile-{}", Uuid::new_v4())));
+    let command_env = isolated_profile_root
+        .as_ref()
+        .map(|path| {
+            vec![(
+                "SEXTANT_BROWSER_DATA_DIR".to_string(),
+                path.to_string_lossy().to_string(),
+            )]
+        })
+        .unwrap_or_default();
+
+    let output = match run_browser_command_with_env(&full_args, &command_env) {
+        Ok(output) => output,
+        Err(error) => {
+            let isolated_profile_cleanup =
+                cleanup_isolated_profile(isolated_profile_root.as_deref());
+            let _ = record_audit(
+                "browser_hosted_direct_smoke",
+                LogStatus::Failure(error.clone()),
+                json!({ "arguments": arguments }),
+            );
+            let mut result = tool_command_launch_error(&full_args, &error);
+            result["structuredContent"]["isolatedProfile"] = json!({
+                "root": isolated_profile_root.as_ref().map(|path| path.to_string_lossy().to_string()),
+                "browserDataDir": isolated_profile_root.as_ref().map(|path| path.join("browser").to_string_lossy().to_string()),
+                "cleanup": isolated_profile_cleanup,
+            });
+            return Ok(result);
+        }
+    };
+
+    let stdout = strip_ansi(&String::from_utf8_lossy(&output.stdout))
+        .trim()
+        .to_string();
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr))
+        .trim()
+        .to_string();
+    let exit_code = output.status.code();
+    let success = output.status.success();
+    let status = if success {
+        LogStatus::Success
+    } else {
+        LogStatus::Failure(format!("exit code {:?}", exit_code))
+    };
+    let _ = record_audit(
+        "browser_hosted_direct_smoke",
+        status,
+        json!({ "arguments": arguments }),
+    );
+
+    let report_source = command_report_source(&stdout, &stderr);
+    let hosted_direct = hosted_direct_smoke_summary(&report_source);
+    let isolated_profile_cleanup = cleanup_isolated_profile(isolated_profile_root.as_deref());
+    let structured = json!({
+        "success": success,
+        "exitCode": exit_code,
+        "stdout": stdout,
+        "stderr": stderr,
+        "hostedDirect": hosted_direct,
+        "isolatedProfile": {
+            "root": isolated_profile_root.as_ref().map(|path| path.to_string_lossy().to_string()),
+            "browserDataDir": isolated_profile_root.as_ref().map(|path| path.join("browser").to_string_lossy().to_string()),
+            "cleanup": isolated_profile_cleanup,
+        },
+        "command": {
+            "binary": "sextant-browser",
+            "args": full_args,
+        }
+    });
+    let text = command_result_text(
+        success,
+        exit_code,
+        Some(&structured["hostedDirect"]),
+        "sextant-browser hosted direct smoke",
+    );
+    let mut result = json!({
+        "content": [{
+            "type": "text",
+            "text": text,
+        }],
+        "structuredContent": structured,
+    });
+    if !success {
+        result["isError"] = Value::Bool(true);
+    }
+    Ok(result)
+}
+
+fn run_browser_local_appliance_cert_list_tool(arguments: Value) -> Result<Value, String> {
+    let full_args = vec!["--list-local-appliance-certs".to_string()];
+    let output = match run_browser_command(&full_args) {
+        Ok(output) => output,
+        Err(error) => {
+            let _ = record_audit(
+                "browser_local_appliance_cert_list",
+                LogStatus::Failure(error.clone()),
+                json!({ "arguments": arguments }),
+            );
+            return Ok(tool_command_launch_error(&full_args, &error));
+        }
+    };
+
+    let stdout = strip_ansi(&String::from_utf8_lossy(&output.stdout))
+        .trim()
+        .to_string();
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr))
+        .trim()
+        .to_string();
+    let exit_code = output.status.code();
+    let success = output.status.success();
+    let status = if success {
+        LogStatus::Success
+    } else {
+        LogStatus::Failure(format!("exit code {:?}", exit_code))
+    };
+    let _ = record_audit(
+        "browser_local_appliance_cert_list",
+        status,
+        json!({ "arguments": arguments }),
+    );
+    let structured = json!({
+        "success": success,
+        "exitCode": exit_code,
+        "trustStore": local_appliance_cert_list_payload(&stdout),
+        "stdout": stdout,
+        "stderr": stderr,
+        "command": {
+            "binary": "sextant-browser",
+            "args": full_args,
+        }
+    });
+    let text = command_result_text(
+        success,
+        exit_code,
+        None,
+        "sextant-browser local appliance certificate list",
+    );
+    let mut result = json!({
+        "content": [{
+            "type": "text",
+            "text": text,
+        }],
+        "structuredContent": structured,
+    });
+    if !success {
+        result["isError"] = Value::Bool(true);
+    }
+    Ok(result)
+}
+
+fn run_browser_local_appliance_cert_forget_tool(arguments: Value) -> Result<Value, String> {
+    let Some(target) = required_string(&arguments, "target") else {
+        return Ok(tool_error(
+            "browser_local_appliance_cert_forget requires a target URL or all",
+        ));
+    };
+    let full_args = vec!["--forget-local-appliance-cert".to_string(), target.clone()];
+    let output = match run_browser_command(&full_args) {
+        Ok(output) => output,
+        Err(error) => {
+            let _ = record_audit(
+                "browser_local_appliance_cert_forget",
+                LogStatus::Failure(error.clone()),
+                json!({ "arguments": arguments }),
+            );
+            return Ok(tool_command_launch_error(&full_args, &error));
+        }
+    };
+
+    let stdout = strip_ansi(&String::from_utf8_lossy(&output.stdout))
+        .trim()
+        .to_string();
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr))
+        .trim()
+        .to_string();
+    let exit_code = output.status.code();
+    let success = output.status.success();
+    let status = if success {
+        LogStatus::Success
+    } else {
+        LogStatus::Failure(format!("exit code {:?}", exit_code))
+    };
+    let _ = record_audit(
+        "browser_local_appliance_cert_forget",
+        status,
+        json!({ "arguments": arguments }),
+    );
+    let structured = json!({
+        "success": success,
+        "exitCode": exit_code,
+        "target": target,
+        "changed": local_appliance_cert_forget_changed(&stdout),
+        "stdout": stdout,
+        "stderr": stderr,
+        "command": {
+            "binary": "sextant-browser",
+            "args": full_args,
+        }
+    });
+    let text = command_result_text(
+        success,
+        exit_code,
+        None,
+        "sextant-browser local appliance certificate forget",
     );
     let mut result = json!({
         "content": [{
@@ -3450,6 +4655,82 @@ fn direct_present_summary(report: &[String]) -> Value {
     summary
 }
 
+fn hosted_direct_smoke_summary(output: &str) -> Value {
+    let mut summary = json!({
+        "parentShellReady": false,
+        "childPid": Value::Null,
+        "firstPresentMs": Value::Null,
+        "activeUrl": Value::Null,
+        "certificateFingerprintSha256": Value::Null,
+        "certificateAction": Value::Null,
+        "certificateActionRequested": false,
+        "certificateActionCompleted": false,
+        "certificateActionRelaunched": false,
+    });
+
+    for line in output.lines().map(str::trim) {
+        if line == "[hosted-direct-smoke] parent shell ready" {
+            summary["parentShellReady"] = Value::Bool(true);
+        } else if let Some(value) = line.strip_prefix("[hosted-direct-smoke] child pid ") {
+            if let Ok(pid) = value.trim().parse::<u64>() {
+                summary["childPid"] = Value::from(pid);
+            }
+        } else if let Some(value) = line.strip_prefix("[hosted-direct-smoke] first direct present ")
+        {
+            summary["firstPresentMs"] = duration_token_to_value(value.trim());
+        } else if let Some(value) = line.strip_prefix("[hosted-direct-smoke] active url ") {
+            summary["activeUrl"] = Value::String(value.trim().to_string());
+        } else if let Some(value) =
+            line.strip_prefix("[hosted-direct-smoke] certificate fingerprint sha256 ")
+        {
+            summary["certificateFingerprintSha256"] = Value::String(value.trim().to_string());
+        } else if let Some(value) = line.strip_prefix("[hosted-direct-smoke] certificate action ") {
+            if let Some((action, state)) = value.trim().split_once(' ') {
+                summary["certificateAction"] = Value::String(action.to_string());
+                match state {
+                    "requested" => summary["certificateActionRequested"] = Value::Bool(true),
+                    "completed" => summary["certificateActionCompleted"] = Value::Bool(true),
+                    "child relaunched" => {
+                        summary["certificateActionRelaunched"] = Value::Bool(true)
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    summary
+}
+
+fn local_appliance_cert_forget_changed(output: &str) -> Value {
+    output
+        .lines()
+        .map(str::trim)
+        .find_map(|line| {
+            let value =
+                line.strip_prefix("[sextant-browser] local appliance certificate trust forget ")?;
+            let changed = value.rsplit_once(" changed ")?.1.trim();
+            match changed {
+                "true" => Some(Value::Bool(true)),
+                "false" => Some(Value::Bool(false)),
+                _ => None,
+            }
+        })
+        .unwrap_or(Value::Null)
+}
+
+fn local_appliance_cert_list_payload(output: &str) -> Value {
+    output
+        .lines()
+        .map(str::trim)
+        .find_map(|line| {
+            let value =
+                line.strip_prefix("[sextant-browser] local appliance certificate trust list ")?;
+            serde_json::from_str::<Value>(value).ok()
+        })
+        .unwrap_or(Value::Null)
+}
+
 fn window_smoke_summary(report: &[String]) -> Value {
     let mut summary = json!({
         "mode": Value::Null,
@@ -3493,6 +4774,12 @@ fn window_smoke_summary(report: &[String]) -> Value {
         "latestFramePixels": Value::Null,
         "directPresentMs": Value::Null,
         "firstFrameMs": Value::Null,
+        "directFrameCount": Value::Null,
+        "directSlowFrameCount": Value::Null,
+        "maxDirectFrameMs": Value::Null,
+        "maxDirectSpinMs": Value::Null,
+        "maxDirectPaintMs": Value::Null,
+        "maxDirectPresentMs": Value::Null,
     });
     summary["firstInteractionFrameMs"] = Value::Null;
     summary["firstInteractionBeforeLoadComplete"] = Value::Null;
@@ -3508,6 +4795,8 @@ fn window_smoke_summary(report: &[String]) -> Value {
     summary["liveSearchUrl"] = Value::Null;
     summary["liveSearchTitle"] = Value::Null;
     summary["liveSearchAttempts"] = Value::Array(Vec::new());
+    summary["liveSearchDomTarget"] = Value::Null;
+    summary["liveSearchDomFormTargetUrl"] = Value::Null;
     summary["liveSearchSubmitted"] = Value::Null;
     summary["liveSearchSubmittedUrl"] = Value::Null;
     summary["liveSearchBlocked"] = Value::Null;
@@ -3523,6 +4812,14 @@ fn window_smoke_summary(report: &[String]) -> Value {
     summary["loadTitle"] = Value::Null;
     summary["reloadUrl"] = Value::Null;
     summary["reloadTitle"] = Value::Null;
+    summary["certificateFingerprintSha256"] = Value::Null;
+    summary["applianceCertificateRemembered"] = Value::Null;
+    summary["applianceCertificateRememberError"] = Value::Null;
+    summary["resourceAudit"] = Value::Null;
+    summary["resourceAuditSummary"] = Value::Null;
+    summary["directSlowFrames"] = Value::Array(Vec::new());
+    summary["viewportWidth"] = Value::Null;
+    summary["viewportHeight"] = Value::Null;
     summary["tabUrl"] = Value::Null;
     summary["tabTitle"] = Value::Null;
 
@@ -3544,6 +4841,15 @@ fn window_smoke_summary(report: &[String]) -> Value {
             summary["servoConfigDir"] = Value::String(path.trim().to_string());
         } else if let Some(value) = line.split("direct Servo http cache disabled ").nth(1) {
             summary["servoHttpCacheDisabled"] = Value::Bool(value.trim() == "true");
+        } else if let Some(value) = line.strip_prefix("[window-smoke] direct viewport ") {
+            if let Some((width, height)) = value.trim().split_once('x') {
+                if let Ok(width) = width.parse::<u64>() {
+                    summary["viewportWidth"] = Value::from(width);
+                }
+                if let Ok(height) = height.parse::<u64>() {
+                    summary["viewportHeight"] = Value::from(height);
+                }
+            }
         } else if let Some(value) = line.split("visible shell draw passed in ").nth(1) {
             summary["firstDrawMs"] = duration_token_to_value(value.trim());
         } else if let Some(value) = line.split("startup/navigation work ").nth(1) {
@@ -3572,6 +4878,14 @@ fn window_smoke_summary(report: &[String]) -> Value {
             if let Some(attempts) = summary["liveSearchAttempts"].as_array_mut() {
                 attempts.push(Value::String(value.trim().to_string()));
             }
+        } else if let Some(value) =
+            line.strip_prefix("[window-direct] live search dom search box target ")
+        {
+            summary["liveSearchDomTarget"] = live_search_dom_target(value);
+        } else if let Some(value) =
+            line.strip_prefix("[window-direct] live search dom form target url ")
+        {
+            summary["liveSearchDomFormTargetUrl"] = Value::String(value.trim().to_string());
         } else if let Some(value) = line.strip_prefix("[window-smoke] live search title ") {
             summary["liveSearchTitle"] = Value::String(value.trim().to_string());
         } else if let Some(value) = line.split("live search ").nth(1) {
@@ -3612,6 +4926,25 @@ fn window_smoke_summary(report: &[String]) -> Value {
             summary["loadUrl"] = Value::String(value.trim().to_string());
         } else if let Some(value) = line.strip_prefix("[window-smoke] load title ") {
             summary["loadTitle"] = Value::String(value.trim().to_string());
+        } else if let Some(value) =
+            line.strip_prefix("[window-smoke] certificate fingerprint sha256 ")
+        {
+            summary["certificateFingerprintSha256"] = Value::String(value.trim().to_string());
+        } else if let Some(value) =
+            line.strip_prefix("[window-smoke] appliance certificate remembered ")
+        {
+            summary["applianceCertificateRemembered"] = Value::Bool(value.trim() == "true");
+        } else if let Some(value) =
+            line.strip_prefix("[window-smoke] appliance certificate remember error ")
+        {
+            summary["applianceCertificateRememberError"] = Value::String(value.trim().to_string());
+        } else if let Some(value) = line.strip_prefix("[window-smoke] resource audit ") {
+            if let Ok(audit) = serde_json::from_str::<Value>(value.trim()) {
+                summary["resourceAuditSummary"] = window_resource_audit_summary(&audit);
+                summary["resourceAudit"] = audit;
+            } else {
+                summary["resourceAudit"] = Value::String(value.trim().to_string());
+            }
         } else if let Some(value) = line.split("resize frame ").nth(1) {
             summary["resizeFrameMs"] = duration_token_to_value(value.trim());
         } else if let Some(value) = line.split("tab frame ").nth(1) {
@@ -3640,6 +4973,14 @@ fn window_smoke_summary(report: &[String]) -> Value {
             summary["directPresentMs"] = duration_token_to_value(value.trim());
         } else if let Some(value) = line.split("first Servo frame in ").nth(1) {
             summary["firstFrameMs"] = duration_token_to_value(value.trim());
+        } else if let Some(value) = line.strip_prefix("[window-smoke] direct frame timing ") {
+            apply_direct_frame_timing_summary(&mut summary, value);
+        } else if let Some(value) = line.strip_prefix("[window-smoke] max direct frame ") {
+            apply_max_direct_frame_summary(&mut summary, value);
+        } else if let Some(value) = line.split("slow direct frame ").nth(1) {
+            if let Some(frames) = summary["directSlowFrames"].as_array_mut() {
+                frames.push(window_direct_slow_frame(value));
+            }
         } else if let Some(value) = line.strip_prefix("[window-direct] timed out after ") {
             apply_direct_timeout_summary(&mut summary, value);
         }
@@ -3647,6 +4988,192 @@ fn window_smoke_summary(report: &[String]) -> Value {
 
     apply_live_search_diagnostics(&mut summary);
     summary
+}
+
+fn window_direct_slow_frame(value: &str) -> Value {
+    let mut frame = json!({
+        "index": Value::Null,
+        "phase": Value::Null,
+        "totalMs": Value::Null,
+        "spinMs": Value::Null,
+        "paintMs": Value::Null,
+        "presentMs": Value::Null,
+    });
+    for (part_index, part) in value.split_whitespace().enumerate() {
+        if part_index == 0 {
+            if let Ok(index) = part.parse::<u64>() {
+                frame["index"] = Value::from(index);
+            }
+        } else if let Some(value) = part.strip_prefix("phase=") {
+            frame["phase"] = Value::String(value.trim().to_string());
+        } else if let Some(value) = part.strip_prefix("total=") {
+            frame["totalMs"] = duration_token_to_value(value);
+        } else if let Some(value) = part.strip_prefix("spin=") {
+            frame["spinMs"] = duration_token_to_value(value);
+        } else if let Some(value) = part.strip_prefix("paint=") {
+            frame["paintMs"] = duration_token_to_value(value);
+        } else if let Some(value) = part.strip_prefix("present=") {
+            frame["presentMs"] = duration_token_to_value(value);
+        }
+    }
+    frame
+}
+
+fn apply_direct_frame_timing_summary(summary: &mut Value, value: &str) {
+    for part in value.split_whitespace() {
+        if let Some(value) = part.strip_prefix("frames=") {
+            if let Ok(count) = value.parse::<u64>() {
+                summary["directFrameCount"] = Value::from(count);
+            }
+        } else if let Some(value) = part.strip_prefix("slow=") {
+            if let Ok(count) = value.parse::<u64>() {
+                summary["directSlowFrameCount"] = Value::from(count);
+            }
+        }
+    }
+}
+
+fn apply_max_direct_frame_summary(summary: &mut Value, value: &str) {
+    for part in value.split_whitespace() {
+        if let Some(value) = part.strip_prefix("total=") {
+            summary["maxDirectFrameMs"] = duration_token_to_value(value);
+        } else if let Some(value) = part.strip_prefix("spin=") {
+            summary["maxDirectSpinMs"] = duration_token_to_value(value);
+        } else if let Some(value) = part.strip_prefix("paint=") {
+            summary["maxDirectPaintMs"] = duration_token_to_value(value);
+        } else if let Some(value) = part.strip_prefix("present=") {
+            summary["maxDirectPresentMs"] = duration_token_to_value(value);
+        }
+    }
+}
+
+fn window_resource_audit_summary(audit: &Value) -> Value {
+    let image_count = audit.get("imageCount").and_then(Value::as_u64).unwrap_or(0);
+    let broken_image_count = audit
+        .get("brokenImages")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(0);
+    let inline_svg_count = audit
+        .get("inlineSvgCount")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let zero_size_svg_count = audit
+        .get("zeroSizeSvgCount")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let stylesheet_count = audit
+        .get("stylesheetCount")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let canvas_count = audit
+        .get("canvasCount")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let element_count = audit
+        .get("elementCount")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let interactive_element_count = audit
+        .get("interactiveElementCount")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let fixed_element_count = audit
+        .get("fixedElementCount")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let sticky_element_count = audit
+        .get("stickyElementCount")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let transformed_element_count = audit
+        .get("transformedElementCount")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let filtered_element_count = audit
+        .get("filteredElementCount")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let box_shadowed_element_count = audit
+        .get("boxShadowedElementCount")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let translucent_element_count = audit
+        .get("translucentElementCount")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let stylesheet_rule_count = audit
+        .get("stylesheetRuleCount")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let inaccessible_stylesheet_count = audit
+        .get("inaccessibleStylesheetCount")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let script_count = audit
+        .get("scriptCount")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let module_script_count = audit
+        .get("moduleScriptCount")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let async_script_count = audit
+        .get("asyncScriptCount")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let defer_script_count = audit
+        .get("deferScriptCount")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let resource_summary = audit.get("resourceSummary").unwrap_or(&Value::Null);
+    let resource_count = resource_summary
+        .get("count")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let resource_transfer_size = resource_summary
+        .get("transferSize")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let resource_decoded_body_size = resource_summary
+        .get("decodedBodySize")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let resource_duration = resource_summary
+        .get("duration")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let resource_by_initiator = resource_summary
+        .get("byInitiator")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    json!({
+        "imageCount": image_count,
+        "brokenImageCount": broken_image_count,
+        "inlineSvgCount": inline_svg_count,
+        "zeroSizeSvgCount": zero_size_svg_count,
+        "stylesheetCount": stylesheet_count,
+        "stylesheetRuleCount": stylesheet_rule_count,
+        "inaccessibleStylesheetCount": inaccessible_stylesheet_count,
+        "scriptCount": script_count,
+        "moduleScriptCount": module_script_count,
+        "asyncScriptCount": async_script_count,
+        "deferScriptCount": defer_script_count,
+        "canvasCount": canvas_count,
+        "elementCount": element_count,
+        "interactiveElementCount": interactive_element_count,
+        "fixedElementCount": fixed_element_count,
+        "stickyElementCount": sticky_element_count,
+        "transformedElementCount": transformed_element_count,
+        "filteredElementCount": filtered_element_count,
+        "boxShadowedElementCount": box_shadowed_element_count,
+        "translucentElementCount": translucent_element_count,
+        "resourceCount": resource_count,
+        "resourceTransferSize": resource_transfer_size,
+        "resourceDecodedBodySize": resource_decoded_body_size,
+        "resourceDurationMs": resource_duration,
+        "resourceByInitiator": resource_by_initiator,
+    })
 }
 
 fn apply_direct_timeout_summary(summary: &mut Value, value: &str) {
@@ -3689,6 +5216,43 @@ fn direct_debug_option_string(value: &str) -> Value {
     Value::String(trimmed.to_string())
 }
 
+fn live_search_dom_target(value: &str) -> Value {
+    let trimmed = value.trim();
+    let (before_size, size) = trimmed.split_once(" size ").unwrap_or((trimmed, ""));
+    let (coords, selector) = before_size
+        .split_once(" selector ")
+        .map(|(coords, selector)| (coords, Some(selector.trim().trim_matches('"').to_string())))
+        .unwrap_or((before_size, None));
+
+    let mut x = None;
+    let mut y = None;
+    for token in coords.split_whitespace() {
+        if let Some(value) = token.strip_prefix("x=") {
+            x = value.parse::<u64>().ok();
+        } else if let Some(value) = token.strip_prefix("y=") {
+            y = value.parse::<u64>().ok();
+        }
+    }
+
+    let (width, height) = size
+        .split_once('x')
+        .map(|(width, height)| {
+            (
+                width.trim().parse::<u64>().ok(),
+                height.trim().parse::<u64>().ok(),
+            )
+        })
+        .unwrap_or((None, None));
+
+    json!({
+        "x": x,
+        "y": y,
+        "selector": selector,
+        "width": width,
+        "height": height,
+    })
+}
+
 fn apply_live_search_diagnostics(summary: &mut Value) {
     let source = summary["liveSearchUrl"]
         .as_str()
@@ -3722,7 +5286,28 @@ fn apply_live_search_diagnostics(summary: &mut Value) {
         summary["liveSearchBlocked"] = Value::Bool(true);
         summary["liveSearchBlockReason"] =
             Value::String("submitted-without-query-verification".to_string());
+    } else if live_search_attempted(summary) && summary["liveSearch"].as_bool() != Some(true) {
+        summary["liveSearchBlocked"] = Value::Bool(true);
+        summary["liveSearchBlockReason"] = Value::String(
+            if lower.contains("google.") && lower.contains("/webhp") {
+                "input-not-submitted-no-query"
+            } else {
+                "input-not-submitted"
+            }
+            .to_string(),
+        );
     }
+}
+
+fn live_search_attempted(summary: &Value) -> bool {
+    summary
+        .get("liveSearchAttempts")
+        .and_then(Value::as_array)
+        .map(|attempts| !attempts.is_empty())
+        .unwrap_or(false)
+        || summary
+            .get("liveSearchDomTarget")
+            .is_some_and(|value| !value.is_null())
 }
 
 fn window_render_path_line(line: &str) -> Option<(String, String)> {
@@ -3942,12 +5527,23 @@ fn strip_ansi(input: &str) -> String {
 }
 
 fn run_browser_command(args: &[String]) -> Result<Output, String> {
+    run_browser_command_with_env(args, &[])
+}
+
+fn run_browser_command_with_env(
+    args: &[String],
+    envs: &[(String, String)],
+) -> Result<Output, String> {
     let runner = BrowserRunner::locate()?;
     match runner {
-        BrowserRunner::Binary(path) => Command::new(path)
-            .args(args)
-            .output()
-            .map_err(|error| error.to_string()),
+        BrowserRunner::Binary(path) => {
+            let mut command = Command::new(path);
+            command.args(args);
+            for (key, value) in envs {
+                command.env(key, value);
+            }
+            command.output().map_err(|error| error.to_string())
+        }
         BrowserRunner::Cargo { workspace } => {
             let mut cargo_args = vec![
                 "run".to_string(),
@@ -3958,11 +5554,12 @@ fn run_browser_command(args: &[String]) -> Result<Output, String> {
                 "--".to_string(),
             ];
             cargo_args.extend(args.iter().cloned());
-            Command::new("cargo")
-                .current_dir(workspace)
-                .args(cargo_args)
-                .output()
-                .map_err(|error| error.to_string())
+            let mut command = Command::new("cargo");
+            command.current_dir(workspace).args(cargo_args);
+            for (key, value) in envs {
+                command.env(key, value);
+            }
+            command.output().map_err(|error| error.to_string())
         }
     }
 }
@@ -4164,10 +5761,36 @@ fn record_audit(intent: &str, status: LogStatus, plan: Value) -> Result<(), Stri
 }
 
 fn browser_data_dir() -> PathBuf {
+    if let Ok(path) = env::var("SEXTANT_BROWSER_DATA_DIR") {
+        let path = path.trim();
+        if !path.is_empty() {
+            return PathBuf::from(path).join("browser");
+        }
+    }
     dirs::data_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("Sextant")
         .join("browser")
+}
+
+fn cleanup_isolated_profile(path: Option<&Path>) -> Value {
+    let Some(path) = path else {
+        return Value::Null;
+    };
+    match std::fs::remove_dir_all(path) {
+        Ok(()) => json!({
+            "removed": true,
+            "error": Value::Null,
+        }),
+        Err(_) if !path.exists() => json!({
+            "removed": true,
+            "error": Value::Null,
+        }),
+        Err(error) => json!({
+            "removed": false,
+            "error": error.to_string(),
+        }),
+    }
 }
 
 fn browser_guard_policy_path() -> PathBuf {
@@ -4191,7 +5814,13 @@ mod tests {
         assert!(names.contains(&"browser_capabilities"));
         assert!(names.contains(&"browser_authorized_intent_run"));
         assert!(names.contains(&"browser_direct_present_smoke"));
+        assert!(names.contains(&"browser_hosted_direct_smoke"));
+        assert!(names.contains(&"browser_local_appliance_cert_list"));
+        assert!(names.contains(&"browser_local_appliance_cert_forget"));
         assert!(names.contains(&"browser_render_path_baseline"));
+        assert!(names.contains(&"browser_direct_browsing_baseline"));
+        assert!(names.contains(&"browser_direct_viewport_baseline"));
+        assert!(names.contains(&"browser_direct_complexity_baseline"));
         assert!(names.contains(&"browser_guard_probe"));
         assert!(names.contains(&"browser_guard_policy_read"));
         assert!(names.contains(&"browser_guard_policy_write"));
@@ -4235,6 +5864,14 @@ mod tests {
         assert_eq!(
             window_smoke["inputSchema"]["properties"]["live_search_smoke"]["type"],
             "boolean"
+        );
+        assert_eq!(
+            window_smoke["inputSchema"]["properties"]["resource_audit"]["type"],
+            "boolean"
+        );
+        assert_eq!(
+            window_smoke["inputSchema"]["properties"]["viewport_width"]["type"],
+            "integer"
         );
     }
 
@@ -4375,6 +6012,16 @@ mod tests {
             "--load-smoke".to_string(),
             "--reload-smoke".to_string(),
             "--resize-smoke".to_string(),
+            "--resource-audit".to_string(),
+            "--viewport-width".to_string(),
+            "960".to_string(),
+            "--viewport-height".to_string(),
+            "620".to_string(),
+            "--allow-insecure-local-tls".to_string(),
+            "--local-appliance-cert-fingerprint".to_string(),
+            "aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99".to_string(),
+            "--remember-local-appliance-cert".to_string(),
+            "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff".to_string(),
         ];
         let arguments = browser_window_smoke_cli_arguments(&args).unwrap().unwrap();
 
@@ -4390,6 +6037,18 @@ mod tests {
         assert_eq!(arguments["load_smoke"], Value::Bool(true));
         assert_eq!(arguments["reload_smoke"], Value::Bool(true));
         assert_eq!(arguments["resize_smoke"], Value::Bool(true));
+        assert_eq!(arguments["resource_audit"], Value::Bool(true));
+        assert_eq!(arguments["viewport_width"], Value::from(960));
+        assert_eq!(arguments["viewport_height"], Value::from(620));
+        assert_eq!(arguments["allow_insecure_local_tls"], Value::Bool(true));
+        assert_eq!(
+            arguments["local_appliance_cert_fingerprint"],
+            "aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99"
+        );
+        assert_eq!(
+            arguments["remember_local_appliance_cert"],
+            "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+        );
         assert_eq!(arguments["timeout_seconds"], 30);
     }
 
@@ -4445,6 +6104,66 @@ mod tests {
     }
 
     #[test]
+    fn parses_hosted_direct_smoke_cli_arguments() {
+        let args = vec![
+            "sextant-mcp".to_string(),
+            "--hosted-direct-smoke".to_string(),
+            "https://example.com".to_string(),
+            "--mode".to_string(),
+            "incognito".to_string(),
+            "--allow-insecure-local-tls".to_string(),
+            "--local-appliance-cert-fingerprint".to_string(),
+            "5526c07eed59d052c7c48b7e8bdf1d3685b43e2b127de45e94abbdd2bcef8cb5".to_string(),
+            "--hosted-direct-smoke-cert-action".to_string(),
+            "once".to_string(),
+            "--hosted-direct-smoke-isolated-profile".to_string(),
+            "--timeout-seconds".to_string(),
+            "30".to_string(),
+        ];
+        let arguments = browser_hosted_direct_smoke_cli_arguments(&args)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(arguments["target"], "https://example.com");
+        assert_eq!(arguments["mode"], "incognito");
+        assert_eq!(arguments["allow_insecure_local_tls"], Value::Bool(true));
+        assert_eq!(
+            arguments["local_appliance_cert_fingerprint"],
+            "5526c07eed59d052c7c48b7e8bdf1d3685b43e2b127de45e94abbdd2bcef8cb5"
+        );
+        assert_eq!(arguments["certificate_action"], "once");
+        assert_eq!(arguments["isolated_profile"], Value::Bool(true));
+        assert_eq!(arguments["timeout_seconds"], 30);
+    }
+
+    #[test]
+    fn parses_local_appliance_cert_forget_cli_arguments() {
+        let args = vec![
+            "sextant-mcp".to_string(),
+            "--forget-local-appliance-cert".to_string(),
+            "https://192.0.2.130:8080/app/login".to_string(),
+        ];
+        let arguments = browser_local_appliance_cert_forget_cli_arguments(&args)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(arguments["target"], "https://192.0.2.130:8080/app/login");
+    }
+
+    #[test]
+    fn parses_local_appliance_cert_list_cli_arguments() {
+        let args = vec![
+            "sextant-mcp".to_string(),
+            "--list-local-appliance-certs".to_string(),
+        ];
+        let arguments = browser_local_appliance_cert_list_cli_arguments(&args)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(arguments, json!({}));
+    }
+
+    #[test]
     fn parses_render_path_baseline_cli_arguments() {
         let args = vec![
             "sextant-mcp".to_string(),
@@ -4459,6 +6178,98 @@ mod tests {
 
         assert_eq!(arguments["target"], "https://example.com");
         assert_eq!(arguments["timeout_seconds"], 30);
+    }
+
+    #[test]
+    fn parses_direct_browsing_baseline_cli_arguments() {
+        let args = vec![
+            "sextant-mcp".to_string(),
+            "--direct-browsing-baseline".to_string(),
+            "--simple-target".to_string(),
+            "https://example.com".to_string(),
+            "--complex-target".to_string(),
+            "https://duckduckgo.com/".to_string(),
+            "--appliance-target".to_string(),
+            "https://192.0.2.130:8080/app/login".to_string(),
+            "--search-target".to_string(),
+            "https://lite.duckduckgo.com/lite/".to_string(),
+            "--appliance-required".to_string(),
+            "--timeout-seconds".to_string(),
+            "45".to_string(),
+        ];
+        let arguments = browser_direct_browsing_baseline_cli_arguments(&args)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(arguments["simple_target"], "https://example.com");
+        assert_eq!(arguments["complex_target"], "https://duckduckgo.com/");
+        assert_eq!(
+            arguments["appliance_target"],
+            "https://192.0.2.130:8080/app/login"
+        );
+        assert_eq!(
+            arguments["search_target"],
+            "https://lite.duckduckgo.com/lite/"
+        );
+        assert_eq!(arguments["appliance_required"], Value::Bool(true));
+        assert_eq!(arguments["timeout_seconds"], 45);
+    }
+
+    #[test]
+    fn parses_direct_viewport_baseline_cli_arguments() {
+        let args = vec![
+            "sextant-mcp".to_string(),
+            "--direct-viewport-baseline".to_string(),
+            "--viewport-target".to_string(),
+            "https://duckduckgo.com/".to_string(),
+            "--timeout-seconds".to_string(),
+            "45".to_string(),
+        ];
+        let arguments = browser_direct_viewport_baseline_cli_arguments(&args)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(arguments["target"], "https://duckduckgo.com/");
+        assert_eq!(arguments["timeout_seconds"], 45);
+    }
+
+    #[test]
+    fn parses_direct_complexity_baseline_cli_arguments() {
+        let args = vec![
+            "sextant-mcp".to_string(),
+            "--direct-complexity-baseline".to_string(),
+            "--simple-target".to_string(),
+            "https://example.com".to_string(),
+            "--lite-target".to_string(),
+            "https://lite.duckduckgo.com/lite/".to_string(),
+            "--complex-target".to_string(),
+            "https://duckduckgo.com/".to_string(),
+            "--article-target".to_string(),
+            "https://developer.mozilla.org/en-US/docs/Web/HTML".to_string(),
+            "--viewport-width".to_string(),
+            "960".to_string(),
+            "--viewport-height".to_string(),
+            "620".to_string(),
+            "--timeout-seconds".to_string(),
+            "45".to_string(),
+        ];
+        let arguments = browser_direct_complexity_baseline_cli_arguments(&args)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(arguments["simple_target"], "https://example.com");
+        assert_eq!(
+            arguments["lite_target"],
+            "https://lite.duckduckgo.com/lite/"
+        );
+        assert_eq!(arguments["complex_target"], "https://duckduckgo.com/");
+        assert_eq!(
+            arguments["article_target"],
+            "https://developer.mozilla.org/en-US/docs/Web/HTML"
+        );
+        assert_eq!(arguments["viewport_width"], Value::from(960));
+        assert_eq!(arguments["viewport_height"], Value::from(620));
+        assert_eq!(arguments["timeout_seconds"], Value::from(45));
     }
 
     #[test]
@@ -4527,6 +6338,9 @@ mod tests {
         let direct_resize_smoke =
             json!({"mode": "direct", "render_path": "direct", "resize_smoke": true});
         let bridge_resize_smoke = json!({"mode": "direct", "resize_smoke": true});
+        let direct_resource_audit =
+            json!({"mode": "direct", "render_path": "direct", "resource_audit": true});
+        let bridge_resource_audit = json!({"mode": "direct", "resource_audit": true});
         let bridge_shell_interaction = json!({"mode": "direct", "shell_interaction": true});
         let assisted_showcase = json!({"mode": "assisted", "showcase": true});
         let observe_distill = json!({"mode": "observe", "user_distill": true});
@@ -4612,6 +6426,12 @@ mod tests {
             window_smoke_mode_boundary_error(&bridge_resize_smoke, Some("direct"))
                 .unwrap()
                 .contains("resize_smoke requires render_path 'direct'")
+        );
+        assert!(window_smoke_mode_boundary_error(&direct_resource_audit, Some("direct")).is_none());
+        assert!(
+            window_smoke_mode_boundary_error(&bridge_resource_audit, Some("direct"))
+                .unwrap()
+                .contains("resource_audit requires render_path 'direct'")
         );
         assert!(
             window_smoke_mode_boundary_error(&bridge_shell_interaction, Some("direct"))
@@ -4722,6 +6542,7 @@ mod tests {
             "[window-smoke] ephemeral browser data dir C:\\Temp\\sextant-browser-incognito-123".to_string(),
             "[window-smoke] direct Servo config dir C:\\Temp\\sextant-browser-incognito-123".to_string(),
             "[window-smoke] direct Servo http cache disabled true".to_string(),
+            "[window-smoke] direct viewport 960x620".to_string(),
             "[window-smoke] visible shell draw passed in 38ms".to_string(),
             "[window-smoke] startup/navigation work 414ms".to_string(),
             "[window-smoke] draw cost total 30ms | frame blit 9ms | present 0ms".to_string(),
@@ -4742,6 +6563,9 @@ mod tests {
             "[window-smoke] live search url https://en.wikipedia.org/wiki/Sextant".to_string(),
             "[window-smoke] live search title Sextant - Wikipedia".to_string(),
             "[window-direct] live search attempt keyboard focus".to_string(),
+            "[window-direct] live search attempt dom search box click".to_string(),
+            "[window-direct] live search dom search box target x=517 y=306 selector textarea[name=\"q\"] size 446x38".to_string(),
+            "[window-direct] live search dom form target url https://www.google.com/search?q=Sextant".to_string(),
             "[window-direct] live search attempt center click".to_string(),
             "[window-direct] timed out after 75.0s during scripted smoke (last title Some(\"https://www.google.com/search?q=northern+lights&sei=abc\"))".to_string(),
             "[window-smoke] location frame 22ms".to_string(),
@@ -4755,6 +6579,10 @@ mod tests {
             "[window-smoke] load complete 15ms".to_string(),
             "[window-smoke] load url https://example.com/".to_string(),
             "[window-smoke] load title Example Domain".to_string(),
+            "[window-smoke] certificate fingerprint sha256 5526c07eed59d052c7c48b7e8bdf1d3685b43e2b127de45e94abbdd2bcef8cb5".to_string(),
+            "[window-smoke] appliance certificate remembered true".to_string(),
+            "[window-smoke] appliance certificate remember error denied".to_string(),
+            "[window-smoke] resource audit {\"imageCount\":12,\"brokenImages\":[\"missing.png\"],\"inlineSvgCount\":9,\"zeroSizeSvgCount\":2,\"stylesheetCount\":4,\"stylesheetRuleCount\":88,\"inaccessibleStylesheetCount\":1,\"scriptCount\":7,\"moduleScriptCount\":2,\"asyncScriptCount\":3,\"deferScriptCount\":1,\"canvasCount\":1,\"elementCount\":140,\"interactiveElementCount\":91,\"fixedElementCount\":2,\"stickyElementCount\":1,\"transformedElementCount\":6,\"filteredElementCount\":1,\"boxShadowedElementCount\":8,\"translucentElementCount\":4,\"resourceSummary\":{\"count\":24,\"transferSize\":12000,\"decodedBodySize\":34000,\"duration\":456,\"byInitiator\":{\"script\":7,\"img\":12}}}".to_string(),
             "[window-smoke] reload frame 16ms".to_string(),
             "[window-smoke] reload url https://example.com/".to_string(),
             "[window-smoke] reload title Example Domain".to_string(),
@@ -4768,6 +6596,10 @@ mod tests {
             "[window-smoke] latest Servo frame 776x292 (226592 pixels)".to_string(),
             "[window-smoke] first direct present in 149ms".to_string(),
             "[window-smoke] first Servo frame in 950ms".to_string(),
+            "[window-direct] slow direct frame 1 phase=loading total=345ms spin=2ms paint=340ms present=3ms".to_string(),
+            "[window-smoke] direct frame timing frames=8 slow=2".to_string(),
+            "[window-smoke] max direct frame total=1.3s spin=4ms paint=1.2s present=20ms"
+                .to_string(),
         ];
 
         let summary = window_smoke_summary(&report);
@@ -4790,6 +6622,8 @@ mod tests {
             "C:\\Temp\\sextant-browser-incognito-123"
         );
         assert_eq!(summary["servoHttpCacheDisabled"], Value::Bool(true));
+        assert_eq!(summary["viewportWidth"], Value::from(960));
+        assert_eq!(summary["viewportHeight"], Value::from(620));
         assert_eq!(summary["firstDrawMs"], Value::from(38));
         assert_eq!(summary["startupWorkMs"], Value::from(414));
         assert_eq!(summary["drawTotalMs"], Value::from(30));
@@ -4823,7 +6657,20 @@ mod tests {
         );
         assert_eq!(summary["liveSearchTitle"], "Sextant - Wikipedia");
         assert_eq!(summary["liveSearchAttempts"][0], "keyboard focus");
-        assert_eq!(summary["liveSearchAttempts"][1], "center click");
+        assert_eq!(summary["liveSearchAttempts"][1], "dom search box click");
+        assert_eq!(summary["liveSearchAttempts"][2], "center click");
+        assert_eq!(summary["liveSearchDomTarget"]["x"], Value::from(517));
+        assert_eq!(summary["liveSearchDomTarget"]["y"], Value::from(306));
+        assert_eq!(
+            summary["liveSearchDomTarget"]["selector"],
+            "textarea[name=\"q\"]"
+        );
+        assert_eq!(summary["liveSearchDomTarget"]["width"], Value::from(446));
+        assert_eq!(summary["liveSearchDomTarget"]["height"], Value::from(38));
+        assert_eq!(
+            summary["liveSearchDomFormTargetUrl"],
+            "https://www.google.com/search?q=Sextant"
+        );
         assert_eq!(summary["timeoutPhase"], "scripted smoke");
         assert_eq!(
             summary["timeoutTitle"],
@@ -4840,6 +6687,41 @@ mod tests {
         assert_eq!(summary["loadCompleteMs"], Value::from(15));
         assert_eq!(summary["loadUrl"], "https://example.com/");
         assert_eq!(summary["loadTitle"], "Example Domain");
+        assert_eq!(
+            summary["certificateFingerprintSha256"],
+            "5526c07eed59d052c7c48b7e8bdf1d3685b43e2b127de45e94abbdd2bcef8cb5"
+        );
+        assert_eq!(summary["applianceCertificateRemembered"], Value::Bool(true));
+        assert_eq!(summary["applianceCertificateRememberError"], "denied");
+        assert_eq!(summary["resourceAudit"]["imageCount"], Value::from(12));
+        assert_eq!(
+            summary["resourceAuditSummary"]["brokenImageCount"],
+            Value::from(1)
+        );
+        assert_eq!(
+            summary["resourceAuditSummary"]["zeroSizeSvgCount"],
+            Value::from(2)
+        );
+        assert_eq!(
+            summary["resourceAuditSummary"]["elementCount"],
+            Value::from(140)
+        );
+        assert_eq!(
+            summary["resourceAuditSummary"]["interactiveElementCount"],
+            Value::from(91)
+        );
+        assert_eq!(
+            summary["resourceAuditSummary"]["stylesheetRuleCount"],
+            Value::from(88)
+        );
+        assert_eq!(
+            summary["resourceAuditSummary"]["resourceTransferSize"],
+            Value::from(12000)
+        );
+        assert_eq!(
+            summary["resourceAuditSummary"]["resourceByInitiator"]["script"],
+            Value::from(7)
+        );
         assert_eq!(summary["reloadFrameMs"], Value::from(16));
         assert_eq!(summary["reloadUrl"], "https://example.com/");
         assert_eq!(summary["reloadTitle"], "Example Domain");
@@ -4869,12 +6751,20 @@ mod tests {
         assert_eq!(summary["latestFramePixels"], Value::from(226592));
         assert_eq!(summary["directPresentMs"], Value::from(149));
         assert_eq!(summary["firstFrameMs"], Value::from(950));
+        assert_eq!(summary["directFrameCount"], Value::from(8));
+        assert_eq!(summary["directSlowFrameCount"], Value::from(2));
+        assert_eq!(summary["directSlowFrames"][0]["index"], Value::from(1));
+        assert_eq!(summary["directSlowFrames"][0]["phase"], "loading");
+        assert_eq!(summary["directSlowFrames"][0]["paintMs"], Value::from(340));
+        assert_eq!(summary["maxDirectFrameMs"], Value::from(1300));
+        assert_eq!(summary["maxDirectPaintMs"], Value::from(1200));
     }
 
     #[test]
     fn parses_live_search_submitted_without_verification() {
         let report = vec![
             "[window-direct] live search attempt keyboard focus".to_string(),
+            "[window-direct] live search attempt dom search box click".to_string(),
             "[window-direct] live search attempt keyboard focus sweep".to_string(),
             "[window-direct] live search attempt center click".to_string(),
             "[window-direct] timed out after 45.0s during scripted smoke (last title Some(\"Google\"), last url Some(\"https://www.google.com/search?q=northern+lights&sei=abc\"))".to_string(),
@@ -4883,8 +6773,9 @@ mod tests {
         let summary = window_smoke_summary(&report);
 
         assert_eq!(summary["liveSearchAttempts"][0], "keyboard focus");
-        assert_eq!(summary["liveSearchAttempts"][1], "keyboard focus sweep");
-        assert_eq!(summary["liveSearchAttempts"][2], "center click");
+        assert_eq!(summary["liveSearchAttempts"][1], "dom search box click");
+        assert_eq!(summary["liveSearchAttempts"][2], "keyboard focus sweep");
+        assert_eq!(summary["liveSearchAttempts"][3], "center click");
         assert_eq!(summary["liveSearchSubmitted"], Value::Bool(true));
         assert_eq!(
             summary["liveSearchSubmittedUrl"],
@@ -4902,6 +6793,47 @@ mod tests {
     }
 
     #[test]
+    fn diagnoses_live_search_input_not_submitted() {
+        let report = vec![
+            "[window-direct] live search attempt keyboard focus".to_string(),
+            "[window-direct] live search attempt dom search box click".to_string(),
+            "[window-direct] live search dom search box target x=560 y=172 selector textarea[name=\"q\"] size 835x22".to_string(),
+            "[window-direct] live search attempt search box click".to_string(),
+            "[window-direct] timed out after 75.0s during scripted smoke (last title Some(\"Google\"), last url Some(\"https://www.google.com/webhp?source=hp&ei=abc\"))".to_string(),
+        ];
+
+        let summary = window_smoke_summary(&report);
+
+        assert_eq!(summary["liveSearchBlocked"], Value::Bool(true));
+        assert_eq!(
+            summary["liveSearchBlockReason"],
+            "input-not-submitted-no-query"
+        );
+        assert_eq!(summary["liveSearchDomTarget"]["x"], Value::from(560));
+        assert_eq!(summary["liveSearchDomTarget"]["width"], Value::from(835));
+    }
+
+    #[test]
+    fn diagnoses_live_search_input_not_submitted_on_home_page() {
+        let report = vec![
+            "[window-direct] live search attempt keyboard focus".to_string(),
+            "[window-direct] live search attempt dom search box click".to_string(),
+            "[window-direct] live search dom search box target x=560 y=172 selector textarea[name=\"q\"] size 835x22".to_string(),
+            "[window-direct] timed out after 75.0s during scripted smoke (last title Some(\"Search - Microsoft Bing\"), last url Some(\"https://www.bing.com/\"))".to_string(),
+        ];
+
+        let summary = window_smoke_summary(&report);
+
+        assert_eq!(summary["liveSearchBlocked"], Value::Bool(true));
+        assert_eq!(summary["liveSearchBlockReason"], "input-not-submitted");
+        assert_eq!(
+            summary["liveSearchDomTarget"]["selector"],
+            "textarea[name=\"q\"]"
+        );
+        assert_eq!(summary["timeoutUrl"], "https://www.bing.com/");
+    }
+
+    #[test]
     fn parses_direct_present_summary() {
         let output = "[servo-direct] opening https://example.com/ with Servo WindowRenderingContext\nnoise\n[servo-direct] first direct present in 127ms";
         let report = direct_present_report_lines(output);
@@ -4912,6 +6844,61 @@ mod tests {
         assert_eq!(summary["firstPresentMs"], Value::from(127));
         assert_eq!(summary["frameReadback"], Value::Bool(false));
         assert_eq!(summary["productionIntegrated"], Value::Bool(false));
+    }
+
+    #[test]
+    fn parses_hosted_direct_smoke_summary() {
+        let output = "\
+[hosted-direct-smoke] parent shell ready
+[hosted-direct-smoke] child pid 4242
+[hosted-direct-smoke] first direct present 112ms
+[hosted-direct-smoke] active url https://example.com/
+[hosted-direct-smoke] certificate action once requested
+[hosted-direct-smoke] certificate action once child relaunched
+[hosted-direct-smoke] certificate action once completed
+[hosted-direct-smoke] certificate fingerprint sha256 5526c07eed59d052c7c48b7e8bdf1d3685b43e2b127de45e94abbdd2bcef8cb5";
+        let summary = hosted_direct_smoke_summary(output);
+
+        assert_eq!(summary["parentShellReady"], Value::Bool(true));
+        assert_eq!(summary["childPid"], Value::from(4242));
+        assert_eq!(summary["firstPresentMs"], Value::from(112));
+        assert_eq!(summary["activeUrl"], "https://example.com/");
+        assert_eq!(
+            summary["certificateFingerprintSha256"],
+            "5526c07eed59d052c7c48b7e8bdf1d3685b43e2b127de45e94abbdd2bcef8cb5"
+        );
+        assert_eq!(summary["certificateAction"], "once");
+        assert_eq!(summary["certificateActionRequested"], Value::Bool(true));
+        assert_eq!(summary["certificateActionRelaunched"], Value::Bool(true));
+        assert_eq!(summary["certificateActionCompleted"], Value::Bool(true));
+    }
+
+    #[test]
+    fn parses_local_appliance_cert_forget_result() {
+        let changed = local_appliance_cert_forget_changed(
+            "[sextant-browser] local appliance certificate trust forget https://192.0.2.130:8080/app/login changed true",
+        );
+        let unchanged = local_appliance_cert_forget_changed(
+            "[sextant-browser] local appliance certificate trust forget all changed false",
+        );
+
+        assert_eq!(changed, Value::Bool(true));
+        assert_eq!(unchanged, Value::Bool(false));
+        assert_eq!(local_appliance_cert_forget_changed("noise"), Value::Null);
+    }
+
+    #[test]
+    fn parses_local_appliance_cert_list_result() {
+        let summary = local_appliance_cert_list_payload(
+            r#"[sextant-browser] local appliance certificate trust list {"path":"C:\\Users\\Paul\\AppData\\Roaming\\Sextant\\browser\\appliance-cert-trust.json","count":1,"entries":[{"origin":"https://192.0.2.130:8080","fingerprint_sha256":"5526c07eed59d052c7c48b7e8bdf1d3685b43e2b127de45e94abbdd2bcef8cb5","label":"192.0.2.130","created_at":"2026-05-30T00:00:00Z"}]}"#,
+        );
+
+        assert_eq!(summary["count"], Value::from(1));
+        assert_eq!(summary["entries"][0]["origin"], "https://192.0.2.130:8080");
+        assert_eq!(
+            summary["entries"][0]["fingerprint_sha256"],
+            "5526c07eed59d052c7c48b7e8bdf1d3685b43e2b127de45e94abbdd2bcef8cb5"
+        );
     }
 
     #[test]

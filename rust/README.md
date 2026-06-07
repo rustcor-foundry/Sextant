@@ -26,5 +26,18 @@ To build the native browser on your local machine:
     cargo run -p sextant-hull
     ```
 
-## Note on Web Preview
-The web preview in AI Studio continues to run the **TypeScript Simulator** to provide an interactive experience. The Rust code here is for the production native binary.
+## Product Path
+
+The Rust workspace is the product path. The older TypeScript simulator/web preview has been removed.
+
+## Servo Patch Helper
+
+Sextant currently carries one local Servo checkout patch for the Bing `NodeList` live-search panic. The patch is stored in `../docs/patches/servo-nodelist-bing-panic.patch`.
+
+After a fresh Cargo Servo checkout, or whenever `Cargo.lock` moves Servo to a new revision, run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\apply-servo-patches.ps1
+```
+
+Use `-CheckOnly` to verify whether the patch is already applied. The helper cleans `servo-script` by default after applying so the next browser build uses the patched source.

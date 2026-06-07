@@ -25,7 +25,7 @@ Use that repository as the canonical shared source of truth.
 ### Native Product Path
 
 - [rust/Cargo.toml](../rust/Cargo.toml) — Rust workspace root
-- [rust/sextant-hull/src/browser.rs](../rust/sextant-hull/src/browser.rs) — active native browser shell, direct drawing, address input, browser/Wake/Log/Guard/Sense/Perf/Validation views, Servo frame display, and viewport input forwarding
+- [rust/sextant-hull/src/browser.rs](../rust/sextant-hull/src/browser.rs) — active native browser shell, direct drawing, address input, browser/Wake/Log/Guard/Sense/Perf/Validation views, local appliance certificate trust settings, Servo frame display, and viewport input forwarding
 - [rust/sextant-firewall/src/lib.rs](../rust/sextant-firewall/src/lib.rs) — persona firewall rules, global blocklist, and JSON policy overlays used by the browser GUARD surface
 - [rust/sextant-hull/src/lite.rs](../rust/sextant-hull/src/lite.rs) — compatibility wrapper for the old `sextant-hull-lite` bin alias
 - [rust/sextant-hull/src/main.rs](../rust/sextant-hull/src/main.rs) — parked Xilem app startup and composition root
@@ -38,12 +38,6 @@ Use that repository as the canonical shared source of truth.
 - [rust/sextant-wake/src/lib.rs](../rust/sextant-wake/src/lib.rs) — Digital Wake search/record/consolidation
 - [rust/sextant-vault/src/lib.rs](../rust/sextant-vault/src/lib.rs) — personas, identities, secrets, consent signing
 - [rust/sextant-log/src/lib.rs](../rust/sextant-log/src/lib.rs) — Captain's Log persistence
-
-### Prototype / Legacy Reference Surface
-
-- [src/App.tsx](../src/App.tsx) — TypeScript simulator shell
-- [src/services/geminiService.ts](../src/services/geminiService.ts) — simulator Gemini integration
-- [src/services/webLLMService.ts](../src/services/webLLMService.ts) — simulator local inference stub
 
 ## Where To Make Changes
 
@@ -61,33 +55,6 @@ This includes:
 - Wake and Log persistence
 - provider configuration
 - consent and audit behavior
-
-### If The Task Is About Legacy Prototype Behavior
-
-Make changes in the TypeScript app.
-
-This includes:
-
-- simulator UI-only experiments
-- old Gemini demo surface
-- prototype interaction references
-
-The TypeScript app is not the production target.
-
-## Relationship Between The Two Surfaces
-
-Use the TypeScript simulator for:
-
-- visual reference
-- old interaction ideas
-- quick prototype behavior comparison
-
-Use the Rust hull for:
-
-- real product work
-- truthful system state
-- persisted memory and audit
-- actual command orchestration
 
 ## Archive Relationship
 

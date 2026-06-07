@@ -1,4 +1,6 @@
 use chrono::Utc;
+#[cfg(any(feature = "xilem-shell", feature = "servo-backend"))]
+use serde::{Deserialize, Serialize};
 #[cfg(feature = "xilem-shell")]
 use sextant_airgap::SextantAirGap;
 use sextant_engine::{
@@ -19,38 +21,64 @@ use sextant_wake::{DigitalWake, WakeEntry};
 use softbuffer::{Context, Surface};
 use std::collections::VecDeque;
 use std::env;
+use std::io::{Read, Seek, SeekFrom, Write};
+#[cfg(any(feature = "xilem-shell", feature = "servo-backend", test))]
+use std::net::IpAddr;
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
+use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 use url::Url;
 use uuid::Uuid;
 use winit::dpi::PhysicalSize;
 use winit::event::{ElementState, Event, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
+use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::window::{Icon, Window, WindowBuilder};
+
+#[cfg(all(target_os = "windows", feature = "servo-backend"))]
+use windows_sys::Win32::{
+    Foundation::{HWND, LPARAM},
+    UI::{
+        Input::KeyboardAndMouse::{SetActiveWindow, SetFocus},
+        WindowsAndMessaging::{
+            BringWindowToTop, EnumChildWindows, GetWindowThreadProcessId, SetForegroundWindow,
+            SetWindowPos, SWP_NOACTIVATE, SWP_NOZORDER,
+        },
+    },
+};
 
 #[cfg(feature = "servo-backend")]
 mod direct_servo;
 
 const BG: u32 = 0x0010161d;
+#[cfg(any(feature = "xilem-shell", feature = "servo-backend"))]
+const APPLIANCE_CERT_TRUST_FILE: &str = "appliance-cert-trust.json";
+const GUARD_CERT_SECTION_Y: u32 = 250;
+#[cfg(any(feature = "xilem-shell", feature = "servo-backend"))]
+const GUARD_CERT_ROW_H: u32 = 42;
 const PANEL: u32 = 0x0019232c;
 const PANEL_ALT: u32 = 0x00202b35;
 const PANEL_DARK: u32 = 0x000b1016;
+const PANEL_HEADER: u32 = 0x00131d26;
+const PANEL_SOFT: u32 = 0x00162028;
 const FIELD: u32 = 0x000d1319;
 const FIELD_FOCUS: u32 = 0x00172229;
-const BUTTON_IDLE: u32 = 0x00345668;
 const BUTTON_HOVER: u32 = 0x004a7488;
 const BUTTON_BRIGHT: u32 = 0x000ec7e8;
 const BUTTON_ACTIVE: u32 = 0x002fbf71;
 const BUTTON_DISABLED: u32 = 0x00212a32;
 const TEXT: u32 = 0x00dce7ef;
 const TEXT_DIM: u32 = 0x0093a4b0;
+const TEXT_SOFT: u32 = 0x00b8c6d2;
+const TEXT_PLACEHOLDER: u32 = 0x006f7f8a;
 const STATUS_OK: u32 = 0x002fbf71;
 const STATUS_WARN: u32 = 0x00d9a441;
 const BORDER: u32 = 0x00313d48;
+const BORDER_SOFT: u32 = 0x0024333d;
 const RAIL_WIDTH: u32 = 320;
 const STATUS_BAR_H: u32 = 30;
 const CHROME_H: u32 = 54;
@@ -79,6 +107,12 @@ const PERF_HISTORY_LIMIT: usize = 24;
 const OPERATOR_DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
 const WINDOW_SMOKE_DEFAULT_TIMEOUT: Duration = Duration::from_secs(15);
 const DIRECT_INCOGNITO_CLEANUP_ARG: &str = "--cleanup-direct-incognito";
+const HOSTED_DIRECT_CHROME_H: u32 = 72;
+const HOSTED_DIRECT_LOG_DIR: &str = "hosted-direct-logs";
+const HOSTED_DIRECT_SUMMARY_REFRESH: Duration = Duration::from_millis(750);
+const HOSTED_DIRECT_DEBUG_TELEMETRY: bool = false;
+const HOSTED_DIRECT_LOG_HEAD_BYTES: u64 = 64 * 1024;
+const HOSTED_DIRECT_LOG_TAIL_BYTES: u64 = 256 * 1024;
 
 #[derive(Clone, Copy, Debug)]
 struct Rect {
@@ -273,6 +307,16 @@ impl BrowserMode {
             },
         }
     }
+
+    fn cli_arg(self) -> &'static str {
+        match self {
+            BrowserMode::Agent => "agent",
+            BrowserMode::Assisted => "assisted",
+            BrowserMode::Observe => "observe",
+            BrowserMode::Direct => "direct",
+            BrowserMode::Incognito => "incognito",
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -335,6 +379,7 @@ struct WindowSmokeSpec {
     live_search_smoke: bool,
     load_smoke: bool,
     resize_smoke: bool,
+    allow_insecure_local_tls: bool,
 }
 
 #[derive(Clone)]
@@ -1053,6 +1098,11 @@ struct BrowserApp {
     window_size: PhysicalSize<u32>,
     wake_results: Vec<WakeEntry>,
     recent_logs: Vec<LogEntry>,
+    #[cfg(any(feature = "xilem-shell", feature = "servo-backend"))]
+    appliance_cert_entries: Vec<ApplianceCertTrustEntry>,
+    #[cfg(any(feature = "xilem-shell", feature = "servo-backend"))]
+    selected_appliance_cert: Option<usize>,
+    appliance_cert_status: String,
     page_scroll: i32,
     main_view: MainView,
     latest_frame: Option<RenderedFrame>,
@@ -1083,6 +1133,8 @@ impl BrowserApp {
         #[cfg(feature = "xilem-shell")]
         let (guard_firewall, guard_policy_source) = load_browser_guard_firewall(&data_dir)?;
         let persistence_lane = PersistenceLane::new(&data_dir)?;
+        #[cfg(any(feature = "xilem-shell", feature = "servo-backend"))]
+        let appliance_cert_entries = ApplianceCertTrustStore::load(&profile_data_dir)?.entries;
         let mut app = Self {
             engine: SextantEngine::new(),
             wake: DigitalWake::open(data_dir.join("wake.db")).map_err(|e| e.to_string())?,
@@ -1219,6 +1271,11 @@ impl BrowserApp {
             window_size: PhysicalSize::new(1180, 760),
             wake_results: Vec::new(),
             recent_logs: Vec::new(),
+            #[cfg(any(feature = "xilem-shell", feature = "servo-backend"))]
+            appliance_cert_entries,
+            #[cfg(any(feature = "xilem-shell", feature = "servo-backend"))]
+            selected_appliance_cert: None,
+            appliance_cert_status: "Local appliance trust store ready.".to_string(),
             page_scroll: 0,
             main_view: MainView::Browser,
             latest_frame: None,
@@ -1420,12 +1477,6 @@ impl BrowserApp {
         let margin = 24;
         let gap = 8;
         let button_h = 30;
-        self.address_rect = Rect {
-            x: 112,
-            y: 12,
-            w: main_right.saturating_sub(224),
-            h: button_h,
-        };
         self.wake_rect = Rect {
             x: rail_x + 20,
             y: size.height.max(1).saturating_sub(STATUS_BAR_H + 66),
@@ -1496,6 +1547,16 @@ impl BrowserApp {
             });
             mode_x = mode_x.saturating_add(label_w + 6);
         }
+        let address_right = main_right.saturating_sub(86);
+        let min_address_w = 180;
+        let max_address_x = address_right.saturating_sub(min_address_w).max(112);
+        let address_x = mode_x.saturating_add(8).max(112).min(max_address_x);
+        self.address_rect = Rect {
+            x: address_x,
+            y: 12,
+            w: address_right.saturating_sub(address_x).max(min_address_w),
+            h: button_h,
+        };
         let main_panel = main_panel_rect(rail_x, size.height.max(1));
         self.browser_viewport_rect = browser_viewport_rect(main_panel);
         if self.latest_frame.is_some() {
@@ -1845,6 +1906,10 @@ impl BrowserApp {
             return;
         }
 
+        if self.main_view == MainView::Guard && self.handle_guard_panel_click(x, y) {
+            return;
+        }
+
         let Some(action) = self
             .buttons
             .iter()
@@ -1865,6 +1930,38 @@ impl BrowserApp {
         }
 
         self.run_action(action);
+    }
+
+    fn handle_guard_panel_click(&mut self, x: f64, y: f64) -> bool {
+        let panel = main_panel_rect(
+            right_rail_x(self.window_size.width.max(1)),
+            self.window_size.height.max(1),
+        );
+        if guard_appliance_refresh_rect(panel).contains(x, y) {
+            self.refresh_appliance_cert_trust();
+            return true;
+        }
+        if guard_appliance_forget_rect(panel).contains(x, y) {
+            self.forget_selected_appliance_cert();
+            return true;
+        }
+        #[cfg(any(feature = "xilem-shell", feature = "servo-backend"))]
+        {
+            for (index, rect) in guard_appliance_row_rects(panel, self.appliance_cert_entries.len())
+            {
+                if rect.contains(x, y) {
+                    self.selected_appliance_cert = Some(index);
+                    if let Some(entry) = self.appliance_cert_entries.get(index) {
+                        self.last_status =
+                            format!("Selected appliance certificate trust for {}.", entry.origin);
+                        self.appliance_cert_status = self.last_status.clone();
+                        self.last_ok = true;
+                    }
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     fn wake_input_hit_rect(&self) -> Rect {
@@ -2340,6 +2437,103 @@ impl BrowserApp {
         self.validation = ValidationState::default();
         self.last_status = "Validation session reset. Runtime state is unchanged.".to_string();
         self.last_ok = true;
+    }
+
+    #[cfg(any(feature = "xilem-shell", feature = "servo-backend"))]
+    fn refresh_appliance_cert_trust(&mut self) {
+        match ApplianceCertTrustStore::load(&self.profile_data_dir) {
+            Ok(store) => {
+                self.appliance_cert_entries = store.entries;
+                if let Some(selected) = self.selected_appliance_cert {
+                    if selected >= self.appliance_cert_entries.len() {
+                        self.selected_appliance_cert =
+                            self.appliance_cert_entries.len().checked_sub(1);
+                    }
+                }
+                self.appliance_cert_status = format!(
+                    "Loaded {} local appliance certificate trust entr{}.",
+                    self.appliance_cert_entries.len(),
+                    if self.appliance_cert_entries.len() == 1 {
+                        "y"
+                    } else {
+                        "ies"
+                    }
+                );
+                self.last_status = self.appliance_cert_status.clone();
+                self.last_ok = true;
+            }
+            Err(error) => {
+                self.appliance_cert_status = format!("Failed to load appliance trust: {error}");
+                self.last_status = self.appliance_cert_status.clone();
+                self.last_ok = false;
+                self.validation.error_seen = true;
+            }
+        }
+    }
+
+    #[cfg(not(any(feature = "xilem-shell", feature = "servo-backend")))]
+    fn refresh_appliance_cert_trust(&mut self) {
+        self.appliance_cert_status =
+            "Local appliance trust storage is unavailable in this build.".to_string();
+        self.last_status = self.appliance_cert_status.clone();
+        self.last_ok = false;
+    }
+
+    #[cfg(any(feature = "xilem-shell", feature = "servo-backend"))]
+    fn forget_selected_appliance_cert(&mut self) {
+        let Some(selected) = self.selected_appliance_cert else {
+            self.last_status = "Select a trusted appliance before forgetting it.".to_string();
+            self.last_ok = false;
+            return;
+        };
+        let Some(entry) = self.appliance_cert_entries.get(selected).cloned() else {
+            self.selected_appliance_cert = None;
+            self.last_status = "Selected appliance trust entry is no longer available.".to_string();
+            self.last_ok = false;
+            return;
+        };
+        let target = match Url::parse(&entry.origin) {
+            Ok(target) => target,
+            Err(error) => {
+                self.last_status = format!("Trusted appliance origin is invalid: {error}");
+                self.last_ok = false;
+                self.validation.error_seen = true;
+                return;
+            }
+        };
+        match ApplianceCertTrustStore::load(&self.profile_data_dir).and_then(|mut store| {
+            let changed = store.forget(&target)?;
+            store.save(&self.profile_data_dir)?;
+            Ok(changed)
+        }) {
+            Ok(changed) => {
+                self.refresh_appliance_cert_trust();
+                self.last_status = if changed {
+                    format!(
+                        "Forgot local appliance certificate trust for {}.",
+                        entry.origin
+                    )
+                } else {
+                    format!("No stored certificate trust found for {}.", entry.origin)
+                };
+                self.appliance_cert_status = self.last_status.clone();
+                self.last_ok = true;
+            }
+            Err(error) => {
+                self.last_status = format!("Failed to forget appliance trust: {error}");
+                self.appliance_cert_status = self.last_status.clone();
+                self.last_ok = false;
+                self.validation.error_seen = true;
+            }
+        }
+    }
+
+    #[cfg(not(any(feature = "xilem-shell", feature = "servo-backend")))]
+    fn forget_selected_appliance_cert(&mut self) {
+        self.appliance_cert_status =
+            "Local appliance trust storage is unavailable in this build.".to_string();
+        self.last_status = self.appliance_cert_status.clone();
+        self.last_ok = false;
     }
 
     fn run_showcase_visible(&mut self) {
@@ -4800,9 +4994,215 @@ impl BrowserApp {
 }
 
 fn app_data_dir() -> PathBuf {
+    if let Ok(path) = env::var("SEXTANT_BROWSER_DATA_DIR") {
+        let path = path.trim();
+        if !path.is_empty() {
+            return PathBuf::from(path);
+        }
+    }
     dirs::data_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("Sextant")
+}
+
+#[cfg(any(feature = "xilem-shell", feature = "servo-backend"))]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct ApplianceCertTrustEntry {
+    origin: String,
+    fingerprint_sha256: String,
+    label: Option<String>,
+    created_at: String,
+}
+
+#[cfg(any(feature = "xilem-shell", feature = "servo-backend"))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ApplianceCertTrustStore {
+    version: u32,
+    entries: Vec<ApplianceCertTrustEntry>,
+}
+
+#[cfg(any(feature = "xilem-shell", feature = "servo-backend"))]
+impl Default for ApplianceCertTrustStore {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            entries: Vec::new(),
+        }
+    }
+}
+
+#[cfg(any(feature = "xilem-shell", feature = "servo-backend"))]
+impl ApplianceCertTrustStore {
+    fn load(data_dir: &Path) -> Result<Self, String> {
+        let path = appliance_cert_trust_path(data_dir);
+        if !path.exists() {
+            return Ok(Self::default());
+        }
+        let contents = std::fs::read_to_string(&path)
+            .map_err(|error| format!("failed to read {}: {}", path.display(), error))?;
+        let mut store: Self = serde_json::from_str(&contents)
+            .map_err(|error| format!("failed to parse {}: {}", path.display(), error))?;
+        store.entries.retain(|entry| {
+            normalize_certificate_fingerprint(&entry.fingerprint_sha256).is_ok()
+                && !entry.origin.trim().is_empty()
+        });
+        Ok(store)
+    }
+
+    fn save(&self, data_dir: &Path) -> Result<(), String> {
+        std::fs::create_dir_all(data_dir).map_err(|error| error.to_string())?;
+        let path = appliance_cert_trust_path(data_dir);
+        let contents = serde_json::to_string_pretty(self)
+            .map_err(|error| format!("failed to encode {}: {}", path.display(), error))?;
+        std::fs::write(&path, contents)
+            .map_err(|error| format!("failed to write {}: {}", path.display(), error))
+    }
+
+    fn remember(
+        &mut self,
+        target: &Url,
+        fingerprint_sha256: &str,
+        label: Option<String>,
+    ) -> Result<(), String> {
+        let origin = appliance_origin(target)?;
+        let fingerprint_sha256 = normalize_certificate_fingerprint(fingerprint_sha256)?;
+        if let Some(entry) = self.entries.iter_mut().find(|entry| entry.origin == origin) {
+            entry.fingerprint_sha256 = fingerprint_sha256;
+            entry.label = label;
+            entry.created_at = Utc::now().to_rfc3339();
+            return Ok(());
+        }
+        self.entries.push(ApplianceCertTrustEntry {
+            origin,
+            fingerprint_sha256,
+            label,
+            created_at: Utc::now().to_rfc3339(),
+        });
+        Ok(())
+    }
+
+    fn is_trusted(&self, target: &Url, fingerprint_sha256: &str) -> Result<bool, String> {
+        let origin = appliance_origin(target)?;
+        let fingerprint_sha256 = normalize_certificate_fingerprint(fingerprint_sha256)?;
+        Ok(self
+            .entries
+            .iter()
+            .any(|entry| entry.origin == origin && entry.fingerprint_sha256 == fingerprint_sha256))
+    }
+
+    fn forget(&mut self, target: &Url) -> Result<bool, String> {
+        let origin = appliance_origin(target)?;
+        let before = self.entries.len();
+        self.entries.retain(|entry| entry.origin != origin);
+        Ok(self.entries.len() != before)
+    }
+
+    fn clear(&mut self) -> bool {
+        let had_entries = !self.entries.is_empty();
+        self.entries.clear();
+        had_entries
+    }
+}
+
+#[cfg(any(feature = "xilem-shell", feature = "servo-backend"))]
+fn appliance_cert_trust_path(data_dir: &Path) -> PathBuf {
+    data_dir.join(APPLIANCE_CERT_TRUST_FILE)
+}
+
+#[cfg(any(feature = "xilem-shell", feature = "servo-backend"))]
+fn normalize_certificate_fingerprint(value: &str) -> Result<String, String> {
+    let compact: String = value
+        .chars()
+        .filter(|ch| !matches!(ch, ':' | ' ' | '-' | '\n' | '\r' | '\t'))
+        .collect::<String>()
+        .to_ascii_lowercase();
+    if compact.len() != 64 || !compact.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        return Err("certificate fingerprint must be a 64-character SHA-256 hex value".to_string());
+    }
+    Ok(compact)
+}
+
+#[cfg(any(feature = "xilem-shell", feature = "servo-backend"))]
+fn appliance_origin(target: &Url) -> Result<String, String> {
+    if target.scheme() != "https" {
+        return Err("appliance certificate trust only applies to https origins".to_string());
+    }
+    if !is_local_appliance_target(target) {
+        return Err(format!(
+            "appliance certificate trust is limited to localhost, .local, private, and link-local targets; refused {}",
+            target
+        ));
+    }
+    let host = target
+        .host_str()
+        .ok_or_else(|| "appliance URL must include a host".to_string())?
+        .to_ascii_lowercase();
+    let mut origin = format!("https://{host}");
+    if let Some(port) = target.port() {
+        origin.push(':');
+        origin.push_str(&port.to_string());
+    }
+    Ok(origin)
+}
+
+#[cfg(any(feature = "xilem-shell", feature = "servo-backend"))]
+fn handle_list_local_appliance_certs_arg(args: &[String]) -> Result<bool, String> {
+    if !args.iter().any(|arg| arg == "--list-local-appliance-certs") {
+        return Ok(false);
+    }
+    let profile_data_dir = app_data_dir().join("browser");
+    let path = appliance_cert_trust_path(&profile_data_dir);
+    let trust_store = ApplianceCertTrustStore::load(&profile_data_dir)?;
+    let payload = serde_json::json!({
+        "path": path,
+        "count": trust_store.entries.len(),
+        "entries": trust_store.entries,
+    });
+    let encoded = serde_json::to_string(&payload)
+        .map_err(|error| format!("failed to encode appliance cert trust list: {error}"))?;
+    println!("[sextant-browser] local appliance certificate trust list {encoded}");
+    Ok(true)
+}
+
+#[cfg(not(any(feature = "xilem-shell", feature = "servo-backend")))]
+fn handle_list_local_appliance_certs_arg(args: &[String]) -> Result<bool, String> {
+    if args.iter().any(|arg| arg == "--list-local-appliance-certs") {
+        return Err(
+            "local appliance certificate trust storage is unavailable in this build".to_string(),
+        );
+    }
+    Ok(false)
+}
+
+#[cfg(any(feature = "xilem-shell", feature = "servo-backend"))]
+fn handle_forget_local_appliance_cert_arg(args: &[String]) -> Result<bool, String> {
+    let Some(target) = operator_arg_value(args, "--forget-local-appliance-cert") else {
+        return Ok(false);
+    };
+    let profile_data_dir = app_data_dir().join("browser");
+    let mut trust_store = ApplianceCertTrustStore::load(&profile_data_dir)?;
+    let changed = if target.eq_ignore_ascii_case("all") {
+        trust_store.clear()
+    } else {
+        let target = parse_navigation_target(&target)?;
+        trust_store.forget(&target)?
+    };
+    trust_store.save(&profile_data_dir)?;
+    println!(
+        "[sextant-browser] local appliance certificate trust forget {} changed {}",
+        target, changed
+    );
+    Ok(true)
+}
+
+#[cfg(not(any(feature = "xilem-shell", feature = "servo-backend")))]
+fn handle_forget_local_appliance_cert_arg(args: &[String]) -> Result<bool, String> {
+    if operator_arg_value(args, "--forget-local-appliance-cert").is_some() {
+        return Err(
+            "local appliance certificate trust storage is unavailable in this build".to_string(),
+        );
+    }
+    Ok(false)
 }
 
 #[cfg(feature = "xilem-shell")]
@@ -4847,6 +5247,22 @@ fn main() {
         .init();
 
     let args: Vec<String> = env::args().collect();
+    match handle_list_local_appliance_certs_arg(&args) {
+        Ok(true) => return,
+        Ok(false) => {}
+        Err(error) => {
+            eprintln!("[sextant-browser] failed: {error}");
+            std::process::exit(2);
+        }
+    }
+    match handle_forget_local_appliance_cert_arg(&args) {
+        Ok(true) => return,
+        Ok(false) => {}
+        Err(error) => {
+            eprintln!("[sextant-browser] failed: {error}");
+            std::process::exit(2);
+        }
+    }
     if let Some(path) = operator_arg_value(&args, DIRECT_INCOGNITO_CLEANUP_ARG) {
         if let Err(error) = cleanup_direct_incognito_data_dir(Path::new(&path)) {
             eprintln!("[sextant-browser] direct incognito cleanup failed: {error}");
@@ -4959,6 +5375,16 @@ fn main() {
     let pre_size_visible_navigation = args
         .iter()
         .any(|arg| arg == "--pre-size-navigation" || arg == "--pre-size-visible-navigation");
+    let certificate_path = operator_arg_value(&args, "--certificate-path").map(PathBuf::from);
+    let local_appliance_cert_fingerprint =
+        operator_arg_value(&args, "--local-appliance-cert-fingerprint");
+    let remember_local_appliance_cert =
+        operator_arg_value(&args, "--remember-local-appliance-cert");
+    let allow_insecure_local_tls = window_smoke
+        .as_ref()
+        .map(|smoke| smoke.allow_insecure_local_tls)
+        .unwrap_or(false)
+        || args.iter().any(|arg| arg == "--allow-insecure-local-tls");
     let startup_input = operator_arg_value(&args, "--start");
     let start_showcase = args
         .iter()
@@ -4997,6 +5423,49 @@ fn main() {
         || args
             .iter()
             .any(|arg| arg == "--live-search-smoke" || arg == "--window-live-search-smoke");
+    let direct_resource_audit = args
+        .iter()
+        .any(|arg| arg == "--direct-resource-audit" || arg == "--resource-audit");
+    let raw_direct_window = args.iter().any(|arg| arg == "--raw-direct-window");
+    let hosted_direct_smoke = args.iter().any(|arg| arg == "--hosted-direct-smoke");
+    let hosted_direct_smoke_action = if hosted_direct_smoke {
+        match HostedDirectSmokeAction::parse_arg(operator_arg_value(
+            &args,
+            "--hosted-direct-smoke-cert-action",
+        )) {
+            Ok(action) => action,
+            Err(error) => {
+                eprintln!("[hosted-direct-smoke] failed to parse arguments: {error}");
+                std::process::exit(2);
+            }
+        }
+    } else {
+        None
+    };
+    let hosted_direct_smoke_timeout = if hosted_direct_smoke {
+        let default_timeout =
+            match parse_duration_arg(&args, "--window-smoke-timeout", Duration::from_secs(20)) {
+                Ok(timeout) => timeout,
+                Err(error) => {
+                    eprintln!("[hosted-direct-smoke] failed to parse arguments: {error}");
+                    std::process::exit(2);
+                }
+            };
+        match parse_duration_arg(&args, "--hosted-direct-smoke-timeout", default_timeout) {
+            Ok(timeout) => Some(timeout),
+            Err(error) => {
+                eprintln!("[hosted-direct-smoke] failed to parse arguments: {error}");
+                std::process::exit(2);
+            }
+        }
+    } else {
+        None
+    };
+    let embed_parent_hwnd = parse_isize_flag(&args, "--embed-parent-hwnd");
+    let embed_x = parse_i32_flag(&args, "--embed-x").unwrap_or(0);
+    let embed_y = parse_i32_flag(&args, "--embed-y").unwrap_or(0);
+    let embed_width = parse_u32_flag(&args, "--embed-width");
+    let embed_height = parse_u32_flag(&args, "--embed-height");
     let start_load_smoke = window_smoke
         .as_ref()
         .map(|smoke| smoke.load_smoke)
@@ -5015,6 +5484,27 @@ fn main() {
             .iter()
             .any(|arg| arg == "--resize-smoke" || arg == "--window-resize-smoke");
 
+    if user_render_path == UserRenderPath::DirectServo
+        && !raw_direct_window
+        && window_smoke.is_none()
+    {
+        if let Err(error) = run_hosted_direct_app(
+            startup_input,
+            browser_mode,
+            certificate_path,
+            local_appliance_cert_fingerprint,
+            remember_local_appliance_cert,
+            allow_insecure_local_tls,
+            direct_resource_audit,
+            hosted_direct_smoke_timeout,
+            hosted_direct_smoke_action,
+        ) {
+            eprintln!("[sextant-browser] failed: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
     if user_render_path == UserRenderPath::DirectServo {
         if let Err(error) = run_direct_servo_browser(
             window_smoke,
@@ -5028,11 +5518,21 @@ fn main() {
             start_verified_input_smoke,
             start_search_submit_smoke,
             start_live_search_smoke,
+            direct_resource_audit,
             start_load_smoke,
             start_reload_smoke,
             start_resize_smoke,
             browser_mode,
             pre_size_visible_navigation,
+            certificate_path,
+            local_appliance_cert_fingerprint,
+            remember_local_appliance_cert,
+            allow_insecure_local_tls,
+            embed_parent_hwnd,
+            embed_x,
+            embed_y,
+            embed_width,
+            embed_height,
         ) {
             eprintln!("[sextant-browser] failed: {error}");
             std::process::exit(1);
@@ -5068,11 +5568,21 @@ fn run_direct_servo_browser(
     start_verified_input_smoke: bool,
     start_search_submit_smoke: bool,
     start_live_search_smoke: bool,
+    direct_resource_audit: bool,
     start_load_smoke: bool,
     start_reload_smoke: bool,
     start_resize_smoke: bool,
     browser_mode: BrowserMode,
     pre_size_visible_navigation: bool,
+    certificate_path: Option<PathBuf>,
+    local_appliance_cert_fingerprint: Option<String>,
+    remember_local_appliance_cert: Option<String>,
+    allow_insecure_local_tls: bool,
+    embed_parent_hwnd: Option<isize>,
+    embed_x: i32,
+    embed_y: i32,
+    embed_width: Option<u32>,
+    embed_height: Option<u32>,
 ) -> Result<(), String> {
     if !matches!(browser_mode, BrowserMode::Direct | BrowserMode::Incognito) {
         return Err(format!(
@@ -5295,6 +5805,58 @@ fn run_direct_servo_browser(
         }
     });
     let target = parse_navigation_target(&target_text)?;
+    if let Some(path) = certificate_path.as_ref() {
+        if !path.is_file() {
+            return Err(format!(
+                "certificate path '{}' does not exist or is not a file",
+                path.display()
+            ));
+        }
+    }
+    if allow_insecure_local_tls && !is_local_appliance_target(&target) {
+        return Err(format!(
+            "--allow-insecure-local-tls is limited to localhost, .local, private, and link-local targets; refused {}",
+            target
+        ));
+    }
+    let profile_data_dir = app_data_dir().join("browser");
+    let mut profile_trusted_local_tls = false;
+    if let Some(fingerprint) = remember_local_appliance_cert.as_ref() {
+        if browser_mode == BrowserMode::Incognito {
+            return Err(
+                "--remember-local-appliance-cert is disabled in Incognito; use Trust Once semantics"
+                    .to_string(),
+            );
+        }
+        let mut trust_store = ApplianceCertTrustStore::load(&profile_data_dir)?;
+        trust_store.remember(&target, fingerprint, target.host_str().map(str::to_string))?;
+        trust_store.save(&profile_data_dir)?;
+        profile_trusted_local_tls = true;
+    } else if browser_mode != BrowserMode::Incognito {
+        if let Some(fingerprint) = local_appliance_cert_fingerprint.as_ref() {
+            let trust_store = ApplianceCertTrustStore::load(&profile_data_dir)?;
+            profile_trusted_local_tls = trust_store.is_trusted(&target, fingerprint)?;
+        }
+    }
+    let appliance_certificate_actions =
+        if target.scheme() == "https" && is_local_appliance_target(&target) {
+            let trust_target = target.clone();
+            let trust_data_dir = profile_data_dir.clone();
+            Some(direct_servo::DirectApplianceCertificateActions {
+                persist_allowed: browser_mode != BrowserMode::Incognito,
+                remember: Arc::new(move |fingerprint| {
+                    let mut trust_store = ApplianceCertTrustStore::load(&trust_data_dir)?;
+                    trust_store.remember(
+                        &trust_target,
+                        &fingerprint,
+                        trust_target.host_str().map(str::to_string),
+                    )?;
+                    trust_store.save(&trust_data_dir)
+                }),
+            })
+        } else {
+            None
+        };
     let scripted_text = input_latency.then(|| "sextant".to_string());
     let direct_data_dir = if browser_mode == BrowserMode::Incognito {
         let data_dir = env::temp_dir().join(format!(
@@ -5335,6 +5897,21 @@ fn run_direct_servo_browser(
             );
             println!("[window-smoke] direct Servo http cache disabled true");
         }
+        if let Some(path) = certificate_path.as_ref() {
+            println!(
+                "[window-smoke] direct Servo certificate path {}",
+                path.display()
+            );
+        }
+        if allow_insecure_local_tls {
+            println!("[window-smoke] direct Servo insecure local TLS true");
+        }
+        if profile_trusted_local_tls {
+            println!("[window-smoke] direct Servo trusted local appliance TLS true");
+        }
+        let viewport_width = embed_width.unwrap_or(1180);
+        let viewport_height = embed_height.unwrap_or(760);
+        println!("[window-smoke] direct viewport {viewport_width}x{viewport_height}");
     } else {
         println!(
             "[window-start] starting direct Servo raw browsing lane in {} mode",
@@ -5342,8 +5919,11 @@ fn run_direct_servo_browser(
         );
     }
 
-    let direct_result = direct_servo::run(direct_servo::DirectServoOptions {
-        target,
+    let ignore_certificate_errors = allow_insecure_local_tls || profile_trusted_local_tls;
+    let bypass_proxy_for_target = is_local_appliance_target(&target)
+        && (ignore_certificate_errors || target.scheme() == "https");
+    let outcome = direct_servo::run(direct_servo::DirectServoOptions {
+        target: target.clone(),
         smoke: smoke_mode,
         timeout,
         title: "Sextant Browser Direct".to_string(),
@@ -5352,29 +5932,71 @@ fn run_direct_servo_browser(
         scripted_text,
         scripted_first_interaction_smoke: start_first_interaction_smoke,
         scripted_verified_input_smoke: start_verified_input_smoke,
+        scripted_verified_input_repeat_smoke: false,
         scripted_search_submit_smoke: start_search_submit_smoke,
         scripted_live_search_smoke: start_live_search_smoke,
+        scripted_retained_navigation_smoke: false,
         scripted_location: start_location_smoke,
         scripted_history: start_history_smoke,
         scripted_load_smoke: start_load_smoke,
         scripted_reload_smoke: start_reload_smoke,
         scripted_resize_smoke: start_resize_smoke,
         scripted_tab_smoke: start_shell_interaction,
+        resource_audit: direct_resource_audit,
         config_dir: direct_data_dir.clone(),
         disable_http_cache: browser_mode == BrowserMode::Incognito,
-    });
+        certificate_path: certificate_path.clone(),
+        ignore_certificate_errors,
+        appliance_certificate_actions,
+        bypass_proxy_for_target,
+        embed_parent_hwnd,
+        embed_bounds: embed_width.zip(embed_height).map(|(width, height)| {
+            direct_servo::DirectEmbedBounds {
+                x: embed_x,
+                y: embed_y,
+                width,
+                height,
+            }
+        }),
+        host_command_rx: None,
+        read_host_commands_from_stdin: embed_parent_hwnd.is_some(),
+    })?;
     let cleanup_result = direct_data_dir
         .as_ref()
         .map(|data_dir| cleanup_or_defer_direct_incognito_data_dir(data_dir))
         .unwrap_or(Ok(()));
-    let outcome = match (direct_result, cleanup_result) {
-        (Ok(outcome), Ok(())) => outcome,
-        (Ok(_), Err(cleanup_error)) => return Err(cleanup_error),
-        (Err(run_error), Ok(())) => return Err(run_error),
-        (Err(run_error), Err(cleanup_error)) => {
-            return Err(format!("{run_error}; additionally {cleanup_error}"));
+    if let Err(cleanup_error) = cleanup_result {
+        return Err(cleanup_error);
+    }
+
+    if !smoke_mode
+        && (outcome.appliance_certificate_trust_once_requested
+            || outcome.appliance_certificate_remembered == Some(true))
+    {
+        if embed_parent_hwnd.is_some() {
+            let decision = if outcome.appliance_certificate_remembered == Some(true) {
+                "remembered"
+            } else {
+                "trust-once"
+            };
+            if let Some(fingerprint) = outcome.certificate_fingerprint_sha256.as_ref() {
+                println!(
+                    "[window-direct] hosted certificate trust {decision} fingerprint {fingerprint}"
+                );
+            } else {
+                println!("[window-direct] hosted certificate trust {decision}");
+            }
+            return Ok(());
         }
-    };
+        relaunch_direct_local_appliance_after_trust(
+            browser_mode,
+            &target,
+            &outcome,
+            certificate_path.as_deref(),
+            direct_resource_audit,
+        )?;
+        return Ok(());
+    }
 
     if smoke_mode {
         if let Some(first_present) = outcome.first_present {
@@ -5385,6 +6007,28 @@ fn run_direct_servo_browser(
             println!(
                 "[window-smoke] first Servo frame in {}",
                 direct_servo::format_duration(first_present)
+            );
+        }
+        println!(
+            "[window-smoke] direct frame timing frames={} slow={}",
+            outcome.direct_frame_count, outcome.direct_slow_frame_count
+        );
+        if let Some(max_frame) = outcome.direct_max_frame {
+            println!(
+                "[window-smoke] max direct frame total={} spin={} paint={} present={}",
+                direct_servo::format_duration(max_frame),
+                outcome
+                    .direct_max_spin
+                    .map(direct_servo::format_duration)
+                    .unwrap_or_else(|| "n/a".to_string()),
+                outcome
+                    .direct_max_paint
+                    .map(direct_servo::format_duration)
+                    .unwrap_or_else(|| "n/a".to_string()),
+                outcome
+                    .direct_max_present
+                    .map(direct_servo::format_duration)
+                    .unwrap_or_else(|| "n/a".to_string())
             );
         }
         if let Some(input_frame) = outcome.input_frame {
@@ -5409,6 +6053,12 @@ fn run_direct_servo_browser(
             println!(
                 "[window-smoke] verified input frame {}",
                 direct_servo::format_duration(verified_input_frame)
+            );
+        }
+        if let Some(verified_input_second_frame) = outcome.verified_input_second_frame {
+            println!(
+                "[window-smoke] verified repeat input frame {}",
+                direct_servo::format_duration(verified_input_second_frame)
             );
         }
         if let Some(verified_input) = outcome.verified_input {
@@ -5498,6 +6148,18 @@ fn run_direct_servo_browser(
         if let Some(load_title) = outcome.load_title {
             println!("[window-smoke] load title {}", load_title);
         }
+        if let Some(fingerprint) = outcome.certificate_fingerprint_sha256 {
+            println!("[window-smoke] certificate fingerprint sha256 {fingerprint}");
+        }
+        if let Some(remembered) = outcome.appliance_certificate_remembered {
+            println!("[window-smoke] appliance certificate remembered {remembered}");
+        }
+        if let Some(error) = outcome.appliance_certificate_remember_error {
+            println!("[window-smoke] appliance certificate remember error {error}");
+        }
+        if let Some(audit) = outcome.resource_audit_json {
+            println!("[window-smoke] resource audit {audit}");
+        }
         if let Some(reload_frame) = outcome.reload_frame {
             println!(
                 "[window-smoke] reload frame {}",
@@ -5532,6 +6194,57 @@ fn run_direct_servo_browser(
     Ok(())
 }
 
+#[cfg(feature = "servo-backend")]
+fn relaunch_direct_local_appliance_after_trust(
+    browser_mode: BrowserMode,
+    target: &Url,
+    outcome: &direct_servo::DirectServoOutcome,
+    certificate_path: Option<&Path>,
+    direct_resource_audit: bool,
+) -> Result<(), String> {
+    let mut args = vec![
+        "--browser-mode".to_string(),
+        browser_mode.cli_arg().to_string(),
+        "--render-path".to_string(),
+        "direct".to_string(),
+        "--start".to_string(),
+        target.as_str().to_string(),
+    ];
+    if let Some(path) = certificate_path {
+        args.extend([
+            "--certificate-path".to_string(),
+            path.to_string_lossy().to_string(),
+        ]);
+    }
+    if direct_resource_audit {
+        args.push("--direct-resource-audit".to_string());
+    }
+    if outcome.appliance_certificate_remembered == Some(true) {
+        if let Some(fingerprint) = outcome.certificate_fingerprint_sha256.as_ref() {
+            args.extend([
+                "--local-appliance-cert-fingerprint".to_string(),
+                fingerprint.clone(),
+            ]);
+        } else {
+            args.push("--allow-insecure-local-tls".to_string());
+        }
+    } else {
+        args.push("--allow-insecure-local-tls".to_string());
+    }
+
+    let exe = env::current_exe().map_err(|error| error.to_string())?;
+    let mut command = std::process::Command::new(exe);
+    command.args(args);
+    if let Ok(current_dir) = env::current_dir() {
+        command.current_dir(current_dir);
+    }
+    command
+        .spawn()
+        .map_err(|error| format!("failed to relaunch trusted local appliance window: {error}"))?;
+    Ok(())
+}
+
+#[cfg(feature = "servo-backend")]
 fn cleanup_or_defer_direct_incognito_data_dir(data_dir: &Path) -> Result<(), String> {
     match cleanup_direct_incognito_data_dir(data_dir) {
         Ok(()) => Ok(()),
@@ -5591,6 +6304,1858 @@ fn cleanup_direct_incognito_data_dir(data_dir: &Path) -> Result<(), String> {
     ))
 }
 
+fn run_hosted_direct_app(
+    startup_input: Option<String>,
+    browser_mode: BrowserMode,
+    certificate_path: Option<PathBuf>,
+    local_appliance_cert_fingerprint: Option<String>,
+    remember_local_appliance_cert: Option<String>,
+    allow_insecure_local_tls: bool,
+    direct_resource_audit: bool,
+    hosted_direct_smoke_timeout: Option<Duration>,
+    hosted_direct_smoke_action: Option<HostedDirectSmokeAction>,
+) -> Result<(), String> {
+    if !matches!(browser_mode, BrowserMode::Direct | BrowserMode::Incognito) {
+        return Err(format!(
+            "hosted direct Servo currently supports Direct or Incognito mode only; {} mode still needs the bridge shell for AI surfaces",
+            browser_mode.label()
+        ));
+    }
+
+    let mut shell = HostedDirectShellState::new(
+        startup_input.unwrap_or_else(|| "https://example.com".to_string()),
+    );
+    let event_loop =
+        EventLoop::new().map_err(|error| format!("event loop initialization failed: {error}"))?;
+    let window = Arc::new(
+        WindowBuilder::new()
+            .with_title("Sextant Browser - Direct")
+            .with_inner_size(PhysicalSize::new(1180, 760))
+            .with_window_icon(sextant_window_icon())
+            .build(&event_loop)
+            .map_err(|error| format!("window creation failed: {error}"))?,
+    );
+    let parent_hwnd = window_hwnd(&window).ok_or_else(|| {
+        "hosted direct mode could not resolve the parent window handle".to_string()
+    })?;
+    let context = Context::new(window.clone())
+        .map_err(|error| format!("softbuffer context initialization failed: {error}"))?;
+    let mut surface = Surface::new(&context, window.clone())
+        .map_err(|error| format!("softbuffer surface initialization failed: {error}"))?;
+    let mut surface_size = PhysicalSize::new(0, 0);
+    let mut direct_summary = HostedDirectLogSummary::default();
+    let mut direct_log_monitor = HostedDirectLogMonitor::default();
+    let mut next_summary_refresh = Instant::now();
+    let mut latest_parent_size = window.inner_size();
+    let hosted_smoke_started = Instant::now();
+    let mut hosted_smoke_completed = false;
+    let mut hosted_smoke_action_requested = false;
+    let mut hosted_smoke_action_relaunched = false;
+    let mut hosted_smoke_certificate_fingerprint: Option<String> = None;
+    let hosted_smoke_result: Arc<Mutex<Option<Result<(), String>>>> = Arc::new(Mutex::new(None));
+    let hosted_smoke_result_for_loop = Arc::clone(&hosted_smoke_result);
+    let mut hosted_local_appliance_cert_fingerprint = local_appliance_cert_fingerprint;
+    let mut direct_child = Some(spawn_hosted_direct_child(
+        parent_hwnd,
+        latest_parent_size,
+        &shell.target,
+        browser_mode,
+        certificate_path.as_deref(),
+        hosted_local_appliance_cert_fingerprint.as_deref(),
+        remember_local_appliance_cert.as_deref(),
+        allow_insecure_local_tls,
+        direct_resource_audit,
+    )?);
+
+    window.request_redraw();
+    let event_loop_result = event_loop.run(move |event, elwt| {
+        elwt.set_control_flow(ControlFlow::Wait);
+        match event {
+            Event::WindowEvent { event, .. } => match event {
+                WindowEvent::CloseRequested => {
+                    terminate_child_process(&mut direct_child);
+                    elwt.exit();
+                }
+                WindowEvent::Resized(size) => {
+                    latest_parent_size = size;
+                    if let Some(child) = direct_child.as_mut() {
+                        resize_hosted_direct_child(parent_hwnd, child, size);
+                    }
+                    direct_summary = HostedDirectLogSummary::default();
+                    next_summary_refresh = Instant::now();
+                    window.request_redraw();
+                }
+                WindowEvent::CursorMoved { position, .. } => {
+                    shell.cursor_position = Some((position.x, position.y));
+                }
+                WindowEvent::ModifiersChanged(modifiers) => {
+                    shell.modifiers = modifiers.state();
+                }
+                WindowEvent::KeyboardInput { event, .. } => {
+                    if shell.handle_keyboard(event, direct_child.as_mut()) {
+                        window.request_redraw();
+                    }
+                }
+                WindowEvent::Ime(winit::event::Ime::Commit(text)) => {
+                    if shell.handle_text_commit(text) {
+                        window.request_redraw();
+                    }
+                }
+                WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                    ..
+                } => {
+                    if let Some((x, y)) = shell.cursor_position {
+                        if y < HOSTED_DIRECT_CHROME_H as f64 {
+                            focus_hosted_direct_parent_window(&window, parent_hwnd);
+                        }
+                        if shell.handle_mouse_down(
+                            PhysicalSize::new(latest_parent_size.width, latest_parent_size.height),
+                            x,
+                            y,
+                            &direct_summary,
+                            browser_mode != BrowserMode::Incognito,
+                            direct_child.as_mut(),
+                        ) {
+                            window.request_redraw();
+                        }
+                    }
+                }
+                WindowEvent::RedrawRequested => {
+                    let _ = draw_hosted_direct_shell(
+                        &window,
+                        &mut surface,
+                        &mut surface_size,
+                        browser_mode,
+                        &shell,
+                        direct_child.as_ref().map(|child| child.child.id()),
+                        direct_child.as_ref().map(|child| child.log_path.as_path()),
+                        &direct_summary,
+                    );
+                }
+                _ => {}
+            },
+            Event::AboutToWait => {
+                let now = Instant::now();
+                if let Some((status, log_path)) = poll_hosted_direct_child_exit(&mut direct_child) {
+                    direct_summary = parse_hosted_direct_log_summary(&log_path);
+                    if let Some(trust) = shell.take_pending_certificate_trust() {
+                        if let Some(fingerprint) =
+                            direct_summary.certificate_fingerprint_sha256.clone()
+                        {
+                            let relaunch_allow_insecure_local_tls = match trust {
+                                HostedDirectCertificateTrust::Once => {
+                                    true
+                                }
+                                HostedDirectCertificateTrust::Remember => {
+                                    hosted_local_appliance_cert_fingerprint = Some(fingerprint);
+                                    false
+                                }
+                            };
+                            let restart_target = direct_summary
+                                .latest_url
+                                .as_deref()
+                                .unwrap_or(shell.target.as_str())
+                                .to_string();
+                            match spawn_hosted_direct_child(
+                                parent_hwnd,
+                                latest_parent_size,
+                                &restart_target,
+                                browser_mode,
+                                certificate_path.as_deref(),
+                                hosted_local_appliance_cert_fingerprint.as_deref(),
+                                remember_local_appliance_cert.as_deref(),
+                                relaunch_allow_insecure_local_tls,
+                                direct_resource_audit,
+                            ) {
+                                Ok(child) => {
+                                    shell.target = restart_target.clone();
+                                    if !shell.address_focused {
+                                        shell.address_input = restart_target;
+                                        shell.address_cursor = shell.address_input.len();
+                                    }
+                                    direct_log_monitor = HostedDirectLogMonitor::default();
+                                    direct_child = Some(child);
+                                    direct_summary = HostedDirectLogSummary::default();
+                                    hosted_smoke_action_relaunched = true;
+                                    if let Some(action) = hosted_direct_smoke_action {
+                                        println!(
+                                            "[hosted-direct-smoke] certificate action {} child relaunched",
+                                            action.label()
+                                        );
+                                    }
+                                    window.request_redraw();
+                                }
+                                Err(error) => {
+                                    eprintln!(
+                                        "[hosted-direct] failed to relaunch trusted child after {status}: {error}"
+                                    );
+                                }
+                            }
+                        } else {
+                            eprintln!(
+                                "[hosted-direct] child exited after certificate trust request without a fingerprint: {status}"
+                            );
+                        }
+                    } else {
+                        eprintln!("[hosted-direct] child exited: {status}");
+                    }
+                }
+                if now >= next_summary_refresh {
+                    if let Some(child) = direct_child.as_ref() {
+                        if let Some(summary) = direct_log_monitor.refresh(&child.log_path) {
+                            direct_summary = summary;
+                            if !shell.address_focused {
+                                if let Some(url) = direct_summary.latest_url.as_ref() {
+                                    shell.target = url.clone();
+                                    shell.address_input = url.clone();
+                                }
+                            }
+                            window.request_redraw();
+                        }
+                    }
+                    if let Some(timeout) = hosted_direct_smoke_timeout {
+                        if hosted_smoke_completed {
+                            elwt.exit();
+                            return;
+                        }
+                        if let Some(action) = hosted_direct_smoke_action {
+                            if !hosted_smoke_action_requested
+                                && direct_summary.certificate_fingerprint_sha256.is_some()
+                            {
+                                hosted_smoke_certificate_fingerprint =
+                                    direct_summary.certificate_fingerprint_sha256.clone();
+                                let rects = hosted_direct_chrome_rects(latest_parent_size);
+                                let rect = action.rect(rects);
+                                let x = rect.x as f64 + rect.w as f64 / 2.0;
+                                let y = rect.y as f64 + rect.h as f64 / 2.0;
+                                if shell.handle_mouse_down(
+                                    latest_parent_size,
+                                    x,
+                                    y,
+                                    &direct_summary,
+                                    browser_mode != BrowserMode::Incognito,
+                                    direct_child.as_mut(),
+                                ) {
+                                    hosted_smoke_action_requested = true;
+                                    println!(
+                                        "[hosted-direct-smoke] certificate action {} requested",
+                                        action.label()
+                                    );
+                                    window.request_redraw();
+                                }
+                            }
+                            let action_complete = match action {
+                                HostedDirectSmokeAction::Back => {
+                                    direct_summary.certificate_back_requested
+                                }
+                                HostedDirectSmokeAction::TrustOnce => {
+                                    hosted_smoke_action_relaunched
+                                        && direct_summary.first_present.is_some()
+                                }
+                                HostedDirectSmokeAction::TrustThisAppliance => {
+                                    hosted_smoke_action_relaunched
+                                        && direct_summary.first_present.is_some()
+                                }
+                            };
+                            if hosted_smoke_action_requested && action_complete {
+                                hosted_smoke_completed = true;
+                                println!("[hosted-direct-smoke] parent shell ready");
+                                println!(
+                                    "[hosted-direct-smoke] certificate action {} completed",
+                                    action.label()
+                                );
+                                if let Some(child) = direct_child.as_ref() {
+                                    println!("[hosted-direct-smoke] child pid {}", child.child.id());
+                                }
+                                if let Some(first_present) = direct_summary.first_present.as_ref() {
+                                    println!(
+                                        "[hosted-direct-smoke] first direct present {first_present}"
+                                    );
+                                }
+                                if let Some(url) = direct_summary.latest_url.as_ref() {
+                                    println!("[hosted-direct-smoke] active url {url}");
+                                }
+                                if let Some(fingerprint) = hosted_smoke_certificate_fingerprint
+                                    .as_ref()
+                                    .or(direct_summary.certificate_fingerprint_sha256.as_ref())
+                                {
+                                    println!(
+                                        "[hosted-direct-smoke] certificate fingerprint sha256 {fingerprint}"
+                                    );
+                                }
+                                if let Ok(mut result) = hosted_smoke_result_for_loop.lock() {
+                                    *result = Some(Ok(()));
+                                }
+                                terminate_child_process(&mut direct_child);
+                                elwt.exit();
+                                return;
+                            }
+                        } else if direct_summary.first_present.is_some() {
+                            hosted_smoke_completed = true;
+                            println!("[hosted-direct-smoke] parent shell ready");
+                            if let Some(child) = direct_child.as_ref() {
+                                println!("[hosted-direct-smoke] child pid {}", child.child.id());
+                            }
+                            if let Some(first_present) = direct_summary.first_present.as_ref() {
+                                println!(
+                                    "[hosted-direct-smoke] first direct present {first_present}"
+                                );
+                            }
+                            if let Some(url) = direct_summary.latest_url.as_ref() {
+                                println!("[hosted-direct-smoke] active url {url}");
+                            }
+                            if let Some(fingerprint) =
+                                direct_summary.certificate_fingerprint_sha256.as_ref()
+                            {
+                                println!(
+                                    "[hosted-direct-smoke] certificate fingerprint sha256 {fingerprint}"
+                                );
+                            }
+                            if let Ok(mut result) = hosted_smoke_result_for_loop.lock() {
+                                *result = Some(Ok(()));
+                            }
+                            terminate_child_process(&mut direct_child);
+                            elwt.exit();
+                            return;
+                        }
+                        if hosted_smoke_started.elapsed() >= timeout {
+                            let error = format!(
+                                "hosted direct smoke timed out after {}",
+                                format_duration(timeout)
+                            );
+                            eprintln!("[hosted-direct-smoke] {error}");
+                            if let Ok(mut result) = hosted_smoke_result_for_loop.lock() {
+                                *result = Some(Err(error));
+                            }
+                            terminate_child_process(&mut direct_child);
+                            elwt.exit();
+                            return;
+                        }
+                    }
+                    if let Some(child) = direct_child.as_mut() {
+                        if resize_hosted_direct_child(parent_hwnd, child, latest_parent_size) {
+                            window.request_redraw();
+                        }
+                    }
+                    next_summary_refresh = now + HOSTED_DIRECT_SUMMARY_REFRESH;
+                }
+                elwt.set_control_flow(ControlFlow::WaitUntil(next_summary_refresh));
+            }
+            _ => {}
+        }
+    });
+    event_loop_result.map_err(|error| format!("hosted direct event loop failed: {error}"))?;
+    let hosted_result = hosted_smoke_result
+        .lock()
+        .map_err(|_| "hosted direct smoke result lock poisoned".to_string())?
+        .take();
+    match hosted_result {
+        Some(result) => result,
+        None => Ok(()),
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+struct HostedDirectLogSummary {
+    first_present: Option<String>,
+    latest_load: Option<String>,
+    latest_swap: Option<String>,
+    latest_input: Option<String>,
+    latest_url: Option<String>,
+    certificate_fingerprint_sha256: Option<String>,
+    active_title: Option<String>,
+    active_tab_index: Option<usize>,
+    tab_count: Option<usize>,
+    can_go_back: bool,
+    can_go_forward: bool,
+    latest_load_complete: bool,
+    slow_frames: usize,
+    max_frame_ms: Option<f64>,
+    max_frame_label: Option<String>,
+    max_paint_ms: Option<f64>,
+    max_paint_label: Option<String>,
+    latest_resource_audit: Option<String>,
+    certificate_back_requested: bool,
+    certificate_trust_once_requested: bool,
+    certificate_trust_this_appliance_requested: bool,
+}
+
+#[derive(Default)]
+struct HostedDirectLogMonitor {
+    last_len: u64,
+    last_modified: Option<SystemTime>,
+}
+
+impl HostedDirectLogMonitor {
+    fn refresh(&mut self, path: &Path) -> Option<HostedDirectLogSummary> {
+        let metadata = std::fs::metadata(path).ok()?;
+        let len = metadata.len();
+        let modified = metadata.modified().ok();
+        if len == self.last_len && modified == self.last_modified {
+            return None;
+        }
+        self.last_len = len;
+        self.last_modified = modified;
+        Some(parse_hosted_direct_log_summary(path))
+    }
+}
+
+impl HostedDirectLogSummary {
+    fn compact_perf_status(&self) -> String {
+        let mut parts = Vec::new();
+        parts.push(format!(
+            "first {}",
+            self.first_present.as_deref().unwrap_or("pending")
+        ));
+        if let Some(load) = self.latest_load.as_deref() {
+            parts.push(format!("load {load}"));
+        }
+        if let Some(input) = self.latest_input.as_deref() {
+            parts.push(format!("input {input}"));
+        }
+        if self.slow_frames > 0 {
+            parts.push(format!(
+                "slow {} paint {}",
+                self.slow_frames,
+                self.max_paint_label.as_deref().unwrap_or("?")
+            ));
+        }
+        parts.join(" | ")
+    }
+
+    fn compact_audit_status(&self) -> Option<&str> {
+        self.latest_resource_audit.as_deref()
+    }
+
+    fn certificate_warning_active(&self) -> bool {
+        self.certificate_fingerprint_sha256.is_some()
+            || self
+                .active_title
+                .as_deref()
+                .is_some_and(|title| title.eq_ignore_ascii_case("Certificate error"))
+    }
+
+    fn compact_certificate_status(&self) -> Option<String> {
+        if let Some(fingerprint) = self.certificate_fingerprint_sha256.as_deref() {
+            return Some(format!("cert {}", compact_fingerprint(fingerprint)));
+        }
+        self.certificate_warning_active()
+            .then(|| "cert blocked".to_string())
+    }
+
+    fn load_progress(&self) -> f32 {
+        if self.latest_load_complete {
+            1.0
+        } else if self.latest_load.is_some() {
+            0.62
+        } else if self.first_present.is_some() {
+            0.32
+        } else {
+            0.12
+        }
+    }
+
+    fn is_loading(&self) -> bool {
+        !self.latest_load_complete
+    }
+
+    fn can_switch_tabs(&self) -> bool {
+        self.tab_count.unwrap_or(1) > 1
+    }
+}
+
+#[derive(Clone, Copy)]
+struct HostedDirectChromeRects {
+    back: Rect,
+    forward: Rect,
+    reload: Rect,
+    new_tab: Rect,
+    previous_tab: Rect,
+    next_tab: Rect,
+    close_tab: Rect,
+    certificate_back: Rect,
+    trust_once: Rect,
+    trust_appliance: Rect,
+    address: Rect,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HostedDirectCertificateTrust {
+    Once,
+    Remember,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HostedDirectSmokeAction {
+    Back,
+    TrustOnce,
+    TrustThisAppliance,
+}
+
+impl HostedDirectSmokeAction {
+    fn parse_arg(value: Option<String>) -> Result<Option<Self>, String> {
+        let Some(value) = value else {
+            return Ok(None);
+        };
+        match value.trim().to_ascii_lowercase().as_str() {
+            "back" => Ok(Some(Self::Back)),
+            "once" | "trust-once" | "trust_once" => Ok(Some(Self::TrustOnce)),
+            "trust" | "remember" | "trust-this-appliance" | "trust_this_appliance" => {
+                Ok(Some(Self::TrustThisAppliance))
+            }
+            other => Err(format!(
+                "unsupported hosted direct certificate action '{other}'; expected back, once, or trust"
+            )),
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Back => "back",
+            Self::TrustOnce => "once",
+            Self::TrustThisAppliance => "trust",
+        }
+    }
+
+    fn rect(self, rects: HostedDirectChromeRects) -> Rect {
+        match self {
+            Self::Back => rects.certificate_back,
+            Self::TrustOnce => rects.trust_once,
+            Self::TrustThisAppliance => rects.trust_appliance,
+        }
+    }
+}
+
+struct HostedDirectShellState {
+    target: String,
+    address_input: String,
+    address_cursor: usize,
+    address_focused: bool,
+    address_replace_on_text: bool,
+    pending_certificate_trust: Option<HostedDirectCertificateTrust>,
+    cursor_position: Option<(f64, f64)>,
+    modifiers: ModifiersState,
+}
+
+impl HostedDirectShellState {
+    fn new(target: String) -> Self {
+        Self {
+            address_input: target.clone(),
+            address_cursor: target.len(),
+            target,
+            address_focused: false,
+            address_replace_on_text: false,
+            pending_certificate_trust: None,
+            cursor_position: None,
+            modifiers: ModifiersState::empty(),
+        }
+    }
+
+    fn handle_mouse_down(
+        &mut self,
+        size: PhysicalSize<u32>,
+        x: f64,
+        y: f64,
+        summary: &HostedDirectLogSummary,
+        persistent_trust_allowed: bool,
+        child: Option<&mut HostedDirectChild>,
+    ) -> bool {
+        let rects = hosted_direct_chrome_rects(size);
+        if rects.address.contains(x, y) {
+            self.address_input = self.target.clone();
+            self.address_cursor = self.address_input.len();
+            self.address_focused = true;
+            self.address_replace_on_text = true;
+            return true;
+        }
+        if rects.back.contains(x, y) {
+            self.address_focused = false;
+            if summary.can_go_back {
+                let _ = send_hosted_direct_command(child, "back");
+            }
+            return true;
+        }
+        if rects.forward.contains(x, y) {
+            self.address_focused = false;
+            if summary.can_go_forward {
+                let _ = send_hosted_direct_command(child, "forward");
+            }
+            return true;
+        }
+        if rects.reload.contains(x, y) {
+            self.address_focused = false;
+            let _ = send_hosted_direct_command(child, "reload");
+            return true;
+        }
+        if rects.new_tab.contains(x, y) {
+            self.address_input.clear();
+            self.address_cursor = 0;
+            self.address_focused = true;
+            self.address_replace_on_text = false;
+            let _ = send_hosted_direct_command(child, "new-tab");
+            return true;
+        }
+        if rects.previous_tab.contains(x, y) {
+            self.address_focused = false;
+            if summary.can_switch_tabs() {
+                let _ = send_hosted_direct_command(child, "previous-tab");
+            }
+            return true;
+        }
+        if rects.next_tab.contains(x, y) {
+            self.address_focused = false;
+            if summary.can_switch_tabs() {
+                let _ = send_hosted_direct_command(child, "next-tab");
+            }
+            return true;
+        }
+        if rects.close_tab.contains(x, y) {
+            self.address_focused = false;
+            let _ = send_hosted_direct_command(child, "close-tab");
+            return true;
+        }
+        if summary.certificate_warning_active() && rects.certificate_back.contains(x, y) {
+            self.address_focused = false;
+            let _ = send_hosted_direct_command(child, "certificate-go-back");
+            return true;
+        }
+        let certificate_trust_ready = summary.certificate_fingerprint_sha256.is_some();
+        if certificate_trust_ready && rects.trust_once.contains(x, y) {
+            self.address_focused = false;
+            self.pending_certificate_trust = Some(HostedDirectCertificateTrust::Once);
+            let _ = send_hosted_direct_command(child, "trust-once");
+            return true;
+        }
+        if certificate_trust_ready
+            && persistent_trust_allowed
+            && rects.trust_appliance.contains(x, y)
+        {
+            self.address_focused = false;
+            self.pending_certificate_trust = Some(HostedDirectCertificateTrust::Remember);
+            let _ = send_hosted_direct_command(child, "trust-this-appliance");
+            return true;
+        }
+        if y < HOSTED_DIRECT_CHROME_H as f64 {
+            self.address_focused = false;
+            return true;
+        }
+        false
+    }
+
+    fn take_pending_certificate_trust(&mut self) -> Option<HostedDirectCertificateTrust> {
+        self.pending_certificate_trust.take()
+    }
+
+    fn handle_keyboard(&mut self, event: KeyEvent, child: Option<&mut HostedDirectChild>) -> bool {
+        if event.state != ElementState::Pressed {
+            return false;
+        }
+        if self.modifiers.control_key() {
+            if let Key::Character(value) = &event.logical_key {
+                if value.eq_ignore_ascii_case("l") {
+                    self.address_input = self.target.clone();
+                    self.address_cursor = self.address_input.len();
+                    self.address_focused = true;
+                    self.address_replace_on_text = true;
+                    return true;
+                }
+                if self.address_focused && value.eq_ignore_ascii_case("a") {
+                    self.address_replace_on_text = true;
+                    self.address_cursor = self.address_input.len();
+                    return true;
+                }
+                if value.eq_ignore_ascii_case("t") {
+                    self.address_input.clear();
+                    self.address_cursor = 0;
+                    self.address_focused = true;
+                    self.address_replace_on_text = false;
+                    let _ = send_hosted_direct_command(child, "new-tab");
+                    return true;
+                }
+                if value.eq_ignore_ascii_case("w") {
+                    self.address_focused = false;
+                    self.address_replace_on_text = false;
+                    let _ = send_hosted_direct_command(child, "close-tab");
+                    return true;
+                }
+            }
+            if let Key::Named(NamedKey::Tab) = &event.logical_key {
+                self.address_focused = false;
+                self.address_replace_on_text = false;
+                let command = if self.modifiers.shift_key() {
+                    "previous-tab"
+                } else {
+                    "next-tab"
+                };
+                let _ = send_hosted_direct_command(child, command);
+                return true;
+            }
+        }
+        if !self.address_focused {
+            return false;
+        }
+        match &event.logical_key {
+            Key::Named(NamedKey::Enter) => {
+                let target = self.address_input.trim().to_string();
+                if !target.is_empty() {
+                    self.target = target.clone();
+                    self.address_input = target.clone();
+                    self.address_cursor = self.address_input.len();
+                    self.address_focused = false;
+                    self.address_replace_on_text = false;
+                    let _ = send_hosted_direct_command(child, &format!("navigate {target}"));
+                    return true;
+                }
+                true
+            }
+            Key::Named(NamedKey::Escape) => {
+                self.address_input = self.target.clone();
+                self.address_cursor = self.address_input.len();
+                self.address_focused = false;
+                self.address_replace_on_text = false;
+                true
+            }
+            Key::Named(NamedKey::Backspace) => {
+                if self.address_replace_on_text {
+                    self.address_input.clear();
+                    self.address_cursor = 0;
+                    self.address_replace_on_text = false;
+                } else if self.address_cursor > 0 {
+                    let previous = previous_char_boundary(&self.address_input, self.address_cursor);
+                    self.address_input.drain(previous..self.address_cursor);
+                    self.address_cursor = previous;
+                }
+                true
+            }
+            Key::Named(NamedKey::Delete) => {
+                if self.address_replace_on_text {
+                    self.address_input.clear();
+                    self.address_cursor = 0;
+                    self.address_replace_on_text = false;
+                } else if self.address_cursor < self.address_input.len() {
+                    let next = next_char_boundary(&self.address_input, self.address_cursor);
+                    self.address_input.drain(self.address_cursor..next);
+                }
+                true
+            }
+            Key::Named(NamedKey::ArrowLeft) => {
+                self.address_replace_on_text = false;
+                self.address_cursor =
+                    previous_char_boundary(&self.address_input, self.address_cursor);
+                true
+            }
+            Key::Named(NamedKey::ArrowRight) => {
+                self.address_replace_on_text = false;
+                self.address_cursor = next_char_boundary(&self.address_input, self.address_cursor);
+                true
+            }
+            Key::Named(NamedKey::Home) => {
+                self.address_replace_on_text = false;
+                self.address_cursor = 0;
+                true
+            }
+            Key::Named(NamedKey::End) => {
+                self.address_replace_on_text = false;
+                self.address_cursor = self.address_input.len();
+                true
+            }
+            Key::Named(NamedKey::Space) => {
+                self.push_address_text(" ");
+                true
+            }
+            Key::Character(value) if !self.modifiers.control_key() => {
+                if value.chars().all(|ch| !ch.is_control()) {
+                    self.push_address_text(value);
+                    return true;
+                }
+                false
+            }
+            _ => false,
+        }
+    }
+
+    fn push_address_text(&mut self, value: &str) {
+        if self.address_replace_on_text {
+            self.address_input.clear();
+            self.address_cursor = 0;
+            self.address_replace_on_text = false;
+        }
+        self.address_input.insert_str(self.address_cursor, value);
+        self.address_cursor += value.len();
+    }
+
+    fn handle_text_commit(&mut self, text: String) -> bool {
+        if !self.address_focused || text.is_empty() {
+            return false;
+        }
+        if text.chars().all(|ch| !ch.is_control()) {
+            self.push_address_text(&text);
+            return true;
+        }
+        false
+    }
+
+    fn address_display_text(&self, max_chars: usize) -> String {
+        if !self.address_focused {
+            return truncate(&self.target, max_chars);
+        }
+        let cursor = self.address_cursor.min(self.address_input.len());
+        let mut display = String::with_capacity(self.address_input.len() + 1);
+        display.push_str(&self.address_input[..cursor]);
+        display.push('_');
+        display.push_str(&self.address_input[cursor..]);
+        if display.chars().count() <= max_chars {
+            return display;
+        }
+        if max_chars <= 3 {
+            return truncate(&display, max_chars);
+        }
+        let cursor_chars = self.address_input[..cursor].chars().count();
+        let start = cursor_chars.saturating_sub(max_chars.saturating_sub(3));
+        let visible: String = display
+            .chars()
+            .skip(start)
+            .take(max_chars.saturating_sub(3))
+            .collect();
+        format!("...{visible}")
+    }
+}
+
+fn previous_char_boundary(value: &str, index: usize) -> usize {
+    let index = index.min(value.len());
+    value[..index]
+        .char_indices()
+        .last()
+        .map(|(idx, _)| idx)
+        .unwrap_or(0)
+}
+
+fn next_char_boundary(value: &str, index: usize) -> usize {
+    let index = index.min(value.len());
+    if index >= value.len() {
+        return value.len();
+    }
+    value[index..]
+        .char_indices()
+        .nth(1)
+        .map(|(offset, _)| index + offset)
+        .unwrap_or(value.len())
+}
+
+struct HostedDirectChild {
+    child: Child,
+    stdin: Option<ChildStdin>,
+    log_path: PathBuf,
+    #[cfg(all(target_os = "windows", feature = "servo-backend"))]
+    window_hwnd: Option<isize>,
+    #[cfg(all(target_os = "windows", feature = "servo-backend"))]
+    last_resized_parent_size: Option<PhysicalSize<u32>>,
+}
+
+fn spawn_hosted_direct_child(
+    parent_hwnd: isize,
+    parent_size: PhysicalSize<u32>,
+    target: &str,
+    browser_mode: BrowserMode,
+    certificate_path: Option<&Path>,
+    local_appliance_cert_fingerprint: Option<&str>,
+    remember_local_appliance_cert: Option<&str>,
+    allow_insecure_local_tls: bool,
+    direct_resource_audit: bool,
+) -> Result<HostedDirectChild, String> {
+    let (_, _, width, height) = hosted_direct_child_bounds(parent_size);
+    let log_path = hosted_direct_child_log_path()?;
+    let log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .map_err(|error| {
+            format!(
+                "failed to open hosted direct log {}: {error}",
+                log_path.display()
+            )
+        })?;
+    let log_err = log
+        .try_clone()
+        .map_err(|error| format!("failed to clone hosted direct log handle: {error}"))?;
+    let mut command = Command::new(env::current_exe().map_err(|error| error.to_string())?);
+    command
+        .arg("--browser-mode")
+        .arg(browser_mode.cli_arg())
+        .arg("--render-path")
+        .arg("direct")
+        .arg("--raw-direct-window")
+        .arg("--start")
+        .arg(target)
+        .arg("--embed-parent-hwnd")
+        .arg(parent_hwnd.to_string())
+        .arg("--embed-x")
+        .arg("0")
+        .arg("--embed-y")
+        .arg(HOSTED_DIRECT_CHROME_H.to_string())
+        .arg("--embed-width")
+        .arg(width.to_string())
+        .arg("--embed-height")
+        .arg(height.to_string())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::from(log))
+        .stderr(Stdio::from(log_err));
+    if let Some(path) = certificate_path {
+        command.arg("--certificate-path").arg(path);
+    }
+    if let Some(fingerprint) = local_appliance_cert_fingerprint {
+        command
+            .arg("--local-appliance-cert-fingerprint")
+            .arg(fingerprint);
+    }
+    if let Some(origin) = remember_local_appliance_cert {
+        command.arg("--remember-local-appliance-cert").arg(origin);
+    }
+    if allow_insecure_local_tls {
+        command.arg("--allow-insecure-local-tls");
+    }
+    if direct_resource_audit {
+        command.arg("--direct-resource-audit");
+    }
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("failed to launch hosted direct Servo child: {error}"))?;
+    let stdin = child.stdin.take();
+    println!(
+        "[hosted-direct] child pid {} log {}",
+        child.id(),
+        log_path.display()
+    );
+    Ok(HostedDirectChild {
+        child,
+        stdin,
+        log_path,
+        #[cfg(all(target_os = "windows", feature = "servo-backend"))]
+        window_hwnd: None,
+        #[cfg(all(target_os = "windows", feature = "servo-backend"))]
+        last_resized_parent_size: None,
+    })
+}
+
+fn send_hosted_direct_command(child: Option<&mut HostedDirectChild>, command: &str) -> bool {
+    let Some(child) = child else {
+        return false;
+    };
+    let Some(stdin) = child.stdin.as_mut() else {
+        return false;
+    };
+    if command.contains('\n') || command.contains('\r') {
+        return false;
+    }
+    writeln!(stdin, "{command}")
+        .and_then(|_| stdin.flush())
+        .is_ok()
+}
+
+fn poll_hosted_direct_child_exit(
+    child: &mut Option<HostedDirectChild>,
+) -> Option<(ExitStatus, PathBuf)> {
+    let status = child.as_mut()?.child.try_wait().ok()??;
+    let child = child.take()?;
+    Some((status, child.log_path))
+}
+
+fn hosted_direct_chrome_rects(size: PhysicalSize<u32>) -> HostedDirectChromeRects {
+    let y = 44;
+    let h = 20;
+    let button_w = 30;
+    let gap = 6;
+    let back = Rect {
+        x: 18,
+        y,
+        w: button_w,
+        h,
+    };
+    let forward = Rect {
+        x: back.x + back.w + gap,
+        y,
+        w: button_w,
+        h,
+    };
+    let reload = Rect {
+        x: forward.x + forward.w + gap,
+        y,
+        w: button_w,
+        h,
+    };
+    let new_tab = Rect {
+        x: reload.x + reload.w + gap,
+        y,
+        w: button_w,
+        h,
+    };
+    let previous_tab = Rect {
+        x: new_tab.x + new_tab.w + gap,
+        y,
+        w: button_w,
+        h,
+    };
+    let next_tab = Rect {
+        x: previous_tab.x + previous_tab.w + gap,
+        y,
+        w: button_w,
+        h,
+    };
+    let close_tab = Rect {
+        x: next_tab.x + next_tab.w + gap,
+        y,
+        w: button_w,
+        h,
+    };
+    let certificate_back = Rect {
+        x: size.width.saturating_sub(250),
+        y,
+        w: 56,
+        h,
+    };
+    let trust_once = Rect {
+        x: certificate_back.x + certificate_back.w + gap,
+        y,
+        w: 68,
+        h,
+    };
+    let trust_appliance = Rect {
+        x: trust_once.x + trust_once.w + gap,
+        y,
+        w: 96,
+        h,
+    };
+    let address_x = close_tab.x + close_tab.w + 10;
+    let reserved_right = 286;
+    let address_w = size
+        .width
+        .saturating_sub(address_x)
+        .saturating_sub(reserved_right)
+        .max(160);
+    HostedDirectChromeRects {
+        back,
+        forward,
+        reload,
+        new_tab,
+        previous_tab,
+        next_tab,
+        close_tab,
+        certificate_back,
+        trust_once,
+        trust_appliance,
+        address: Rect {
+            x: address_x,
+            y,
+            w: address_w,
+            h,
+        },
+    }
+}
+
+fn hosted_direct_child_bounds(parent_size: PhysicalSize<u32>) -> (i32, i32, u32, u32) {
+    (
+        0,
+        HOSTED_DIRECT_CHROME_H as i32,
+        parent_size.width.max(320),
+        parent_size
+            .height
+            .saturating_sub(HOSTED_DIRECT_CHROME_H)
+            .max(240),
+    )
+}
+
+#[cfg(all(target_os = "windows", feature = "servo-backend"))]
+fn resize_hosted_direct_child(
+    parent_hwnd: isize,
+    child: &mut HostedDirectChild,
+    parent_size: PhysicalSize<u32>,
+) -> bool {
+    if child.window_hwnd.is_some() && child.last_resized_parent_size == Some(parent_size) {
+        return false;
+    }
+    if child.window_hwnd.is_none() {
+        child.window_hwnd = find_hosted_direct_child_window(parent_hwnd, child.child.id());
+    }
+    let Some(hwnd) = child.window_hwnd else {
+        return false;
+    };
+    let (x, y, width, height) = hosted_direct_child_bounds(parent_size);
+    let resized = unsafe {
+        SetWindowPos(
+            hwnd as HWND,
+            std::ptr::null_mut(),
+            x,
+            y,
+            width as i32,
+            height as i32,
+            SWP_NOZORDER | SWP_NOACTIVATE,
+        ) != 0
+    };
+    if resized {
+        child.last_resized_parent_size = Some(parent_size);
+    }
+    resized
+}
+
+#[cfg(not(all(target_os = "windows", feature = "servo-backend")))]
+fn resize_hosted_direct_child(
+    _parent_hwnd: isize,
+    _child: &mut HostedDirectChild,
+    _parent_size: PhysicalSize<u32>,
+) -> bool {
+    false
+}
+
+#[cfg(all(target_os = "windows", feature = "servo-backend"))]
+struct HostedDirectChildWindowSearch {
+    pid: u32,
+    hwnd: Option<isize>,
+}
+
+#[cfg(all(target_os = "windows", feature = "servo-backend"))]
+fn find_hosted_direct_child_window(parent_hwnd: isize, child_pid: u32) -> Option<isize> {
+    let mut search = HostedDirectChildWindowSearch {
+        pid: child_pid,
+        hwnd: None,
+    };
+    unsafe {
+        EnumChildWindows(
+            parent_hwnd as HWND,
+            Some(enum_hosted_direct_child_window),
+            &mut search as *mut HostedDirectChildWindowSearch as LPARAM,
+        );
+    }
+    search.hwnd
+}
+
+#[cfg(all(target_os = "windows", feature = "servo-backend"))]
+unsafe extern "system" fn enum_hosted_direct_child_window(hwnd: HWND, lparam: LPARAM) -> i32 {
+    let search = &mut *(lparam as *mut HostedDirectChildWindowSearch);
+    let mut pid = 0;
+    GetWindowThreadProcessId(hwnd, &mut pid);
+    if pid == search.pid {
+        search.hwnd = Some(hwnd as isize);
+        return 0;
+    }
+    1
+}
+
+fn hosted_direct_child_log_path() -> Result<PathBuf, String> {
+    let dir = app_data_dir().join("browser").join(HOSTED_DIRECT_LOG_DIR);
+    std::fs::create_dir_all(&dir).map_err(|error| {
+        format!(
+            "failed to create hosted direct log directory {}: {error}",
+            dir.display()
+        )
+    })?;
+    Ok(dir.join(format!(
+        "servo-child-{}.log",
+        Utc::now().format("%Y%m%d-%H%M%S-%3f")
+    )))
+}
+
+fn terminate_child_process(child: &mut Option<HostedDirectChild>) {
+    if let Some(mut child) = child.take() {
+        let _ = child.child.kill();
+        let _ = child.child.wait();
+    }
+}
+
+#[cfg(all(target_os = "windows", feature = "servo-backend"))]
+fn focus_hosted_direct_parent_window(window: &Window, parent_hwnd: isize) {
+    window.focus_window();
+    unsafe {
+        let hwnd = parent_hwnd as HWND;
+        BringWindowToTop(hwnd);
+        SetForegroundWindow(hwnd);
+        SetActiveWindow(hwnd);
+        SetFocus(hwnd);
+    }
+}
+
+#[cfg(not(all(target_os = "windows", feature = "servo-backend")))]
+fn focus_hosted_direct_parent_window(window: &Window, _parent_hwnd: isize) {
+    window.focus_window();
+}
+
+fn draw_hosted_direct_shell(
+    window: &Window,
+    surface: &mut Surface<Arc<Window>, Arc<Window>>,
+    surface_size: &mut PhysicalSize<u32>,
+    browser_mode: BrowserMode,
+    shell: &HostedDirectShellState,
+    child_pid: Option<u32>,
+    child_log_path: Option<&Path>,
+    summary: &HostedDirectLogSummary,
+) -> Result<(), String> {
+    let size = window.inner_size();
+    if size.width == 0 || size.height == 0 {
+        return Ok(());
+    }
+    if *surface_size != size {
+        surface
+            .resize(
+                NonZeroU32::new(size.width.max(1)).expect("width is nonzero"),
+                NonZeroU32::new(size.height.max(1)).expect("height is nonzero"),
+            )
+            .map_err(|error| error.to_string())?;
+        *surface_size = size;
+    }
+    let mut buffer = surface.buffer_mut().map_err(|error| error.to_string())?;
+    buffer.fill(BG);
+    fill_rect(
+        &mut buffer,
+        size.width,
+        size.height,
+        Rect {
+            x: 0,
+            y: 0,
+            w: size.width,
+            h: HOSTED_DIRECT_CHROME_H,
+        },
+        PANEL_DARK,
+    );
+    fill_rect(
+        &mut buffer,
+        size.width,
+        size.height,
+        Rect {
+            x: 0,
+            y: HOSTED_DIRECT_CHROME_H.saturating_sub(1),
+            w: size.width,
+            h: 1,
+        },
+        BORDER,
+    );
+    draw_text(
+        &mut buffer,
+        size.width,
+        size.height,
+        18,
+        16,
+        "SEXTANT DIRECT",
+        TEXT,
+        2,
+    );
+    draw_text(
+        &mut buffer,
+        size.width,
+        size.height,
+        220,
+        18,
+        browser_mode.status(),
+        TEXT_DIM,
+        1,
+    );
+    let status = child_pid
+        .map(|pid| format!("hosted servo pid {pid}"))
+        .unwrap_or_else(|| "hosted servo starting".to_string());
+    let log_status = child_log_path
+        .and_then(|path| path.file_name())
+        .and_then(|name| name.to_str())
+        .map(|name| format!("log {name}"))
+        .unwrap_or_default();
+    let summary_x = 300;
+    let summary_max_chars = size.width.saturating_sub(545) / (GLYPH_W + GLYPH_GAP);
+    if HOSTED_DIRECT_DEBUG_TELEMETRY && summary_max_chars >= 18 {
+        let perf_text = summary.compact_perf_status();
+        draw_text(
+            &mut buffer,
+            size.width,
+            size.height,
+            summary_x,
+            18,
+            &truncate(&perf_text, summary_max_chars.min(82) as usize),
+            if summary.slow_frames > 0 {
+                STATUS_WARN
+            } else {
+                TEXT_DIM
+            },
+            1,
+        );
+        if let Some(audit_text) = summary.compact_audit_status() {
+            draw_text(
+                &mut buffer,
+                size.width,
+                size.height,
+                summary_x,
+                30,
+                &truncate(audit_text, summary_max_chars.min(82) as usize),
+                TEXT_DIM,
+                1,
+            );
+        }
+    }
+    let rects = hosted_direct_chrome_rects(size);
+    draw_hosted_direct_button(
+        &mut buffer,
+        size.width,
+        size.height,
+        rects.back,
+        "<",
+        summary.can_go_back,
+    );
+    draw_hosted_direct_button(
+        &mut buffer,
+        size.width,
+        size.height,
+        rects.forward,
+        ">",
+        summary.can_go_forward,
+    );
+    draw_hosted_direct_button(
+        &mut buffer,
+        size.width,
+        size.height,
+        rects.reload,
+        "R",
+        true,
+    );
+    draw_hosted_direct_button(
+        &mut buffer,
+        size.width,
+        size.height,
+        rects.new_tab,
+        "+",
+        true,
+    );
+    draw_hosted_direct_button(
+        &mut buffer,
+        size.width,
+        size.height,
+        rects.previous_tab,
+        "T-",
+        summary.can_switch_tabs(),
+    );
+    draw_hosted_direct_button(
+        &mut buffer,
+        size.width,
+        size.height,
+        rects.next_tab,
+        "T+",
+        summary.can_switch_tabs(),
+    );
+    draw_hosted_direct_button(
+        &mut buffer,
+        size.width,
+        size.height,
+        rects.close_tab,
+        "X",
+        true,
+    );
+    fill_rect(
+        &mut buffer,
+        size.width,
+        size.height,
+        rects.address,
+        if shell.address_focused {
+            FIELD_FOCUS
+        } else {
+            FIELD
+        },
+    );
+    draw_hosted_direct_progress(&mut buffer, size.width, size.height, rects.address, summary);
+    fill_rect(
+        &mut buffer,
+        size.width,
+        size.height,
+        Rect {
+            x: rects.address.x,
+            y: rects.address.y,
+            w: rects.address.w,
+            h: 2,
+        },
+        if shell.address_focused {
+            BUTTON_BRIGHT
+        } else {
+            BORDER
+        },
+    );
+    let address_chars = rects.address.w.saturating_sub(16) / (GLYPH_W + GLYPH_GAP);
+    let address_text = shell.address_display_text(address_chars as usize);
+    draw_text(
+        &mut buffer,
+        size.width,
+        size.height,
+        rects.address.x + 8,
+        rects.address.y + 6,
+        &truncate(&address_text, address_chars as usize),
+        if shell.address_focused {
+            TEXT
+        } else {
+            TEXT_DIM
+        },
+        1,
+    );
+    let right_x = size.width.saturating_sub(250);
+    if !summary.certificate_warning_active() {
+        draw_text(
+            &mut buffer,
+            size.width,
+            size.height,
+            right_x,
+            48,
+            &status,
+            STATUS_OK,
+            1,
+        );
+        if HOSTED_DIRECT_DEBUG_TELEMETRY && !log_status.is_empty() {
+            draw_text(
+                &mut buffer,
+                size.width,
+                size.height,
+                right_x,
+                30,
+                &truncate(&log_status, 32),
+                TEXT_DIM,
+                1,
+            );
+        }
+    }
+    if let Some(certificate_status) = summary.compact_certificate_status() {
+        let certificate_trust_ready = summary.certificate_fingerprint_sha256.is_some();
+        draw_text(
+            &mut buffer,
+            size.width,
+            size.height,
+            right_x,
+            30,
+            &truncate(&certificate_status, 32),
+            STATUS_WARN,
+            1,
+        );
+        draw_hosted_direct_button(
+            &mut buffer,
+            size.width,
+            size.height,
+            rects.certificate_back,
+            "BACK",
+            true,
+        );
+        draw_hosted_direct_button(
+            &mut buffer,
+            size.width,
+            size.height,
+            rects.trust_once,
+            "ONCE",
+            certificate_trust_ready,
+        );
+        draw_hosted_direct_button(
+            &mut buffer,
+            size.width,
+            size.height,
+            rects.trust_appliance,
+            "TRUST",
+            certificate_trust_ready && browser_mode != BrowserMode::Incognito,
+        );
+    }
+    let tab_label = match (summary.active_tab_index, summary.tab_count) {
+        (Some(index), Some(total)) => format!("TAB {index}/{total}"),
+        _ => "TAB 1/1".to_string(),
+    };
+    let title = summary
+        .active_title
+        .as_deref()
+        .filter(|title| !title.trim().is_empty())
+        .unwrap_or("loading");
+    let title_x = rects.address.x;
+    let title_chars =
+        size.width.saturating_sub(title_x).saturating_sub(272) / (GLYPH_W + GLYPH_GAP);
+    if title_chars >= 18 {
+        draw_text(
+            &mut buffer,
+            size.width,
+            size.height,
+            title_x,
+            16,
+            &truncate(&format!("{tab_label}  {title}"), title_chars as usize),
+            TEXT_DIM,
+            1,
+        );
+    }
+    buffer.present().map_err(|error| error.to_string())
+}
+
+fn draw_hosted_direct_button(
+    buffer: &mut [u32],
+    width: u32,
+    height: u32,
+    rect: Rect,
+    label: &str,
+    enabled: bool,
+) {
+    fill_rect(
+        buffer,
+        width,
+        height,
+        rect,
+        if enabled { PANEL_ALT } else { BUTTON_DISABLED },
+    );
+    fill_rect(
+        buffer,
+        width,
+        height,
+        Rect {
+            x: rect.x,
+            y: rect.y,
+            w: rect.w,
+            h: 1,
+        },
+        if enabled { BORDER } else { FIELD },
+    );
+    draw_text(
+        buffer,
+        width,
+        height,
+        rect.x + 11u32.saturating_sub((label.chars().count() as u32).saturating_mul(2)),
+        rect.y + 6,
+        label,
+        if enabled { TEXT } else { TEXT_DIM },
+        1,
+    );
+}
+
+fn draw_hosted_direct_progress(
+    buffer: &mut [u32],
+    width: u32,
+    height: u32,
+    address: Rect,
+    summary: &HostedDirectLogSummary,
+) {
+    let progress = summary.load_progress().clamp(0.0, 1.0);
+    let track = Rect {
+        x: address.x,
+        y: address.y + address.h.saturating_sub(2),
+        w: address.w,
+        h: 2,
+    };
+    fill_rect(buffer, width, height, track, BORDER);
+    let fill_width = ((address.w as f32) * progress).round() as u32;
+    if fill_width > 0 {
+        fill_rect(
+            buffer,
+            width,
+            height,
+            Rect {
+                x: track.x,
+                y: track.y,
+                w: fill_width.min(track.w),
+                h: track.h,
+            },
+            if summary.is_loading() {
+                BUTTON_BRIGHT
+            } else {
+                STATUS_OK
+            },
+        );
+    }
+}
+
+fn parse_hosted_direct_log_summary(path: &Path) -> HostedDirectLogSummary {
+    let Ok(contents) = read_hosted_direct_log_window(path) else {
+        return HostedDirectLogSummary::default();
+    };
+    parse_hosted_direct_log_summary_text(&contents)
+}
+
+fn read_hosted_direct_log_window(path: &Path) -> Result<String, std::io::Error> {
+    let mut file = std::fs::File::open(path)?;
+    let len = file.metadata()?.len();
+    let full_window = HOSTED_DIRECT_LOG_HEAD_BYTES + HOSTED_DIRECT_LOG_TAIL_BYTES;
+    if len <= full_window {
+        let mut contents = String::new();
+        file.read_to_string(&mut contents)?;
+        return Ok(contents);
+    }
+
+    let mut head = vec![0; HOSTED_DIRECT_LOG_HEAD_BYTES as usize];
+    file.read_exact(&mut head)?;
+
+    file.seek(SeekFrom::Start(len - HOSTED_DIRECT_LOG_TAIL_BYTES))?;
+    let mut tail = Vec::with_capacity(HOSTED_DIRECT_LOG_TAIL_BYTES as usize);
+    file.read_to_end(&mut tail)?;
+
+    let mut contents = String::from_utf8_lossy(&head).into_owned();
+    contents.push('\n');
+    contents.push_str(&String::from_utf8_lossy(&tail));
+    Ok(contents)
+}
+
+fn parse_hosted_direct_log_summary_text(contents: &str) -> HostedDirectLogSummary {
+    let mut summary = HostedDirectLogSummary::default();
+    for line in contents.lines() {
+        if !line.contains("[window-direct]") {
+            continue;
+        }
+        if let Some(value) = extract_token_after(line, "first direct present in ") {
+            summary.first_present = Some(value.to_string());
+        }
+        if let Some(rest) = line.split_once("active load status ").map(|(_, rest)| rest) {
+            if let Some(status) = rest.split_whitespace().next() {
+                summary.latest_load_complete = status == "Complete";
+                if let Some(duration) = extract_between(rest, " after ", " url ") {
+                    summary.latest_load = Some(format!("{status} {duration}"));
+                }
+                if let Some(url) = extract_after(rest, " url ") {
+                    summary.latest_url = Some(url.to_string());
+                }
+            }
+        }
+        if let Some(rest) = line
+            .split_once("pending load status ")
+            .map(|(_, rest)| rest)
+        {
+            if let Some(status) = rest.split_whitespace().next() {
+                summary.latest_load_complete = false;
+                if let Some(duration) = extract_between(rest, " after ", " url ") {
+                    summary.latest_load = Some(format!("pending {status} {duration}"));
+                }
+                if let Some(url) = extract_after(rest, " url ") {
+                    summary.latest_url = Some(url.to_string());
+                }
+            }
+        }
+        if let Some(rest) = line.split_once("chrome status ").map(|(_, rest)| rest) {
+            if let Some(tab) = extract_token_after(rest, "tab ") {
+                if let Some((index, total)) = tab.split_once('/') {
+                    summary.active_tab_index = index.parse::<usize>().ok();
+                    summary.tab_count = total.parse::<usize>().ok();
+                }
+            }
+            if let Some(back) = extract_token_after(rest, "back ") {
+                summary.can_go_back = back == "true";
+            }
+            if let Some(forward) = extract_token_after(rest, "forward ") {
+                summary.can_go_forward = forward == "true";
+            }
+            if let Some(title) = extract_between(rest, " title ", " url ") {
+                summary.active_title = Some(title.to_string());
+            }
+            if let Some(url) = extract_after(rest, " url ") {
+                summary.latest_url = Some(url.to_string());
+            }
+        }
+        if let Some(fingerprint) = extract_token_after(line, "certificate fingerprint sha256 ") {
+            summary.certificate_fingerprint_sha256 = Some(fingerprint.to_string());
+        }
+        if line.contains("host command certificate-go-back") {
+            summary.certificate_back_requested = true;
+        }
+        if line.contains("host command trust-once") {
+            summary.certificate_trust_once_requested = true;
+        }
+        if line.contains("host command trust-this-appliance") {
+            summary.certificate_trust_this_appliance_requested = true;
+        }
+        if let Some(duration) = extract_between(line, "retained navigation swap to ", " (") {
+            if let Some((_, after)) = duration.rsplit_once(" after ") {
+                summary.latest_swap = Some(after.to_string());
+            }
+            if let Some((target, _)) = duration.rsplit_once(" after ") {
+                summary.latest_url = Some(target.to_string());
+            }
+        }
+        if let Some(value) = extract_token_after(line, "verified repeat input direct frame in ") {
+            summary.latest_input = Some(format!("repeat {value}"));
+        } else if let Some(value) = extract_token_after(line, "verified input direct frame in ") {
+            summary.latest_input = Some(format!("verify {value}"));
+        } else if let Some(value) = extract_token_after(line, "input direct frame in ") {
+            summary.latest_input = Some(value.to_string());
+        } else if let Some(value) = extract_token_after(line, "search submit direct frame in ") {
+            summary.latest_input = Some(format!("search {value}"));
+        } else if let Some(value) = extract_token_after(line, "live search direct frame in ") {
+            summary.latest_input = Some(format!("live {value}"));
+        }
+        if line.contains("slow direct frame ") {
+            summary.slow_frames = summary.slow_frames.saturating_add(1);
+            if let Some(label) = extract_token_after(line, " total=") {
+                update_max_duration(
+                    &mut summary.max_frame_ms,
+                    &mut summary.max_frame_label,
+                    label,
+                );
+            }
+            if let Some(label) = extract_token_after(line, " paint=") {
+                update_max_duration(
+                    &mut summary.max_paint_ms,
+                    &mut summary.max_paint_label,
+                    label,
+                );
+            }
+        }
+        if let Some((_, raw_audit)) = line.split_once("resource audit ") {
+            summary.latest_resource_audit = summarize_resource_audit(raw_audit);
+        }
+    }
+    summary
+}
+
+fn summarize_resource_audit(raw_audit: &str) -> Option<String> {
+    let image_count = json_u64_field(raw_audit, "imageCount");
+    let broken_images = json_array_len_field(raw_audit, "brokenImages");
+    let inline_svgs = json_u64_field(raw_audit, "inlineSvgCount");
+    let zero_svgs = json_u64_field(raw_audit, "zeroSizeSvgCount");
+    let stylesheets = json_u64_field(raw_audit, "stylesheetCount");
+    let canvases = json_u64_field(raw_audit, "canvasCount");
+
+    if image_count
+        .or(broken_images)
+        .or(inline_svgs)
+        .or(zero_svgs)
+        .or(stylesheets)
+        .or(canvases)
+        .is_none()
+    {
+        return None;
+    }
+
+    Some(format!(
+        "audit img {} broken {} svg {}/{} css {} canvas {}",
+        format_optional_count(image_count),
+        format_optional_count(broken_images),
+        format_optional_count(inline_svgs),
+        format_optional_count(zero_svgs),
+        format_optional_count(stylesheets),
+        format_optional_count(canvases),
+    ))
+}
+
+fn format_optional_count(value: Option<u64>) -> String {
+    value
+        .map(|count| count.to_string())
+        .unwrap_or_else(|| "?".to_string())
+}
+
+fn json_u64_field(raw: &str, field: &str) -> Option<u64> {
+    let marker = format!("\"{field}\"");
+    let (_, rest) = raw.split_once(&marker)?;
+    let (_, rest) = rest.split_once(':')?;
+    let digits: String = rest
+        .trim_start()
+        .chars()
+        .take_while(|ch| ch.is_ascii_digit())
+        .collect();
+    digits.parse().ok()
+}
+
+fn json_array_len_field(raw: &str, field: &str) -> Option<u64> {
+    let marker = format!("\"{field}\"");
+    let (_, rest) = raw.split_once(&marker)?;
+    let (_, rest) = rest.split_once('[')?;
+    let mut depth = 1u32;
+    let mut in_string = false;
+    let mut escape = false;
+    let mut saw_value = false;
+    let mut values = 0u64;
+    for ch in rest.chars() {
+        if escape {
+            escape = false;
+            continue;
+        }
+        match ch {
+            '\\' if in_string => escape = true,
+            '"' => {
+                in_string = !in_string;
+                saw_value = true;
+            }
+            '[' if !in_string => {
+                depth += 1;
+                saw_value = true;
+            }
+            ']' if !in_string => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(if saw_value { values + 1 } else { 0 });
+                }
+            }
+            ',' if !in_string && depth == 1 => {
+                values += 1;
+                saw_value = false;
+            }
+            ch if !in_string && !ch.is_whitespace() => saw_value = true,
+            _ => {}
+        }
+    }
+    None
+}
+
+fn extract_between<'a>(value: &'a str, start: &str, end: &str) -> Option<&'a str> {
+    let (_, rest) = value.split_once(start)?;
+    let (between, _) = rest.split_once(end)?;
+    Some(between.trim())
+}
+
+fn extract_after<'a>(value: &'a str, marker: &str) -> Option<&'a str> {
+    let (_, rest) = value.split_once(marker)?;
+    Some(rest.trim())
+}
+
+fn extract_token_after<'a>(value: &'a str, marker: &str) -> Option<&'a str> {
+    let (_, rest) = value.split_once(marker)?;
+    rest.split_whitespace().next()
+}
+
+fn compact_fingerprint(value: &str) -> String {
+    let value = value.trim();
+    if value.chars().count() <= 16 {
+        return value.to_string();
+    }
+    let prefix = value.chars().take(8).collect::<String>();
+    let suffix = value
+        .chars()
+        .rev()
+        .take(4)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect::<String>();
+    format!("{prefix}..{suffix}")
+}
+
+#[cfg(any(feature = "xilem-shell", feature = "servo-backend"))]
+fn appliance_cert_entry_label(entry: &ApplianceCertTrustEntry) -> String {
+    if let Some(label) = entry
+        .label
+        .as_deref()
+        .filter(|label| !label.trim().is_empty())
+    {
+        return truncate(label.trim(), 42);
+    }
+    Url::parse(&entry.origin)
+        .ok()
+        .and_then(|url| url.host_str().map(|host| host.to_string()))
+        .unwrap_or_else(|| entry.origin.clone())
+}
+
+fn update_max_duration(max_ms: &mut Option<f64>, max_label: &mut Option<String>, label: &str) {
+    let Some(duration_ms) = parse_duration_label_ms(label) else {
+        return;
+    };
+    if max_ms.is_none_or(|current| duration_ms > current) {
+        *max_ms = Some(duration_ms);
+        *max_label = Some(label.to_string());
+    }
+}
+
+fn parse_duration_label_ms(label: &str) -> Option<f64> {
+    if let Some(value) = label.strip_suffix("ms") {
+        return value.parse::<f64>().ok();
+    }
+    if let Some(value) = label.strip_suffix('s') {
+        return value.parse::<f64>().ok().map(|seconds| seconds * 1000.0);
+    }
+    None
+}
+
+fn window_hwnd(window: &Window) -> Option<isize> {
+    match window.window_handle().ok()?.as_raw() {
+        RawWindowHandle::Win32(handle) => Some(handle.hwnd.get()),
+        _ => None,
+    }
+}
+
 #[cfg(not(feature = "servo-backend"))]
 fn run_direct_servo_browser(
     _window_smoke: Option<WindowSmokeSpec>,
@@ -5604,11 +8169,21 @@ fn run_direct_servo_browser(
     _start_verified_input_smoke: bool,
     _start_search_submit_smoke: bool,
     _start_live_search_smoke: bool,
+    _direct_resource_audit: bool,
     _start_load_smoke: bool,
     _start_reload_smoke: bool,
     _start_resize_smoke: bool,
     _browser_mode: BrowserMode,
     _pre_size_visible_navigation: bool,
+    _certificate_path: Option<PathBuf>,
+    _local_appliance_cert_fingerprint: Option<String>,
+    _remember_local_appliance_cert: Option<String>,
+    _allow_insecure_local_tls: bool,
+    _embed_parent_hwnd: Option<isize>,
+    _embed_x: i32,
+    _embed_y: i32,
+    _embed_width: Option<u32>,
+    _embed_height: Option<u32>,
 ) -> Result<(), String> {
     Err("direct Servo render path requires the servo-backend feature".to_string())
 }
@@ -6381,31 +8956,8 @@ fn run_visible_app(
 
 fn sextant_window_icon() -> Option<Icon> {
     let size = 64u32;
-    let mut rgba = vec![0u8; (size * size * 4) as usize];
-    for y in 0..size {
-        for x in 0..size {
-            let index = ((y * size + x) * 4) as usize;
-            let dx = x as i32 - 32;
-            let dy = y as i32 - 32;
-            let inside = dx * dx + dy * dy <= 30 * 30;
-            let ring = dx * dx + dy * dy >= 24 * 24 && inside;
-            let needle = (x >= 29 && x <= 34 && y >= 12 && y <= 52)
-                || (y >= 29 && y <= 34 && x >= 12 && x <= 52)
-                || ((x as i32 - y as i32).abs() <= 2 && x >= 18 && x <= 46);
-
-            let color = if ring {
-                [14, 199, 232, 255]
-            } else if needle {
-                [47, 191, 113, 255]
-            } else if inside {
-                [13, 19, 25, 255]
-            } else {
-                [0, 0, 0, 0]
-            };
-            rgba[index..index + 4].copy_from_slice(&color);
-        }
-    }
-    Icon::from_rgba(rgba, size, size).ok()
+    let rgba = include_bytes!("../assets/icons/sextant-64.rgba");
+    Icon::from_rgba(rgba.to_vec(), size, size).ok()
 }
 
 fn start_visible_input(app: &mut BrowserApp, input: &str) -> Result<bool, String> {
@@ -7808,6 +10360,7 @@ fn parse_window_smoke(args: &[String]) -> Result<Option<WindowSmokeSpec>, String
     let resize_smoke = args
         .iter()
         .any(|arg| arg == "--resize-smoke" || arg == "--window-resize-smoke");
+    let allow_insecure_local_tls = args.iter().any(|arg| arg == "--allow-insecure-local-tls");
     Ok(Some(WindowSmokeSpec {
         target,
         timeout,
@@ -7819,7 +10372,28 @@ fn parse_window_smoke(args: &[String]) -> Result<Option<WindowSmokeSpec>, String
         live_search_smoke,
         load_smoke,
         resize_smoke,
+        allow_insecure_local_tls,
     }))
+}
+
+#[cfg(any(feature = "xilem-shell", feature = "servo-backend", test))]
+fn is_local_appliance_target(target: &Url) -> bool {
+    let Some(host) = target.host_str() else {
+        return false;
+    };
+    if host.eq_ignore_ascii_case("localhost") || host.ends_with(".local") {
+        return true;
+    }
+    let Ok(addr) = host.parse::<IpAddr>() else {
+        return false;
+    };
+    match addr {
+        IpAddr::V4(addr) => addr.is_loopback() || addr.is_private() || addr.is_link_local(),
+        IpAddr::V6(addr) => {
+            let first = addr.segments()[0];
+            addr.is_loopback() || (first & 0xfe00) == 0xfc00 || (first & 0xffc0) == 0xfe80
+        }
+    }
 }
 
 fn input_latency_fixture_url() -> String {
@@ -7892,6 +10466,18 @@ fn operator_arg_value(args: &[String], flag: &str) -> Option<String> {
     args.windows(2)
         .find(|pair| pair[0] == flag)
         .map(|pair| pair[1].clone())
+}
+
+fn parse_isize_flag(args: &[String], flag: &str) -> Option<isize> {
+    operator_arg_value(args, flag).and_then(|value| value.parse::<isize>().ok())
+}
+
+fn parse_i32_flag(args: &[String], flag: &str) -> Option<i32> {
+    operator_arg_value(args, flag).and_then(|value| value.parse::<i32>().ok())
+}
+
+fn parse_u32_flag(args: &[String], flag: &str) -> Option<u32> {
+    operator_arg_value(args, flag).and_then(|value| value.parse::<u32>().ok())
 }
 
 fn parse_navigation_target(input: &str) -> Result<Url, String> {
@@ -8200,6 +10786,137 @@ mod tests {
             parse_navigation_target(&intent_navigation_text("summarize https://example.com now"))
                 .unwrap();
         assert_eq!(target.as_str(), "https://example.com/");
+    }
+
+    #[test]
+    fn summarizes_hosted_direct_timing_logs() {
+        let summary = parse_hosted_direct_log_summary_text(
+            r#"
+[window-direct] first direct present in 103ms
+[window-direct] active load status HeadParsed after 193ms url https://example.test/
+[window-direct] active load status Complete after 4.5s url https://example.test/
+[window-direct] retained navigation swap to https://example.test/next after 415ms (head parsed)
+[window-direct] verified input direct frame in 368ms
+[window-direct] verified repeat input direct frame in 114ms
+[window-direct] slow direct frame 7 total=238ms spin=4ms paint=210ms present=24ms
+[window-direct] slow direct frame 8 total=1.3s spin=7ms paint=1.2s present=20ms
+[window-direct] chrome status tab 2/3 back true forward false title Example Domain url https://example.test/next
+[window-direct] certificate fingerprint sha256 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+[window-direct] host command certificate-go-back
+[window-direct] host command trust-once
+[window-direct] host command trust-this-appliance
+[window-direct] resource audit {"imageCount":12,"brokenImages":["missing.png"],"inlineSvgCount":9,"zeroSizeSvgCount":2,"stylesheetCount":4,"canvasCount":1}
+"#,
+        );
+
+        assert_eq!(summary.first_present.as_deref(), Some("103ms"));
+        assert_eq!(summary.latest_load.as_deref(), Some("Complete 4.5s"));
+        assert!(summary.latest_load_complete);
+        assert_eq!(summary.load_progress(), 1.0);
+        assert_eq!(summary.latest_swap.as_deref(), Some("415ms"));
+        assert_eq!(summary.latest_input.as_deref(), Some("repeat 114ms"));
+        assert_eq!(
+            summary.latest_url.as_deref(),
+            Some("https://example.test/next")
+        );
+        assert_eq!(summary.active_title.as_deref(), Some("Example Domain"));
+        assert_eq!(summary.active_tab_index, Some(2));
+        assert_eq!(summary.tab_count, Some(3));
+        assert!(summary.can_switch_tabs());
+        assert!(summary.can_go_back);
+        assert!(!summary.can_go_forward);
+        assert_eq!(
+            summary.certificate_fingerprint_sha256.as_deref(),
+            Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+        );
+        assert!(summary.certificate_warning_active());
+        assert_eq!(
+            summary.compact_certificate_status().as_deref(),
+            Some("cert 01234567..cdef")
+        );
+        assert!(summary.certificate_back_requested);
+        assert!(summary.certificate_trust_once_requested);
+        assert!(summary.certificate_trust_this_appliance_requested);
+        assert_eq!(summary.slow_frames, 2);
+        assert_eq!(summary.max_frame_label.as_deref(), Some("1.3s"));
+        assert_eq!(summary.max_paint_label.as_deref(), Some("1.2s"));
+        assert!(summary.compact_perf_status().contains("slow 2 paint 1.2s"));
+        assert_eq!(
+            summary.latest_resource_audit.as_deref(),
+            Some("audit img 12 broken 1 svg 9/2 css 4 canvas 1")
+        );
+
+        let default_summary = HostedDirectLogSummary::default();
+        assert!(!default_summary.can_go_back);
+        assert!(!default_summary.can_go_forward);
+        assert!(!default_summary.can_switch_tabs());
+        assert!(!default_summary.certificate_warning_active());
+    }
+
+    #[test]
+    fn parses_hosted_direct_certificate_smoke_actions() -> Result<(), String> {
+        assert_eq!(HostedDirectSmokeAction::parse_arg(None)?, None);
+        assert_eq!(
+            HostedDirectSmokeAction::parse_arg(Some("back".to_string()))?,
+            Some(HostedDirectSmokeAction::Back)
+        );
+        assert_eq!(
+            HostedDirectSmokeAction::parse_arg(Some("trust-once".to_string()))?,
+            Some(HostedDirectSmokeAction::TrustOnce)
+        );
+        assert_eq!(
+            HostedDirectSmokeAction::parse_arg(Some("trust".to_string()))?,
+            Some(HostedDirectSmokeAction::TrustThisAppliance)
+        );
+        assert!(HostedDirectSmokeAction::parse_arg(Some("ignore".to_string())).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn hosted_direct_child_bounds_keep_chrome_reserved() {
+        assert_eq!(
+            hosted_direct_child_bounds(PhysicalSize::new(1180, 760)),
+            (0, HOSTED_DIRECT_CHROME_H as i32, 1180, 688)
+        );
+        assert_eq!(
+            hosted_direct_child_bounds(PhysicalSize::new(100, 80)),
+            (0, HOSTED_DIRECT_CHROME_H as i32, 320, 240)
+        );
+    }
+
+    #[test]
+    fn hosted_direct_chrome_rects_leave_room_for_address() {
+        let rects = hosted_direct_chrome_rects(PhysicalSize::new(1180, 760));
+        assert!(rects.back.x < rects.forward.x);
+        assert!(rects.forward.x < rects.reload.x);
+        assert!(rects.reload.x < rects.new_tab.x);
+        assert!(rects.new_tab.x < rects.previous_tab.x);
+        assert!(rects.previous_tab.x < rects.next_tab.x);
+        assert!(rects.next_tab.x < rects.close_tab.x);
+        assert!(rects.close_tab.x < rects.address.x);
+        assert!(rects.certificate_back.x < rects.trust_once.x);
+        assert!(rects.trust_once.x < rects.trust_appliance.x);
+        assert!(rects.address.w >= 160);
+        assert!(rects.address.y < HOSTED_DIRECT_CHROME_H);
+    }
+
+    #[test]
+    fn hosted_direct_address_input_tracks_cursor() {
+        let mut shell = HostedDirectShellState::new("https://example.test".to_string());
+        shell.address_focused = true;
+        shell.address_replace_on_text = true;
+        shell.push_address_text("abcd");
+        assert_eq!(shell.address_input, "abcd");
+        assert_eq!(shell.address_cursor, 4);
+
+        shell.address_cursor = 2;
+        shell.push_address_text("Z");
+        assert_eq!(shell.address_input, "abZcd");
+        assert_eq!(shell.address_cursor, 3);
+        assert_eq!(shell.address_display_text(12), "abZ_cd");
+
+        assert_eq!(previous_char_boundary("abZcd", 3), 2);
+        assert_eq!(next_char_boundary("abZcd", 3), 4);
     }
 
     #[test]
@@ -8918,6 +11635,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(feature = "servo-backend")]
     #[test]
     fn visible_reload_can_complete_from_navigation_worker() -> Result<(), String> {
         let data_dir =
@@ -9753,6 +12471,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(feature = "servo-backend")]
     #[test]
     fn visible_navigation_can_pre_size_viewport_when_requested() -> Result<(), String> {
         let data_dir = env::temp_dir().join(format!("sextant-browser-pre-size-{}", Uuid::new_v4()));
@@ -9787,6 +12506,7 @@ mod tests {
             "--window-verified-input-smoke".to_string(),
             "--window-search-submit-smoke".to_string(),
             "--window-live-search-smoke".to_string(),
+            "--allow-insecure-local-tls".to_string(),
             "--window-smoke-timeout".to_string(),
             "30".to_string(),
         ];
@@ -9799,7 +12519,115 @@ mod tests {
         assert!(spec.verified_input_smoke);
         assert!(spec.search_submit_smoke);
         assert!(spec.live_search_smoke);
+        assert!(spec.allow_insecure_local_tls);
         assert!(input_latency_fixture_url().starts_with("data:text/html,"));
+    }
+
+    #[test]
+    fn local_appliance_tls_override_is_limited_to_local_targets() {
+        let private =
+            Url::parse("https://192.0.2.130:8080/app").expect("private URL should parse");
+        let localhost = Url::parse("https://localhost:8443").expect("local URL should parse");
+        let mdns = Url::parse("https://pylon.local:8443").expect("local URL should parse");
+        let public = Url::parse("https://example.com").expect("public URL should parse");
+
+        assert!(is_local_appliance_target(&private));
+        assert!(is_local_appliance_target(&localhost));
+        assert!(is_local_appliance_target(&mdns));
+        assert!(!is_local_appliance_target(&public));
+    }
+
+    #[cfg(any(feature = "xilem-shell", feature = "servo-backend"))]
+    #[test]
+    fn appliance_cert_trust_store_is_origin_and_fingerprint_scoped() -> Result<(), String> {
+        let data_dir = env::temp_dir().join(format!(
+            "sextant-browser-appliance-cert-trust-{}",
+            Uuid::new_v4()
+        ));
+        let target =
+            Url::parse("https://192.0.2.130:8080/app/login").map_err(|error| error.to_string())?;
+        let same_origin =
+            Url::parse("https://192.0.2.130:8080/app").map_err(|error| error.to_string())?;
+        let other_origin =
+            Url::parse("https://192.0.2.131:8080/app").map_err(|error| error.to_string())?;
+        let fingerprint =
+            "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99";
+        let changed_fingerprint =
+            "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+
+        let mut store = ApplianceCertTrustStore::default();
+        store.remember(&target, fingerprint, Some("Pylon".to_string()))?;
+        store.save(&data_dir)?;
+
+        let mut loaded = ApplianceCertTrustStore::load(&data_dir)?;
+        assert!(loaded.is_trusted(&same_origin, fingerprint)?);
+        assert!(!loaded.is_trusted(&same_origin, changed_fingerprint)?);
+        assert!(!loaded.is_trusted(&other_origin, fingerprint)?);
+        assert_eq!(
+            appliance_origin(&target)?,
+            "https://192.0.2.130:8080".to_string()
+        );
+        assert_eq!(
+            normalize_certificate_fingerprint(fingerprint)?,
+            "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899"
+        );
+        assert!(loaded.forget(&same_origin)?);
+        assert!(!loaded.is_trusted(&same_origin, fingerprint)?);
+        assert!(!loaded.forget(&same_origin)?);
+
+        loaded.remember(&target, fingerprint, Some("Pylon".to_string()))?;
+        assert!(loaded.clear());
+        assert!(!loaded.clear());
+        assert!(loaded.entries.is_empty());
+
+        let _ = std::fs::remove_dir_all(data_dir);
+        Ok(())
+    }
+
+    #[cfg(any(feature = "xilem-shell", feature = "servo-backend"))]
+    #[test]
+    fn guard_appliance_cert_settings_select_and_forget_entry() -> Result<(), String> {
+        let data_dir = env::temp_dir().join(format!(
+            "sextant-browser-appliance-cert-settings-{}",
+            Uuid::new_v4()
+        ));
+        let target =
+            Url::parse("https://192.0.2.130:8080/app/login").map_err(|error| error.to_string())?;
+        let fingerprint = "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899";
+        let mut store = ApplianceCertTrustStore::default();
+        store.remember(&target, fingerprint, Some("Pylon".to_string()))?;
+        store.save(&data_dir)?;
+
+        let mut app = BrowserApp::new_with_data_dir(data_dir.clone())?;
+        app.layout(PhysicalSize::new(1180, 760));
+        assert_eq!(app.appliance_cert_entries.len(), 1);
+
+        let guard_tab_rect = app.guard_tab_rect;
+        click_rect(&mut app, guard_tab_rect, "Guard tab")?;
+        let panel = main_panel_rect(right_rail_x(app.window_size.width), app.window_size.height);
+        let row_rect = guard_appliance_row_rects(panel, app.appliance_cert_entries.len())
+            .into_iter()
+            .next()
+            .map(|(_, rect)| rect)
+            .ok_or_else(|| "expected appliance certificate trust row".to_string())?;
+        click_rect(&mut app, row_rect, "trusted appliance row")?;
+        assert_eq!(app.selected_appliance_cert, Some(0));
+        assert!(app.last_status.contains("Selected appliance"));
+
+        click_rect(
+            &mut app,
+            guard_appliance_forget_rect(panel),
+            "Forget appliance certificate",
+        )?;
+        assert!(app.appliance_cert_entries.is_empty());
+        assert!(app.selected_appliance_cert.is_none());
+        assert!(app.last_status.contains("Forgot local appliance"));
+
+        let loaded = ApplianceCertTrustStore::load(&data_dir)?;
+        assert!(loaded.entries.is_empty());
+
+        let _ = std::fs::remove_dir_all(data_dir);
+        Ok(())
     }
 
     #[test]
@@ -9880,6 +12708,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(feature = "xilem-shell")]
     #[test]
     fn guard_decision_blocks_blacklisted_navigation() -> Result<(), String> {
         let data_dir =
@@ -9938,6 +12767,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(feature = "xilem-shell")]
     #[test]
     fn navigate_to_stops_at_local_guard_block() -> Result<(), String> {
         let data_dir =
@@ -9955,6 +12785,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(feature = "xilem-shell")]
     #[test]
     fn guard_probe_reports_policy_block_as_probe_result() -> Result<(), String> {
         let report = run_guard_probe("https://malicious-site.net/path")?;
@@ -10231,8 +13062,32 @@ fn draw_top_bar(buffer: &mut [u32], width: u32, height: u32, app: &BrowserApp) {
         },
         BORDER,
     );
-    draw_text(buffer, width, height, 24, 14, "SEXTANT", TEXT, 1);
-    draw_text(buffer, width, height, 24, 34, "SERVO", TEXT_DIM, 1);
+    fill_rect(
+        buffer,
+        width,
+        height,
+        Rect {
+            x: 0,
+            y: 0,
+            w: rail_x,
+            h: 2,
+        },
+        BUTTON_BRIGHT,
+    );
+    fill_rect(
+        buffer,
+        width,
+        height,
+        Rect {
+            x: rail_x,
+            y: 0,
+            w: RAIL_WIDTH,
+            h: 2,
+        },
+        STATUS_OK,
+    );
+    draw_text(buffer, width, height, 24, 12, "SEXTANT", TEXT, 1);
+    draw_text(buffer, width, height, 24, 32, "AI BROWSER", TEXT_DIM, 1);
     for region in &app.mode_rects {
         draw_pill(
             buffer,
@@ -10249,19 +13104,20 @@ fn draw_top_bar(buffer: &mut [u32], width: u32, height: u32, app: &BrowserApp) {
         buffer,
         width,
         height,
-        rail_x.saturating_sub(94),
+        rail_x + 198,
         24,
         &tab_label,
         TEXT_DIM,
         1,
     );
-    draw_text(buffer, width, height, rail_x + 26, 18, "MAYA", TEXT, 1);
+    draw_status_dot(buffer, width, height, rail_x + 18, 23, STATUS_OK);
+    draw_text(buffer, width, height, rail_x + 34, 15, "MAYA", TEXT, 1);
     draw_text(
         buffer,
         width,
         height,
-        rail_x + 26,
-        36,
+        rail_x + 34,
+        33,
         "LOCAL ONLINE",
         STATUS_OK,
         1,
@@ -10280,7 +13136,7 @@ fn draw_controls(buffer: &mut [u32], width: u32, height: u32, app: &BrowserApp) 
             w: rail_x,
             h: STRIP_H,
         },
-        PANEL,
+        PANEL_SOFT,
     );
     fill_rect(
         buffer,
@@ -10294,12 +13150,13 @@ fn draw_controls(buffer: &mut [u32], width: u32, height: u32, app: &BrowserApp) 
         },
         BORDER,
     );
-    draw_field(
+    draw_field_with_placeholder(
         buffer,
         width,
         height,
         app.address_rect,
         &app.address_input,
+        "ENTER URL OR ASK SEXTANT",
         app.focus == FocusTarget::Address,
     );
 
@@ -10375,23 +13232,20 @@ fn draw_controls(buffer: &mut [u32], width: u32, height: u32, app: &BrowserApp) 
         "VALIDATION",
         app.main_view == MainView::Validation,
     );
-    draw_text(
+    let ai_ready = app.capabilities().ai_observe_dom;
+    draw_status_chip(
         buffer,
         width,
         height,
-        rail_x.saturating_sub(184),
-        CHROME_H + STRIP_H + 14,
-        if app.capabilities().ai_observe_dom {
-            "AI READY"
-        } else {
-            "AI OFF"
+        Rect {
+            x: rail_x.saturating_sub(102),
+            y: CHROME_H + STRIP_H + 8,
+            w: 84,
+            h: 24,
         },
-        if app.capabilities().ai_observe_dom {
-            STATUS_OK
-        } else {
-            TEXT_DIM
-        },
-        1,
+        if ai_ready { "AI READY" } else { "AI OFF" },
+        if ai_ready { STATUS_OK } else { TEXT_DIM },
+        ai_ready,
     );
 }
 
@@ -10749,8 +13603,7 @@ fn draw_page_panel(
         w: rail_x.saturating_sub(48),
         h: page.h,
     };
-    fill_rect(buffer, width, height, panel, PANEL_ALT);
-    stroke_rect(buffer, width, height, panel, BORDER);
+    draw_panel_surface(buffer, width, height, panel, BUTTON_BRIGHT);
     draw_text(
         buffer,
         width,
@@ -10858,13 +13711,69 @@ fn draw_page_panel(
             );
         }
     } else {
+        fill_rect(
+            buffer,
+            width,
+            height,
+            Rect {
+                x: 32,
+                y: panel.y + 70,
+                w: panel.w.saturating_sub(64),
+                h: 106,
+            },
+            PANEL_DARK,
+        );
+        stroke_rect(
+            buffer,
+            width,
+            height,
+            Rect {
+                x: 32,
+                y: panel.y + 70,
+                w: panel.w.saturating_sub(64),
+                h: 106,
+            },
+            BORDER_SOFT,
+        );
+        fill_rect(
+            buffer,
+            width,
+            height,
+            Rect {
+                x: 32,
+                y: panel.y + 70,
+                w: 2,
+                h: 106,
+            },
+            BUTTON_BRIGHT,
+        );
         draw_text(
             buffer,
             width,
             height,
             44,
             panel.y + 86,
-            "NO ACTIVE TAB",
+            "READY FOR A PAGE",
+            TEXT,
+            1,
+        );
+        draw_text(
+            buffer,
+            width,
+            height,
+            44,
+            panel.y + 112,
+            "ENTER A URL OR ASK SEXTANT FROM THE ADDRESS BAR.",
+            TEXT_SOFT,
+            1,
+        );
+        draw_text(
+            buffer,
+            width,
+            height,
+            44,
+            panel.y + 138,
+            "THE AI SIDECAR WILL TRACK CONTEXT WITHOUT TAKING CONTROL.",
             TEXT_DIM,
             1,
         );
@@ -10875,8 +13784,7 @@ fn draw_page_panel(
 fn draw_wake_panel(buffer: &mut [u32], width: u32, height: u32, app: &BrowserApp) {
     let rail_x = right_rail_x(width);
     let panel = main_panel_rect(rail_x, height);
-    fill_rect(buffer, width, height, panel, PANEL_ALT);
-    stroke_rect(buffer, width, height, panel, BORDER);
+    draw_panel_surface(buffer, width, height, panel, STATUS_OK);
     draw_text(
         buffer,
         width,
@@ -11137,8 +14045,7 @@ fn draw_rendered_frame(
 fn draw_log_panel(buffer: &mut [u32], width: u32, height: u32, app: &BrowserApp) {
     let rail_x = right_rail_x(width);
     let panel = main_panel_rect(rail_x, height);
-    fill_rect(buffer, width, height, panel, PANEL_ALT);
-    stroke_rect(buffer, width, height, panel, BORDER);
+    draw_panel_surface(buffer, width, height, panel, BUTTON_BRIGHT);
     draw_text(
         buffer,
         width,
@@ -11184,8 +14091,7 @@ fn draw_log_panel(buffer: &mut [u32], width: u32, height: u32, app: &BrowserApp)
 fn draw_guard_panel(buffer: &mut [u32], width: u32, height: u32, app: &BrowserApp) {
     let rail_x = right_rail_x(width);
     let panel = main_panel_rect(rail_x, height);
-    fill_rect(buffer, width, height, panel, PANEL_ALT);
-    stroke_rect(buffer, width, height, panel, BORDER);
+    draw_panel_surface(buffer, width, height, panel, STATUS_WARN);
     draw_text(
         buffer,
         width,
@@ -11208,7 +14114,8 @@ fn draw_guard_panel(buffer: &mut [u32], width: u32, height: u32, app: &BrowserAp
     let active_page = app.active_tab().and_then(|tab| tab.distilled_page.as_ref());
     let lines = guard_report_lines(app, active_url, active_page);
     let max_chars = ((panel.w.saturating_sub(40)) / char_advance(1)) as usize;
-    let max_rows = panel.h.saturating_sub(58) / 26;
+    let cert_section_y = panel.y + GUARD_CERT_SECTION_Y;
+    let max_rows = cert_section_y.saturating_sub(panel.y + 58) / 26;
     for (index, line) in lines.iter().take(max_rows as usize).enumerate() {
         let y = panel.y + 54 + index as u32 * 26;
         let color = if line.contains("BLOCK") || line.contains("HARDENED") {
@@ -11229,13 +14136,207 @@ fn draw_guard_panel(buffer: &mut [u32], width: u32, height: u32, app: &BrowserAp
             1,
         );
     }
+    draw_appliance_cert_settings(buffer, width, height, panel, app);
+}
+
+fn guard_appliance_refresh_rect(panel: Rect) -> Rect {
+    Rect {
+        x: panel.x + panel.w.saturating_sub(226),
+        y: panel.y + GUARD_CERT_SECTION_Y,
+        w: 96,
+        h: 28,
+    }
+}
+
+fn guard_appliance_forget_rect(panel: Rect) -> Rect {
+    Rect {
+        x: panel.x + panel.w.saturating_sub(118),
+        y: panel.y + GUARD_CERT_SECTION_Y,
+        w: 92,
+        h: 28,
+    }
+}
+
+#[cfg(any(feature = "xilem-shell", feature = "servo-backend"))]
+fn guard_appliance_row_rects(panel: Rect, count: usize) -> Vec<(usize, Rect)> {
+    let row_start = panel.y + GUARD_CERT_SECTION_Y + 76;
+    let max_rows = panel
+        .y
+        .saturating_add(panel.h)
+        .saturating_sub(row_start + 8)
+        / GUARD_CERT_ROW_H;
+    (0..count.min(max_rows as usize))
+        .map(|index| {
+            (
+                index,
+                Rect {
+                    x: panel.x + 20,
+                    y: row_start + index as u32 * GUARD_CERT_ROW_H,
+                    w: panel.w.saturating_sub(40),
+                    h: GUARD_CERT_ROW_H.saturating_sub(8),
+                },
+            )
+        })
+        .collect()
+}
+
+fn draw_appliance_cert_settings(
+    buffer: &mut [u32],
+    width: u32,
+    height: u32,
+    panel: Rect,
+    app: &BrowserApp,
+) {
+    let section_y = panel.y + GUARD_CERT_SECTION_Y;
+    let left = panel.x + 20;
+    let max_chars = ((panel.w.saturating_sub(40)) / char_advance(1)) as usize;
+    draw_text(
+        buffer,
+        width,
+        height,
+        left,
+        section_y,
+        "LOCAL APPLIANCE CERTIFICATES",
+        TEXT,
+        1,
+    );
+    let refresh_rect = guard_appliance_refresh_rect(panel);
+    let forget_rect = guard_appliance_forget_rect(panel);
+    let refresh_hovered = app
+        .cursor
+        .map(|(x, y)| refresh_rect.contains(x, y))
+        .unwrap_or(false);
+    let forget_hovered = app
+        .cursor
+        .map(|(x, y)| forget_rect.contains(x, y))
+        .unwrap_or(false);
+    draw_button(
+        buffer,
+        width,
+        height,
+        refresh_rect,
+        "REFRESH",
+        refresh_hovered,
+        true,
+    );
+
+    #[cfg(any(feature = "xilem-shell", feature = "servo-backend"))]
+    let can_forget = app
+        .selected_appliance_cert
+        .is_some_and(|index| index < app.appliance_cert_entries.len());
+    #[cfg(not(any(feature = "xilem-shell", feature = "servo-backend")))]
+    let can_forget = false;
+    draw_button(
+        buffer,
+        width,
+        height,
+        forget_rect,
+        "FORGET",
+        forget_hovered,
+        can_forget,
+    );
+
+    draw_text(
+        buffer,
+        width,
+        height,
+        left,
+        section_y + 34,
+        &truncate(&app.appliance_cert_status, max_chars),
+        TEXT_DIM,
+        1,
+    );
+
+    #[cfg(any(feature = "xilem-shell", feature = "servo-backend"))]
+    {
+        if app.appliance_cert_entries.is_empty() {
+            draw_text(
+                buffer,
+                width,
+                height,
+                left,
+                section_y + 78,
+                "NO TRUSTED LOCAL APPLIANCE CERTIFICATES.",
+                TEXT_DIM,
+                1,
+            );
+            return;
+        }
+
+        let row_rects = guard_appliance_row_rects(panel, app.appliance_cert_entries.len());
+        for (index, rect) in row_rects {
+            let selected = app.selected_appliance_cert == Some(index);
+            let hovered = app
+                .cursor
+                .map(|(x, y)| rect.contains(x, y))
+                .unwrap_or(false);
+            fill_rect(
+                buffer,
+                width,
+                height,
+                rect,
+                if selected {
+                    FIELD_FOCUS
+                } else if hovered {
+                    PANEL_ALT
+                } else {
+                    FIELD
+                },
+            );
+            stroke_rect(
+                buffer,
+                width,
+                height,
+                rect,
+                if selected { BUTTON_ACTIVE } else { BORDER },
+            );
+            let Some(entry) = app.appliance_cert_entries.get(index) else {
+                continue;
+            };
+            let label = appliance_cert_entry_label(entry);
+            let fingerprint = compact_fingerprint(&entry.fingerprint_sha256);
+            let created = truncate(&entry.created_at, 24);
+            draw_text(
+                buffer,
+                width,
+                height,
+                rect.x + 12,
+                rect.y + 8,
+                &label,
+                TEXT,
+                1,
+            );
+            draw_text(
+                buffer,
+                width,
+                height,
+                rect.x + 12,
+                rect.y + 24,
+                &truncate(&format!("{} | {}", fingerprint, created), max_chars),
+                TEXT_DIM,
+                1,
+            );
+        }
+    }
+    #[cfg(not(any(feature = "xilem-shell", feature = "servo-backend")))]
+    {
+        draw_text(
+            buffer,
+            width,
+            height,
+            left,
+            section_y + 78,
+            "LOCAL APPLIANCE CERTIFICATE STORAGE IS UNAVAILABLE IN THIS BUILD.",
+            TEXT_DIM,
+            1,
+        );
+    }
 }
 
 fn draw_perception_panel(buffer: &mut [u32], width: u32, height: u32, app: &BrowserApp) {
     let rail_x = right_rail_x(width);
     let panel = main_panel_rect(rail_x, height);
-    fill_rect(buffer, width, height, panel, PANEL_ALT);
-    stroke_rect(buffer, width, height, panel, BORDER);
+    draw_panel_surface(buffer, width, height, panel, BUTTON_BRIGHT);
     draw_text(
         buffer,
         width,
@@ -11382,8 +14483,7 @@ fn draw_perception_panel(buffer: &mut [u32], width: u32, height: u32, app: &Brow
 fn draw_perf_panel(buffer: &mut [u32], width: u32, height: u32, app: &BrowserApp) {
     let rail_x = right_rail_x(width);
     let panel = main_panel_rect(rail_x, height);
-    fill_rect(buffer, width, height, panel, PANEL_ALT);
-    stroke_rect(buffer, width, height, panel, BORDER);
+    draw_panel_surface(buffer, width, height, panel, STATUS_WARN);
 
     let max_chars = ((panel.w.saturating_sub(40)) / char_advance(1)) as usize;
     draw_text(
@@ -11495,8 +14595,7 @@ fn draw_perf_panel(buffer: &mut [u32], width: u32, height: u32, app: &BrowserApp
 fn draw_validation_panel(buffer: &mut [u32], width: u32, height: u32, app: &BrowserApp) {
     let rail_x = right_rail_x(width);
     let panel = main_panel_rect(rail_x, height);
-    fill_rect(buffer, width, height, panel, PANEL_ALT);
-    stroke_rect(buffer, width, height, panel, BORDER);
+    draw_panel_surface(buffer, width, height, panel, STATUS_OK);
 
     let rows = app.validation_rows();
     let pass_count = app.validation_pass_count();
@@ -11638,7 +14737,15 @@ fn draw_validation_panel(buffer: &mut [u32], width: u32, height: u32, app: &Brow
     }
 }
 
-fn draw_field(buffer: &mut [u32], width: u32, height: u32, rect: Rect, value: &str, focused: bool) {
+fn draw_field_with_placeholder(
+    buffer: &mut [u32],
+    width: u32,
+    height: u32,
+    rect: Rect,
+    value: &str,
+    placeholder: &str,
+    focused: bool,
+) {
     fill_rect(
         buffer,
         width,
@@ -11653,7 +14760,25 @@ fn draw_field(buffer: &mut [u32], width: u32, height: u32, rect: Rect, value: &s
         rect,
         if focused { BUTTON_ACTIVE } else { BORDER },
     );
-    let visible = truncate(value, ((rect.w.saturating_sub(24)) / 8) as usize);
+    fill_rect(
+        buffer,
+        width,
+        height,
+        Rect {
+            x: rect.x + 1,
+            y: rect.y + 1,
+            w: rect.w.saturating_sub(2),
+            h: 2,
+        },
+        if focused { BUTTON_ACTIVE } else { BORDER_SOFT },
+    );
+    let showing_placeholder = value.is_empty() && !placeholder.is_empty() && !focused;
+    let visible_source = if showing_placeholder {
+        placeholder
+    } else {
+        value
+    };
+    let visible = truncate(visible_source, ((rect.w.saturating_sub(24)) / 8) as usize);
     draw_text(
         buffer,
         width,
@@ -11661,10 +14786,26 @@ fn draw_field(buffer: &mut [u32], width: u32, height: u32, rect: Rect, value: &s
         rect.x + 12,
         rect.y + 9,
         &visible,
-        TEXT,
+        if showing_placeholder {
+            TEXT_PLACEHOLDER
+        } else {
+            TEXT
+        },
         1,
     );
     if focused {
+        fill_rect(
+            buffer,
+            width,
+            height,
+            Rect {
+                x: rect.x,
+                y: rect.y,
+                w: 3,
+                h: rect.h,
+            },
+            BUTTON_ACTIVE,
+        );
         let caret_x = rect.x + 12 + text_width(&visible, 1) + 2;
         fill_rect(
             buffer,
@@ -11718,34 +14859,62 @@ fn draw_ai_rail(buffer: &mut [u32], width: u32, height: u32, app: &BrowserApp) {
         Rect {
             x: rail_x,
             y: 64,
+            w: RAIL_WIDTH,
+            h: 74,
+        },
+        PANEL_HEADER,
+    );
+    fill_rect(
+        buffer,
+        width,
+        height,
+        Rect {
+            x: rail_x,
+            y: 64,
             w: 1,
             h: height.saturating_sub(64),
         },
         BORDER,
     );
-    draw_text(
+    fill_rect(
         buffer,
         width,
         height,
-        rail_x + 20,
-        92,
-        "CONTEXT VAULT",
-        TEXT,
-        1,
+        Rect {
+            x: rail_x,
+            y: 64,
+            w: 2,
+            h: height.saturating_sub(64 + STATUS_BAR_H),
+        },
+        BUTTON_BRIGHT,
     );
     draw_text(
         buffer,
         width,
         height,
         rail_x + 20,
-        118,
-        &format!("PILOT {}", truncate(&app.pilot_status, 18)),
+        86,
+        "MAYA SIDECAR",
+        TEXT,
+        1,
+    );
+    draw_status_chip(
+        buffer,
+        width,
+        height,
+        Rect {
+            x: rail_x + 20,
+            y: 108,
+            w: 126,
+            h: 22,
+        },
+        &format!("PILOT {}", truncate(&app.pilot_status, 9)),
         if app.pilot_status == "FAILED" {
             STATUS_WARN
         } else {
             STATUS_OK
         },
-        1,
+        app.pilot_status != "FAILED",
     );
     let active_url = app
         .active_tab()
@@ -11780,18 +14949,38 @@ fn draw_ai_rail(buffer: &mut [u32], width: u32, height: u32, app: &BrowserApp) {
         format!("RESULT: {}", truncate(&app.pilot_result, 72))
     };
 
+    draw_text(
+        buffer,
+        width,
+        height,
+        rail_x + 20,
+        146,
+        "ACTIVE CONTEXT",
+        TEXT_DIM,
+        1,
+    );
     draw_chat_bubble(
         buffer,
         width,
         height,
         Rect {
             x: rail_x + 20,
-            y: 156,
+            y: 164,
             w: RAIL_WIDTH.saturating_sub(40),
-            h: 92,
+            h: 88,
         },
         &page_state,
         false,
+    );
+    draw_text(
+        buffer,
+        width,
+        height,
+        rail_x + 56,
+        266,
+        "NEXT STEP",
+        TEXT_DIM,
+        1,
     );
     draw_chat_bubble(
         buffer,
@@ -11799,12 +14988,22 @@ fn draw_ai_rail(buffer: &mut [u32], width: u32, height: u32, app: &BrowserApp) {
         height,
         Rect {
             x: rail_x + 56,
-            y: 270,
+            y: 284,
             w: RAIL_WIDTH.saturating_sub(76),
             h: 66,
         },
         &next_step,
         true,
+    );
+    draw_text(
+        buffer,
+        width,
+        height,
+        rail_x + 20,
+        364,
+        "SESSION STATUS",
+        TEXT_DIM,
+        1,
     );
     draw_chat_bubble(
         buffer,
@@ -11812,9 +15011,9 @@ fn draw_ai_rail(buffer: &mut [u32], width: u32, height: u32, app: &BrowserApp) {
         height,
         Rect {
             x: rail_x + 20,
-            y: 358,
+            y: 382,
             w: RAIL_WIDTH.saturating_sub(40),
-            h: 82,
+            h: 54,
         },
         &truncate(&app.last_status, 72),
         false,
@@ -11879,12 +15078,13 @@ fn draw_ai_rail(buffer: &mut [u32], width: u32, height: u32, app: &BrowserApp) {
         TEXT_DIM,
         1,
     );
-    draw_field(
+    draw_field_with_placeholder(
         buffer,
         width,
         height,
         app.wake_rect,
         &app.wake_query,
+        "ASK OR SEARCH WAKE",
         app.focus == FocusTarget::Wake,
     );
 }
@@ -11934,14 +15134,22 @@ fn draw_status_bar(buffer: &mut [u32], width: u32, height: u32, app: &BrowserApp
         validation_total
     );
     let max_status_chars = (width.saturating_sub(172) / char_advance(1)).max(1) as usize;
+    draw_status_dot(
+        buffer,
+        width,
+        height,
+        14,
+        y + 12,
+        if app.last_ok { STATUS_OK } else { STATUS_WARN },
+    );
     draw_text(
         buffer,
         width,
         height,
-        24,
+        30,
         y + 14,
         &truncate(&status, max_status_chars),
-        TEXT_DIM,
+        TEXT_SOFT,
         1,
     );
     draw_text(
@@ -11956,6 +15164,107 @@ fn draw_status_bar(buffer: &mut [u32], width: u32, height: u32, app: &BrowserApp
     );
 }
 
+fn draw_panel_surface(buffer: &mut [u32], width: u32, height: u32, rect: Rect, accent: u32) {
+    fill_rect(buffer, width, height, rect, PANEL_ALT);
+    stroke_rect(buffer, width, height, rect, BORDER);
+    fill_rect(
+        buffer,
+        width,
+        height,
+        Rect {
+            x: rect.x + 1,
+            y: rect.y + 1,
+            w: rect.w.saturating_sub(2),
+            h: 38.min(rect.h.saturating_sub(2)),
+        },
+        PANEL_HEADER,
+    );
+    fill_rect(
+        buffer,
+        width,
+        height,
+        Rect {
+            x: rect.x,
+            y: rect.y,
+            w: rect.w,
+            h: 2,
+        },
+        accent,
+    );
+}
+
+fn draw_status_dot(buffer: &mut [u32], width: u32, height: u32, x: u32, y: u32, color: u32) {
+    fill_rect(buffer, width, height, Rect { x, y, w: 7, h: 7 }, color);
+    stroke_rect(
+        buffer,
+        width,
+        height,
+        Rect {
+            x: x.saturating_sub(2),
+            y: y.saturating_sub(2),
+            w: 11,
+            h: 11,
+        },
+        BORDER_SOFT,
+    );
+}
+
+fn draw_status_chip(
+    buffer: &mut [u32],
+    width: u32,
+    height: u32,
+    rect: Rect,
+    label: &str,
+    accent: u32,
+    active: bool,
+) {
+    fill_rect(
+        buffer,
+        width,
+        height,
+        rect,
+        if active { FIELD_FOCUS } else { PANEL },
+    );
+    stroke_rect(
+        buffer,
+        width,
+        height,
+        rect,
+        if active { accent } else { BORDER },
+    );
+    draw_status_dot(buffer, width, height, rect.x + 8, rect.y + 8, accent);
+    let max_chars = ((rect.w.saturating_sub(28)) / char_advance(1)) as usize;
+    draw_text(
+        buffer,
+        width,
+        height,
+        rect.x + 24,
+        rect.y + 8,
+        &truncate(label, max_chars),
+        if active { TEXT } else { TEXT_DIM },
+        1,
+    );
+}
+
+fn draw_text_centered(
+    buffer: &mut [u32],
+    width: u32,
+    height: u32,
+    rect: Rect,
+    label: &str,
+    color: u32,
+    scale: u32,
+) {
+    let scale = scale.max(1);
+    let max_chars = ((rect.w.saturating_sub(8)) / char_advance(scale)) as usize;
+    let visible = truncate(label, max_chars);
+    let text_w = text_width(&visible, scale);
+    let glyph_h = 7 * scale;
+    let x = rect.x + rect.w.saturating_sub(text_w) / 2;
+    let y = rect.y + rect.h.saturating_sub(glyph_h) / 2;
+    draw_text(buffer, width, height, x, y, &visible, color, scale);
+}
+
 fn draw_metric_card(
     buffer: &mut [u32],
     width: u32,
@@ -11966,7 +15275,7 @@ fn draw_metric_card(
     hint: &str,
     accent: u32,
 ) {
-    fill_rect(buffer, width, height, rect, PANEL_ALT);
+    fill_rect(buffer, width, height, rect, PANEL_HEADER);
     stroke_rect(buffer, width, height, rect, BORDER);
     fill_rect(
         buffer,
@@ -11977,6 +15286,18 @@ fn draw_metric_card(
             y: rect.y,
             w: rect.w,
             h: 2,
+        },
+        accent,
+    );
+    fill_rect(
+        buffer,
+        width,
+        height,
+        Rect {
+            x: rect.x,
+            y: rect.y,
+            w: 2,
+            h: rect.h,
         },
         accent,
     );
@@ -12018,7 +15339,7 @@ fn draw_pill(buffer: &mut [u32], width: u32, height: u32, rect: Rect, label: &st
         width,
         height,
         rect,
-        if active { BUTTON_IDLE } else { PANEL_ALT },
+        if active { FIELD_FOCUS } else { PANEL_ALT },
     );
     stroke_rect(
         buffer,
@@ -12027,12 +15348,25 @@ fn draw_pill(buffer: &mut [u32], width: u32, height: u32, rect: Rect, label: &st
         rect,
         if active { BUTTON_BRIGHT } else { BORDER },
     );
-    draw_text(
+    if active {
+        fill_rect(
+            buffer,
+            width,
+            height,
+            Rect {
+                x: rect.x,
+                y: rect.y,
+                w: rect.w,
+                h: 2,
+            },
+            BUTTON_BRIGHT,
+        );
+    }
+    draw_text_centered(
         buffer,
         width,
         height,
-        rect.x + 16,
-        rect.y + 10,
+        rect,
         label,
         if active { TEXT } else { TEXT_DIM },
         1,
@@ -12052,16 +15386,28 @@ fn draw_chat_bubble(
         width,
         height,
         rect,
-        if user { BUTTON_BRIGHT } else { PANEL_ALT },
+        if user { FIELD_FOCUS } else { PANEL_ALT },
     );
     stroke_rect(
         buffer,
         width,
         height,
         rect,
-        if user { BUTTON_BRIGHT } else { BORDER },
+        if user { BUTTON_BRIGHT } else { BORDER_SOFT },
     );
-    let color = if user { FIELD } else { TEXT };
+    fill_rect(
+        buffer,
+        width,
+        height,
+        Rect {
+            x: rect.x,
+            y: rect.y,
+            w: rect.w,
+            h: 2,
+        },
+        if user { BUTTON_BRIGHT } else { BORDER_SOFT },
+    );
+    let color = if user { TEXT } else { TEXT_SOFT };
     let max = ((rect.w.saturating_sub(24)) / 8) as usize;
     for (index, line) in wrap_text(text, max).iter().take(4).enumerate() {
         draw_text(
@@ -12096,7 +15442,7 @@ fn draw_button(
         } else if hovered {
             BUTTON_HOVER
         } else {
-            BUTTON_IDLE
+            PANEL_ALT
         },
     );
     stroke_rect(
@@ -12106,12 +15452,25 @@ fn draw_button(
         rect,
         if enabled { BORDER } else { PANEL },
     );
-    draw_text(
+    if enabled {
+        fill_rect(
+            buffer,
+            width,
+            height,
+            Rect {
+                x: rect.x,
+                y: rect.y,
+                w: rect.w,
+                h: 2,
+            },
+            if hovered { BUTTON_BRIGHT } else { BORDER_SOFT },
+        );
+    }
+    draw_text_centered(
         buffer,
         width,
         height,
-        rect.x + 12,
-        rect.y + 10,
+        rect,
         label,
         if enabled { TEXT } else { TEXT_DIM },
         1,
@@ -12362,8 +15721,14 @@ fn wrap_text(value: &str, max_chars: usize) -> Vec<String> {
 }
 
 fn truncate(value: &str, max_chars: usize) -> String {
+    if max_chars == 0 {
+        return String::new();
+    }
     if value.chars().count() <= max_chars {
         return value.to_string();
+    }
+    if max_chars <= 3 {
+        return ".".repeat(max_chars);
     }
     let mut out = value
         .chars()
@@ -12602,6 +15967,9 @@ fn glyph(ch: char) -> [u8; 7] {
         '.' => [0x00, 0x00, 0x00, 0x00, 0x00, 0x0c, 0x0c],
         ':' => [0x00, 0x0c, 0x0c, 0x00, 0x0c, 0x0c, 0x00],
         '/' => [0x01, 0x01, 0x02, 0x04, 0x08, 0x10, 0x10],
+        '<' => [0x01, 0x02, 0x04, 0x08, 0x04, 0x02, 0x01],
+        '>' => [0x10, 0x08, 0x04, 0x02, 0x04, 0x08, 0x10],
+        '+' => [0x00, 0x04, 0x04, 0x1f, 0x04, 0x04, 0x00],
         '-' => [0x00, 0x00, 0x00, 0x1f, 0x00, 0x00, 0x00],
         '_' => [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x1f],
         '?' => [0x0e, 0x11, 0x01, 0x02, 0x04, 0x00, 0x04],
