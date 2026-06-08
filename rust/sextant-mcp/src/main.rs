@@ -2895,6 +2895,8 @@ fn direct_baseline_metrics(window_smoke: &Value) -> Value {
         "liveForm": window_smoke.get("liveForm").cloned().unwrap_or(Value::Null),
         "liveFormUrl": window_smoke.get("liveFormUrl").cloned().unwrap_or(Value::Null),
         "liveFormTitle": window_smoke.get("liveFormTitle").cloned().unwrap_or(Value::Null),
+        "liveFormAttempts": window_smoke.get("liveFormAttempts").cloned().unwrap_or(Value::Null),
+        "liveFormDomTarget": window_smoke.get("liveFormDomTarget").cloned().unwrap_or(Value::Null),
         "timeoutPhase": window_smoke.get("timeoutPhase").cloned().unwrap_or(Value::Null),
         "timeoutTitle": window_smoke.get("timeoutTitle").cloned().unwrap_or(Value::Null),
         "timeoutUrl": window_smoke.get("timeoutUrl").cloned().unwrap_or(Value::Null),
@@ -4854,6 +4856,8 @@ fn window_smoke_summary(report: &[String]) -> Value {
     summary["liveForm"] = Value::Null;
     summary["liveFormUrl"] = Value::Null;
     summary["liveFormTitle"] = Value::Null;
+    summary["liveFormAttempts"] = Value::Array(Vec::new());
+    summary["liveFormDomTarget"] = Value::Null;
     summary["timeoutPhase"] = Value::Null;
     summary["timeoutTitle"] = Value::Null;
     summary["timeoutUrl"] = Value::Null;
@@ -4945,6 +4949,12 @@ fn window_smoke_summary(report: &[String]) -> Value {
             summary["liveSearch"] = Value::Bool(value.trim() == "true");
         } else if let Some(value) = line.split("live form frame ").nth(1) {
             summary["liveFormFrameMs"] = duration_token_to_value(value.trim());
+        } else if let Some(value) = line.strip_prefix("[window-direct] live form attempt ") {
+            if let Some(attempts) = summary["liveFormAttempts"].as_array_mut() {
+                attempts.push(Value::String(value.trim().to_string()));
+            }
+        } else if let Some(value) = line.strip_prefix("[window-direct] live form target ") {
+            summary["liveFormDomTarget"] = live_form_dom_target(value);
         } else if let Some(value) = line.strip_prefix("[window-smoke] live form url ") {
             summary["liveFormUrl"] = Value::String(value.trim().to_string());
         } else if let Some(value) = line.strip_prefix("[window-smoke] live form title ") {
@@ -5312,6 +5322,33 @@ fn live_search_dom_target(value: &str) -> Value {
         "width": width,
         "height": height,
     })
+}
+
+fn live_form_dom_target(value: &str) -> Value {
+    let trimmed = value.trim();
+    let (field, submit) = trimmed.split_once(" submit ").unwrap_or((trimmed, ""));
+    let mut target = live_search_dom_target(field);
+
+    let mut submit_x = None;
+    let mut submit_y = None;
+    let mut submit_selector = None;
+    for token in submit.split_whitespace() {
+        if let Some(value) = token.strip_prefix("x=") {
+            submit_x = value.parse::<u64>().ok();
+        } else if let Some(value) = token.strip_prefix("y=") {
+            submit_y = value.parse::<u64>().ok();
+        }
+    }
+    if let Some((_, selector)) = submit.split_once(" selector ") {
+        submit_selector = Some(selector.trim().trim_matches('"').to_string());
+    }
+
+    target["submit"] = json!({
+        "x": submit_x,
+        "y": submit_y,
+        "selector": submit_selector,
+    });
+    target
 }
 
 fn apply_live_search_diagnostics(summary: &mut Value) {
@@ -6651,7 +6688,9 @@ mod tests {
             "[window-direct] live search dom search box target x=517 y=306 selector textarea[name=\"q\"] size 446x38".to_string(),
             "[window-direct] live search dom form target url https://www.google.com/search?q=Sextant".to_string(),
             "[window-direct] live search attempt center click".to_string(),
+            "[window-direct] live form attempt dom form field click".to_string(),
             "[window-direct] live form target x=225 y=180 selector input[name=\"custname\"] size 320x28 submit x=110 y=520 selector button:not([type])".to_string(),
+            "[window-direct] live form attempt submit click".to_string(),
             "[window-smoke] live form frame 73ms".to_string(),
             "[window-smoke] live form true".to_string(),
             "[window-smoke] live form url https://httpbin.org/post".to_string(),
@@ -6764,6 +6803,28 @@ mod tests {
         assert_eq!(summary["liveForm"], Value::Bool(true));
         assert_eq!(summary["liveFormUrl"], "https://httpbin.org/post");
         assert_eq!(summary["liveFormTitle"], "httpbin.org");
+        assert_eq!(summary["liveFormAttempts"][0], "dom form field click");
+        assert_eq!(summary["liveFormAttempts"][1], "submit click");
+        assert_eq!(summary["liveFormDomTarget"]["x"], Value::from(225));
+        assert_eq!(summary["liveFormDomTarget"]["y"], Value::from(180));
+        assert_eq!(
+            summary["liveFormDomTarget"]["selector"],
+            "input[name=\"custname\"]"
+        );
+        assert_eq!(summary["liveFormDomTarget"]["width"], Value::from(320));
+        assert_eq!(summary["liveFormDomTarget"]["height"], Value::from(28));
+        assert_eq!(
+            summary["liveFormDomTarget"]["submit"]["x"],
+            Value::from(110)
+        );
+        assert_eq!(
+            summary["liveFormDomTarget"]["submit"]["y"],
+            Value::from(520)
+        );
+        assert_eq!(
+            summary["liveFormDomTarget"]["submit"]["selector"],
+            "button:not([type])"
+        );
         assert_eq!(summary["timeoutPhase"], "scripted smoke");
         assert_eq!(
             summary["timeoutTitle"],
