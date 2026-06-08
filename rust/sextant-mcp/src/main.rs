@@ -2890,6 +2890,8 @@ fn direct_baseline_metrics(window_smoke: &Value) -> Value {
         "liveSearchAttempts": window_smoke.get("liveSearchAttempts").cloned().unwrap_or(Value::Null),
         "liveSearchDomTarget": window_smoke.get("liveSearchDomTarget").cloned().unwrap_or(Value::Null),
         "liveSearchDomFormTargetUrl": window_smoke.get("liveSearchDomFormTargetUrl").cloned().unwrap_or(Value::Null),
+        "liveSearchSubmitted": window_smoke.get("liveSearchSubmitted").cloned().unwrap_or(Value::Null),
+        "liveSearchSubmittedUrl": window_smoke.get("liveSearchSubmittedUrl").cloned().unwrap_or(Value::Null),
         "liveSearchBlocked": window_smoke.get("liveSearchBlocked").cloned().unwrap_or(Value::Null),
         "liveSearchBlockReason": window_smoke.get("liveSearchBlockReason").cloned().unwrap_or(Value::Null),
         "liveForm": window_smoke.get("liveForm").cloned().unwrap_or(Value::Null),
@@ -2897,6 +2899,10 @@ fn direct_baseline_metrics(window_smoke: &Value) -> Value {
         "liveFormTitle": window_smoke.get("liveFormTitle").cloned().unwrap_or(Value::Null),
         "liveFormAttempts": window_smoke.get("liveFormAttempts").cloned().unwrap_or(Value::Null),
         "liveFormDomTarget": window_smoke.get("liveFormDomTarget").cloned().unwrap_or(Value::Null),
+        "liveFormSubmitted": window_smoke.get("liveFormSubmitted").cloned().unwrap_or(Value::Null),
+        "liveFormSubmittedUrl": window_smoke.get("liveFormSubmittedUrl").cloned().unwrap_or(Value::Null),
+        "liveFormBlocked": window_smoke.get("liveFormBlocked").cloned().unwrap_or(Value::Null),
+        "liveFormBlockReason": window_smoke.get("liveFormBlockReason").cloned().unwrap_or(Value::Null),
         "timeoutPhase": window_smoke.get("timeoutPhase").cloned().unwrap_or(Value::Null),
         "timeoutTitle": window_smoke.get("timeoutTitle").cloned().unwrap_or(Value::Null),
         "timeoutUrl": window_smoke.get("timeoutUrl").cloned().unwrap_or(Value::Null),
@@ -6881,6 +6887,8 @@ mod tests {
         assert_eq!(summary["liveForm"], Value::Bool(true));
         assert_eq!(summary["liveFormUrl"], "https://httpbin.org/post");
         assert_eq!(summary["liveFormTitle"], "httpbin.org");
+        assert_eq!(summary["liveFormSubmitted"], Value::Bool(true));
+        assert_eq!(summary["liveFormSubmittedUrl"], "https://httpbin.org/post");
         assert_eq!(summary["liveFormAttempts"][0], "dom form field click");
         assert_eq!(summary["liveFormAttempts"][1], "submit click");
         assert_eq!(summary["liveFormDomTarget"]["x"], Value::from(225));
@@ -7098,6 +7106,38 @@ mod tests {
         assert_eq!(summary["liveFormBlocked"], Value::Bool(true));
         assert_eq!(summary["liveFormBlockReason"], "input-not-submitted");
         assert_eq!(summary["liveFormDomTarget"]["submit"]["x"], Value::from(51));
+    }
+
+    #[test]
+    fn direct_baseline_metrics_include_live_diagnostics() {
+        let metrics = direct_baseline_metrics(&json!({
+            "liveSearchSubmitted": true,
+            "liveSearchSubmittedUrl": "https://example.com/search?q=Sextant",
+            "liveSearchBlocked": true,
+            "liveSearchBlockReason": "submitted-without-query-verification",
+            "liveFormSubmitted": true,
+            "liveFormSubmittedUrl": "https://httpbin.org/post",
+            "liveFormBlocked": true,
+            "liveFormBlockReason": "submitted-without-post-verification",
+        }));
+
+        assert_eq!(metrics["liveSearchSubmitted"], Value::Bool(true));
+        assert_eq!(
+            metrics["liveSearchSubmittedUrl"],
+            "https://example.com/search?q=Sextant"
+        );
+        assert_eq!(metrics["liveSearchBlocked"], Value::Bool(true));
+        assert_eq!(
+            metrics["liveSearchBlockReason"],
+            "submitted-without-query-verification"
+        );
+        assert_eq!(metrics["liveFormSubmitted"], Value::Bool(true));
+        assert_eq!(metrics["liveFormSubmittedUrl"], "https://httpbin.org/post");
+        assert_eq!(metrics["liveFormBlocked"], Value::Bool(true));
+        assert_eq!(
+            metrics["liveFormBlockReason"],
+            "submitted-without-post-verification"
+        );
     }
 
     #[test]
