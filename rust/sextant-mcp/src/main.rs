@@ -4858,6 +4858,10 @@ fn window_smoke_summary(report: &[String]) -> Value {
     summary["liveFormTitle"] = Value::Null;
     summary["liveFormAttempts"] = Value::Array(Vec::new());
     summary["liveFormDomTarget"] = Value::Null;
+    summary["liveFormSubmitted"] = Value::Null;
+    summary["liveFormSubmittedUrl"] = Value::Null;
+    summary["liveFormBlocked"] = Value::Null;
+    summary["liveFormBlockReason"] = Value::Null;
     summary["timeoutPhase"] = Value::Null;
     summary["timeoutTitle"] = Value::Null;
     summary["timeoutUrl"] = Value::Null;
@@ -5058,6 +5062,7 @@ fn window_smoke_summary(report: &[String]) -> Value {
     }
 
     apply_live_search_diagnostics(&mut summary);
+    apply_live_form_diagnostics(&mut summary);
     summary
 }
 
@@ -5406,6 +5411,79 @@ fn live_search_attempted(summary: &Value) -> bool {
         || summary
             .get("liveSearchDomTarget")
             .is_some_and(|value| !value.is_null())
+}
+
+fn apply_live_form_diagnostics(summary: &mut Value) {
+    let source = summary["liveFormUrl"]
+        .as_str()
+        .or_else(|| summary["timeoutUrl"].as_str())
+        .map(str::to_string);
+    if let Some(source) = source {
+        let submitted = live_form_post_url(&source);
+        if submitted && summary["liveFormSubmitted"].is_null() {
+            summary["liveFormSubmitted"] = Value::Bool(true);
+            summary["liveFormSubmittedUrl"] = Value::String(source);
+        }
+        if submitted && summary["liveForm"].as_bool() != Some(true) {
+            summary["liveFormBlocked"] = Value::Bool(true);
+            summary["liveFormBlockReason"] =
+                Value::String("submitted-without-post-verification".to_string());
+            return;
+        }
+    }
+
+    if live_form_attempted(summary) && summary["liveForm"].as_bool() != Some(true) {
+        summary["liveFormBlocked"] = Value::Bool(true);
+        summary["liveFormBlockReason"] = if live_form_attempted_submit(summary) {
+            Value::String("submitted-without-navigation".to_string())
+        } else {
+            Value::String("input-not-submitted".to_string())
+        };
+    }
+}
+
+fn live_form_post_url(source: &str) -> bool {
+    let lower = source.trim().to_ascii_lowercase();
+    let path_start = if let Some(without_scheme) = lower.strip_prefix("http://") {
+        without_scheme
+            .find('/')
+            .map(|index| "http://".len() + index)
+    } else if let Some(without_scheme) = lower.strip_prefix("https://") {
+        without_scheme
+            .find('/')
+            .map(|index| "https://".len() + index)
+    } else {
+        Some(0)
+    }
+    .unwrap_or(lower.len());
+    let path = &lower[path_start..];
+    path == "/post" || path.starts_with("/post?") || path.starts_with("/post#")
+}
+
+fn live_form_attempted(summary: &Value) -> bool {
+    summary
+        .get("liveFormAttempts")
+        .and_then(Value::as_array)
+        .map(|attempts| !attempts.is_empty())
+        .unwrap_or(false)
+        || summary
+            .get("liveFormDomTarget")
+            .is_some_and(|value| !value.is_null())
+}
+
+fn live_form_attempted_submit(summary: &Value) -> bool {
+    summary
+        .get("liveFormAttempts")
+        .and_then(Value::as_array)
+        .map(|attempts| {
+            attempts.iter().any(|attempt| {
+                attempt
+                    .as_str()
+                    .map(|attempt| attempt.contains("submit"))
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false)
 }
 
 fn window_render_path_line(line: &str) -> Option<(String, String)> {
@@ -6985,6 +7063,41 @@ mod tests {
             "textarea[name=\"q\"]"
         );
         assert_eq!(summary["timeoutUrl"], "https://www.bing.com/");
+    }
+
+    #[test]
+    fn parses_live_form_submitted_without_verification() {
+        let report = vec![
+            "[window-direct] live form attempt dom form field click".to_string(),
+            "[window-direct] live form target x=190 y=26 selector input[name=\"custname\"] size 146x19 submit x=51 y=607 selector button:not([type])".to_string(),
+            "[window-direct] live form attempt submit click".to_string(),
+            "[window-direct] timed out after 45.0s during scripted smoke (last title None, last url Some(\"https://httpbin.org/post\"))".to_string(),
+        ];
+
+        let summary = window_smoke_summary(&report);
+
+        assert_eq!(summary["liveFormSubmitted"], Value::Bool(true));
+        assert_eq!(summary["liveFormSubmittedUrl"], "https://httpbin.org/post");
+        assert_eq!(summary["liveFormBlocked"], Value::Bool(true));
+        assert_eq!(
+            summary["liveFormBlockReason"],
+            "submitted-without-post-verification"
+        );
+    }
+
+    #[test]
+    fn diagnoses_live_form_input_not_submitted() {
+        let report = vec![
+            "[window-direct] live form attempt dom form field click".to_string(),
+            "[window-direct] live form target x=190 y=26 selector input[name=\"custname\"] size 146x19 submit x=51 y=607 selector button:not([type])".to_string(),
+            "[window-direct] timed out after 45.0s during scripted smoke (last title None, last url Some(\"https://httpbin.org/forms/post\"))".to_string(),
+        ];
+
+        let summary = window_smoke_summary(&report);
+
+        assert_eq!(summary["liveFormBlocked"], Value::Bool(true));
+        assert_eq!(summary["liveFormBlockReason"], "input-not-submitted");
+        assert_eq!(summary["liveFormDomTarget"]["submit"]["x"], Value::from(51));
     }
 
     #[test]
