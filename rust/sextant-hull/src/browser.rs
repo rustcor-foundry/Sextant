@@ -378,6 +378,7 @@ struct WindowSmokeSpec {
     search_submit_smoke: bool,
     live_search_smoke: bool,
     live_form_smoke: bool,
+    live_link_smoke: bool,
     load_smoke: bool,
     resize_smoke: bool,
     allow_insecure_local_tls: bool,
@@ -5431,6 +5432,13 @@ fn main() {
         || args
             .iter()
             .any(|arg| arg == "--live-form-smoke" || arg == "--window-live-form-smoke");
+    let start_live_link_smoke = window_smoke
+        .as_ref()
+        .map(|smoke| smoke.live_link_smoke)
+        .unwrap_or(false)
+        || args
+            .iter()
+            .any(|arg| arg == "--live-link-smoke" || arg == "--window-live-link-smoke");
     let direct_resource_audit = args
         .iter()
         .any(|arg| arg == "--direct-resource-audit" || arg == "--resource-audit");
@@ -5527,6 +5535,7 @@ fn main() {
             start_search_submit_smoke,
             start_live_search_smoke,
             start_live_form_smoke,
+            start_live_link_smoke,
             direct_resource_audit,
             start_load_smoke,
             start_reload_smoke,
@@ -5578,6 +5587,7 @@ fn run_direct_servo_browser(
     start_search_submit_smoke: bool,
     start_live_search_smoke: bool,
     start_live_form_smoke: bool,
+    start_live_link_smoke: bool,
     direct_resource_audit: bool,
     start_load_smoke: bool,
     start_reload_smoke: bool,
@@ -5791,6 +5801,21 @@ fn run_direct_servo_browser(
         {
             unsupported.push("combined direct reload and other control smoke");
         }
+        if start_live_link_smoke
+            && (start_shell_interaction
+                || start_location_smoke.is_some()
+                || start_history_smoke.is_some()
+                || start_first_interaction_smoke
+                || start_verified_input_smoke
+                || start_search_submit_smoke
+                || start_live_search_smoke
+                || start_live_form_smoke
+                || start_load_smoke
+                || start_reload_smoke
+                || start_resize_smoke)
+        {
+            unsupported.push("combined direct live-link and other control smoke");
+        }
     }
     if !unsupported.is_empty() {
         return Err(format!(
@@ -5979,6 +6004,7 @@ fn run_direct_servo_browser(
         scripted_search_submit_smoke: start_search_submit_smoke,
         scripted_live_search_smoke: start_live_search_smoke,
         scripted_live_form_smoke: start_live_form_smoke,
+        scripted_live_link_smoke: start_live_link_smoke,
         scripted_retained_navigation_smoke: false,
         scripted_location: start_location_smoke,
         scripted_history: start_history_smoke,
@@ -6158,6 +6184,21 @@ fn run_direct_servo_browser(
         }
         if let Some(live_form_title) = outcome.live_form_title {
             println!("[window-smoke] live form title {}", live_form_title);
+        }
+        if let Some(live_link_frame) = outcome.live_link_frame {
+            println!(
+                "[window-smoke] live link frame {}",
+                direct_servo::format_duration(live_link_frame)
+            );
+        }
+        if let Some(live_link) = outcome.live_link {
+            println!("[window-smoke] live link {}", live_link);
+        }
+        if let Some(live_link_url) = outcome.live_link_url {
+            println!("[window-smoke] live link url {}", live_link_url);
+        }
+        if let Some(live_link_title) = outcome.live_link_title {
+            println!("[window-smoke] live link title {}", live_link_title);
         }
         if let Some(location_frame) = outcome.location_frame {
             println!(
@@ -8229,6 +8270,7 @@ fn run_direct_servo_browser(
     _start_search_submit_smoke: bool,
     _start_live_search_smoke: bool,
     _start_live_form_smoke: bool,
+    _start_live_link_smoke: bool,
     _direct_resource_audit: bool,
     _start_load_smoke: bool,
     _start_reload_smoke: bool,
@@ -10417,6 +10459,9 @@ fn parse_window_smoke(args: &[String]) -> Result<Option<WindowSmokeSpec>, String
     let live_form_smoke = args
         .iter()
         .any(|arg| arg == "--live-form-smoke" || arg == "--window-live-form-smoke");
+    let live_link_smoke = args
+        .iter()
+        .any(|arg| arg == "--live-link-smoke" || arg == "--window-live-link-smoke");
     let load_smoke = args
         .iter()
         .any(|arg| arg == "--load-smoke" || arg == "--window-load-smoke");
@@ -10434,6 +10479,7 @@ fn parse_window_smoke(args: &[String]) -> Result<Option<WindowSmokeSpec>, String
         search_submit_smoke,
         live_search_smoke,
         live_form_smoke,
+        live_link_smoke,
         load_smoke,
         resize_smoke,
         allow_insecure_local_tls,
@@ -12571,6 +12617,7 @@ mod tests {
             "--window-search-submit-smoke".to_string(),
             "--window-live-search-smoke".to_string(),
             "--window-live-form-smoke".to_string(),
+            "--window-live-link-smoke".to_string(),
             "--allow-insecure-local-tls".to_string(),
             "--window-smoke-timeout".to_string(),
             "30".to_string(),
@@ -12585,6 +12632,7 @@ mod tests {
         assert!(spec.search_submit_smoke);
         assert!(spec.live_search_smoke);
         assert!(spec.live_form_smoke);
+        assert!(spec.live_link_smoke);
         assert!(spec.allow_insecure_local_tls);
         assert!(input_latency_fixture_url().starts_with("data:text/html,"));
     }

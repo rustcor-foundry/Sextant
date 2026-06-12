@@ -63,6 +63,7 @@ const LIVE_SEARCH_CLICK_SETTLE_DELAY: Duration = Duration::from_millis(350);
 const LIVE_SEARCH_FALLBACK_DELAY: Duration = Duration::from_secs(6);
 const LIVE_FORM_READY_DELAY: Duration = Duration::from_millis(1500);
 const LIVE_FORM_CLICK_SETTLE_DELAY: Duration = Duration::from_millis(350);
+const LIVE_LINK_READY_DELAY: Duration = Duration::from_millis(800);
 const APPLIANCE_CERT_TRUST_ONCE_TITLE: &str = "SextantTrustOnce";
 const APPLIANCE_CERT_REMEMBER_TITLE: &str = "SextantTrustThisAppliance";
 const RETAINED_NAVIGATION_TITLE_PREFIX: &str = "SextantRetainedNavigate:";
@@ -118,6 +119,7 @@ pub struct DirectServoOptions {
     pub scripted_search_submit_smoke: bool,
     pub scripted_live_search_smoke: bool,
     pub scripted_live_form_smoke: bool,
+    pub scripted_live_link_smoke: bool,
     pub scripted_retained_navigation_smoke: bool,
     pub scripted_location: Option<String>,
     pub scripted_history: Option<String>,
@@ -172,6 +174,10 @@ pub struct DirectServoOutcome {
     pub live_form: Option<bool>,
     pub live_form_url: Option<String>,
     pub live_form_title: Option<String>,
+    pub live_link_frame: Option<Duration>,
+    pub live_link: Option<bool>,
+    pub live_link_url: Option<String>,
+    pub live_link_title: Option<String>,
     pub retained_navigation_frame: Option<Duration>,
     #[allow(dead_code)]
     pub retained_navigation_url: Option<String>,
@@ -272,6 +278,10 @@ struct DirectServoApp {
     live_form_submit_pending_since: Option<Instant>,
     scripted_live_form_sent: bool,
     scripted_live_form_done: bool,
+    scripted_live_link_smoke: bool,
+    live_link_started: Option<Instant>,
+    scripted_live_link_sent: bool,
+    scripted_live_link_done: bool,
     retained_navigation_started: Option<Instant>,
     scripted_retained_navigation_smoke: bool,
     scripted_retained_navigation_sent: bool,
@@ -321,6 +331,9 @@ struct DirectServoState {
     first_present: Cell<Option<Duration>>,
     direct_frame_count: Cell<u64>,
     direct_slow_frame_count: Cell<u64>,
+    // `direct_max_frame` is the worst observed total frame time; the spin/paint/
+    // present cells hold that same frame's co-recorded breakdown (see
+    // `keep_worst_total_frame`), not independent per-component maxima.
     direct_max_frame: Cell<Option<Duration>>,
     direct_max_spin: Cell<Option<Duration>>,
     direct_max_paint: Cell<Option<Duration>>,
@@ -340,6 +353,10 @@ struct DirectServoState {
     live_form_frame: Cell<Option<Duration>>,
     live_form: Cell<Option<bool>>,
     live_form_submit_target: RefCell<Option<(f32, f32)>>,
+    live_link_frame: Cell<Option<Duration>>,
+    live_link: Cell<Option<bool>>,
+    live_link_target: RefCell<Option<(f32, f32)>>,
+    live_link_expected_host: RefCell<Option<String>>,
     retained_navigation_frame: Cell<Option<Duration>>,
     input_frame: Cell<Option<Duration>>,
     location_frame: Cell<Option<Duration>>,
@@ -534,6 +551,10 @@ impl DirectServoApp {
             live_form_submit_pending_since: None,
             scripted_live_form_sent: false,
             scripted_live_form_done: false,
+            scripted_live_link_smoke: options.scripted_live_link_smoke,
+            live_link_started: None,
+            scripted_live_link_sent: false,
+            scripted_live_link_done: false,
             retained_navigation_started: None,
             scripted_retained_navigation_sent: false,
             scripted_retained_navigation_done: false,
@@ -738,6 +759,37 @@ impl DirectServoApp {
 
     fn live_form_title(&self) -> Option<String> {
         if self.live_form() == Some(true) {
+            self.state
+                .as_ref()
+                .and_then(|state| state.active_page_title())
+        } else {
+            None
+        }
+    }
+
+    fn live_link_frame(&self) -> Option<Duration> {
+        self.state
+            .as_ref()
+            .and_then(|state| state.live_link_frame.get())
+    }
+
+    fn live_link(&self) -> Option<bool> {
+        self.state.as_ref().and_then(|state| state.live_link.get())
+    }
+
+    fn live_link_url(&self) -> Option<String> {
+        if self.live_link() == Some(true) {
+            self.state
+                .as_ref()
+                .and_then(|state| state.active_url())
+                .map(|url| url.to_string())
+        } else {
+            None
+        }
+    }
+
+    fn live_link_title(&self) -> Option<String> {
+        if self.live_link() == Some(true) {
             self.state
                 .as_ref()
                 .and_then(|state| state.active_page_title())
@@ -1462,6 +1514,100 @@ impl DirectServoApp {
         true
     }
 
+    fn drive_live_link_smoke(
+        &mut self,
+        state: &Rc<DirectServoState>,
+        event_loop: &ActiveEventLoop,
+    ) -> bool {
+        if !self.scripted_live_link_smoke || self.scripted_live_link_done {
+            return false;
+        }
+        if state.first_present.get().is_none() {
+            return false;
+        }
+
+        if !self.scripted_live_link_sent {
+            let ready_for_click =
+                self.started.elapsed() >= LIVE_LINK_READY_DELAY && state.active_load_complete();
+            if ready_for_click {
+                self.live_link_started = Some(Instant::now());
+                self.scripted_live_link_sent = true;
+                println!("[{}] live link attempt dom anchor click", self.log_prefix);
+                if !state.click_live_link(self.log_prefix) {
+                    state.live_link.set(Some(false));
+                    self.scripted_live_link_done = true;
+                    eprintln!(
+                        "[{}] live link failed before anchor target (last title {:?}, last url {:?})",
+                        self.log_prefix,
+                        state.active_page_title(),
+                        state.active_url()
+                    );
+                    if self.smoke {
+                        event_loop.exit();
+                    }
+                }
+            } else if self.started.elapsed() >= self.timeout {
+                state.live_link.set(Some(false));
+                self.scripted_live_link_done = true;
+                eprintln!(
+                    "[{}] live link failed before click-ready state (last title {:?}, last url {:?})",
+                    self.log_prefix,
+                    state.active_page_title(),
+                    state.active_url()
+                );
+                if self.smoke {
+                    event_loop.exit();
+                }
+            }
+            return true;
+        }
+
+        if state.active_live_link_verified() {
+            if let Some(started) = self.live_link_started {
+                let elapsed = started.elapsed();
+                state.live_link_frame.set(Some(elapsed));
+                state.live_link.set(Some(true));
+                self.scripted_live_link_done = true;
+                println!(
+                    "[{}] live link direct frame in {}",
+                    self.log_prefix,
+                    format_duration(elapsed)
+                );
+                println!("[{}] live link true", self.log_prefix);
+                if let Some(url) = state.active_url() {
+                    println!("[{}] live link url {}", self.log_prefix, url);
+                }
+                if let Some(title) = state.active_page_title() {
+                    println!("[{}] live link title {}", self.log_prefix, title);
+                }
+                if self.smoke {
+                    event_loop.exit();
+                }
+            }
+        } else {
+            let timed_out = self
+                .live_link_started
+                .map(|started| started.elapsed() >= self.timeout)
+                .unwrap_or(false);
+            if timed_out {
+                state.live_link.set(Some(false));
+                self.scripted_live_link_done = true;
+                eprintln!(
+                    "[{}] live link failed before navigation (last title {:?}, last url {:?})",
+                    self.log_prefix,
+                    state.active_page_title(),
+                    state.active_url()
+                );
+                if self.smoke {
+                    event_loop.exit();
+                }
+            } else {
+                state.window.request_redraw();
+            }
+        }
+        true
+    }
+
     fn send_live_search_attempt(&mut self, state: &Rc<DirectServoState>) {
         self.live_search_attempts = self.live_search_attempts.saturating_add(1);
         self.live_search_last_attempt = Some(Instant::now());
@@ -1722,6 +1868,10 @@ impl ApplicationHandler<DirectServoUserEvent> for DirectServoApp {
             live_form_frame: Cell::new(None),
             live_form: Cell::new(None),
             live_form_submit_target: RefCell::new(None),
+            live_link_frame: Cell::new(None),
+            live_link: Cell::new(None),
+            live_link_target: RefCell::new(None),
+            live_link_expected_host: RefCell::new(None),
             retained_navigation_frame: Cell::new(None),
             input_frame: Cell::new(None),
             location_frame: Cell::new(None),
@@ -1918,6 +2068,8 @@ impl ApplicationHandler<DirectServoUserEvent> for DirectServoApp {
                         } else if self.scripted_live_search_smoke {
                             state.window.request_redraw();
                         } else if self.scripted_live_form_smoke {
+                            state.window.request_redraw();
+                        } else if self.scripted_live_link_smoke {
                             state.window.request_redraw();
                         } else if self.scripted_retained_navigation_smoke {
                             state.window.request_redraw();
@@ -2218,6 +2370,7 @@ impl ApplicationHandler<DirectServoUserEvent> for DirectServoApp {
                     } else if self.drive_retained_navigation_smoke(&state, event_loop) {
                     } else if self.drive_live_search_smoke(&state, event_loop) {
                     } else if self.drive_live_form_smoke(&state, event_loop) {
+                    } else if self.drive_live_link_smoke(&state, event_loop) {
                     } else if self.scripted_text.is_some() && !self.scripted_text_sent {
                         if let Some(text) = self.scripted_text.clone() {
                             if state.active_load_complete() {
@@ -2274,6 +2427,7 @@ impl ApplicationHandler<DirectServoUserEvent> for DirectServoApp {
                 || (self.scripted_search_submit_smoke && !self.scripted_search_submit_done)
                 || (self.scripted_live_search_smoke && !self.scripted_live_search_done)
                 || (self.scripted_live_form_smoke && !self.scripted_live_form_done)
+                || (self.scripted_live_link_smoke && !self.scripted_live_link_done)
                 || (self.scripted_retained_navigation_smoke
                     && !self.scripted_retained_navigation_done);
             if self.embed_parent_hwnd.is_some() && self.started.elapsed() <= EMBEDDED_STARTUP_PUMP {
@@ -2316,6 +2470,9 @@ impl ApplicationHandler<DirectServoUserEvent> for DirectServoApp {
             }
             if self.scripted_live_form_smoke && !self.scripted_live_form_done {
                 self.drive_live_form_smoke(&state, event_loop);
+            }
+            if self.scripted_live_link_smoke && !self.scripted_live_link_done {
+                self.drive_live_link_smoke(&state, event_loop);
             }
             if self.scripted_retained_navigation_smoke && !self.scripted_retained_navigation_done {
                 self.drive_retained_navigation_smoke(&state, event_loop);
@@ -2377,12 +2534,14 @@ pub fn run(mut options: DirectServoOptions) -> Result<DirectServoOutcome, String
     let search_submit_smoke = options.scripted_search_submit_smoke;
     let live_search_smoke = options.scripted_live_search_smoke;
     let live_form_smoke = options.scripted_live_form_smoke;
+    let live_link_smoke = options.scripted_live_link_smoke;
     let embedded = options.embed_parent_hwnd.is_some();
     if embedded
         || verified_input_smoke
         || search_submit_smoke
         || live_search_smoke
         || live_form_smoke
+        || live_link_smoke
     {
         event_loop.set_control_flow(ControlFlow::Poll);
     } else {
@@ -2419,6 +2578,10 @@ pub fn run(mut options: DirectServoOptions) -> Result<DirectServoOutcome, String
         live_form: app.live_form(),
         live_form_url: app.live_form_url(),
         live_form_title: app.live_form_title(),
+        live_link_frame: app.live_link_frame(),
+        live_link: app.live_link(),
+        live_link_url: app.live_link_url(),
+        live_link_title: app.live_link_title(),
         retained_navigation_frame: app.retained_navigation_frame(),
         retained_navigation_url: app.retained_navigation_url(),
         retained_navigation_title: app.retained_navigation_title(),
@@ -2490,6 +2653,12 @@ pub fn run(mut options: DirectServoOptions) -> Result<DirectServoOutcome, String
         && (outcome.live_form_frame.is_none() || outcome.live_form != Some(true))
     {
         return Err("direct Servo live-form smoke exited without verified post".to_string());
+    }
+    if smoke
+        && app.scripted_live_link_smoke
+        && (outcome.live_link_frame.is_none() || outcome.live_link != Some(true))
+    {
+        return Err("direct Servo live-link smoke exited without verified navigation".to_string());
     }
     if smoke
         && app.scripted_retained_navigation_smoke
@@ -2904,10 +3073,28 @@ impl DirectServoState {
     ) {
         self.direct_frame_count
             .set(self.direct_frame_count.get().saturating_add(1));
-        set_duration_max(&self.direct_max_frame, total);
-        set_duration_max(&self.direct_max_spin, spin);
-        set_duration_max(&self.direct_max_paint, paint);
-        set_duration_max(&self.direct_max_present, present);
+        // Co-record the spin/paint/present breakdown of the single worst-total
+        // frame. Tracking the components as independent maxima would mix phases
+        // from different frames, so the reported decomposition could not be
+        // attributed to one frame and overstated where the heavy frame's time
+        // actually went.
+        let current = match (
+            self.direct_max_frame.get(),
+            self.direct_max_spin.get(),
+            self.direct_max_paint.get(),
+            self.direct_max_present.get(),
+        ) {
+            (Some(total), Some(spin), Some(paint), Some(present)) => {
+                Some((total, spin, paint, present))
+            }
+            _ => None,
+        };
+        let (worst_total, worst_spin, worst_paint, worst_present) =
+            keep_worst_total_frame(current, (total, spin, paint, present));
+        self.direct_max_frame.set(Some(worst_total));
+        self.direct_max_spin.set(Some(worst_spin));
+        self.direct_max_paint.set(Some(worst_paint));
+        self.direct_max_present.set(Some(worst_present));
 
         if total >= Duration::from_millis(100) {
             let slow_count = self.direct_slow_frame_count.get().saturating_add(1);
@@ -3337,6 +3524,24 @@ impl DirectServoState {
         self.active_url()
             .map(|url| url.path() == "/post")
             .unwrap_or(false)
+    }
+
+    fn active_live_link_verified(&self) -> bool {
+        let Some(expected_host) = self.live_link_expected_host.borrow().clone() else {
+            return false;
+        };
+        let Some(active_host) = self
+            .active_url()
+            .and_then(|url| url.host_str().map(|host| host.to_string()))
+        else {
+            return false;
+        };
+        // Accept the anchor host exactly, or a redirect within the same
+        // registrable domain (e.g. `iana.org` -> `www.iana.org`), so a normal
+        // apex/`www` redirect after the click still counts as verified.
+        active_host == expected_host
+            || active_host.ends_with(&format!(".{expected_host}"))
+            || expected_host.ends_with(&format!(".{active_host}"))
     }
 
     fn active_tab_smoke_ready(&self) -> bool {
@@ -3794,6 +3999,84 @@ impl DirectServoState {
                 }
                 Err(error) => {
                     println!("[{log_prefix}] live form field failed {error:?}");
+                }
+            },
+        );
+        true
+    }
+
+    fn click_live_link(self: &Rc<Self>, log_prefix: &'static str) -> bool {
+        let Some(webview) = self.active_webview() else {
+            return false;
+        };
+        let state = Rc::clone(self);
+        webview.evaluate_javascript(
+            r#"
+(() => {
+  const visible = (el) => {
+    if (!el || !el.getBoundingClientRect) return false;
+    const rect = el.getBoundingClientRect();
+    const style = getComputedStyle(el);
+    return rect.width >= 8 && rect.height >= 6 && style.visibility !== 'hidden' && style.display !== 'none' && style.pointerEvents !== 'none';
+  };
+  const stripFragment = (value) => value.split('#')[0];
+  const here = stripFragment(location.href);
+  for (const anchor of Array.from(document.querySelectorAll('a[href]'))) {
+    if (!visible(anchor)) continue;
+    let url;
+    try { url = new URL(anchor.href, location.href); } catch (_) { continue; }
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') continue;
+    if (stripFragment(url.href) === here) continue;
+    try { anchor.scrollIntoView({block: 'center', inline: 'center'}); } catch (_) {}
+    const rect = anchor.getBoundingClientRect();
+    return JSON.stringify({
+      x: Math.round(rect.left + rect.width / 2),
+      y: Math.round(rect.top + rect.height / 2),
+      w: Math.round(rect.width),
+      h: Math.round(rect.height),
+      host: url.host,
+      href: url.href
+    });
+  }
+  return '';
+})()
+"#,
+            move |result| match result {
+                Ok(JSValue::String(value)) => {
+                    let value = value.trim();
+                    if value.is_empty() {
+                        println!("[{log_prefix}] live link anchor not found");
+                        return;
+                    }
+                    let Ok(candidate) = serde_json::from_str::<Value>(value) else {
+                        println!("[{log_prefix}] live link anchor parse failed {value}");
+                        return;
+                    };
+                    let x = candidate.get("x").and_then(Value::as_f64).unwrap_or(0.0) as f32;
+                    let y = candidate.get("y").and_then(Value::as_f64).unwrap_or(0.0) as f32;
+                    if let Some(host) = candidate.get("host").and_then(Value::as_str) {
+                        *state.live_link_expected_host.borrow_mut() = Some(host.to_string());
+                    }
+                    *state.live_link_target.borrow_mut() = Some((x, y));
+                    println!(
+                        "[{log_prefix}] live link target x={} y={} size {}x{} host {} href {}",
+                        x.round() as i32,
+                        y.round() as i32,
+                        candidate.get("w").and_then(Value::as_i64).unwrap_or(0),
+                        candidate.get("h").and_then(Value::as_i64).unwrap_or(0),
+                        candidate.get("host").and_then(Value::as_str).unwrap_or("?"),
+                        candidate.get("href").and_then(Value::as_str).unwrap_or("?")
+                    );
+                    if x > 0.0 && y > 0.0 {
+                        state.click_at(x, y);
+                    }
+                    state.window.request_redraw();
+                }
+                Ok(other) => {
+                    println!("[{log_prefix}] live link anchor unexpected result {other:?}");
+                }
+                Err(error) => {
+                    println!("[{log_prefix}] live link anchor failed {error:?}");
                 }
             },
         );
@@ -4269,10 +4552,29 @@ fn direct_tab_smoke_url() -> Url {
 mod tests {
     use base64::{engine::general_purpose, Engine as _};
 
+    use std::time::Duration;
+
     use super::{
-        certificate_fingerprint_sha256_from_base64, parse_direct_navigation_target,
-        retained_navigation_title_target, RETAINED_NAVIGATION_TITLE_PREFIX,
+        certificate_fingerprint_sha256_from_base64, keep_worst_total_frame,
+        parse_direct_navigation_target, retained_navigation_title_target,
+        RETAINED_NAVIGATION_TITLE_PREFIX,
     };
+
+    #[test]
+    fn keeps_breakdown_of_worst_total_frame() {
+        let ms = Duration::from_millis;
+        // First heavy frame: 1.3s total, paint-dominated.
+        let first = keep_worst_total_frame(None, (ms(1300), ms(4), ms(1200), ms(20)));
+        assert_eq!(first, (ms(1300), ms(4), ms(1200), ms(20)));
+        // A later, lighter frame with a momentarily higher spin must NOT replace
+        // the recorded breakdown; otherwise spin/paint/present mix across frames
+        // and the reported decomposition no longer belongs to one real frame.
+        let kept = keep_worst_total_frame(Some(first), (ms(200), ms(150), ms(40), ms(10)));
+        assert_eq!(kept, (ms(1300), ms(4), ms(1200), ms(20)));
+        // A new worst-total frame replaces the whole co-recorded breakdown.
+        let replaced = keep_worst_total_frame(Some(kept), (ms(1500), ms(900), ms(560), ms(40)));
+        assert_eq!(replaced, (ms(1500), ms(900), ms(560), ms(40)));
+    }
 
     #[test]
     fn parses_direct_location_targets() {
@@ -4429,9 +4731,21 @@ fn truncate_text(value: &str, max_chars: usize) -> String {
     out
 }
 
-fn set_duration_max(cell: &Cell<Option<Duration>>, value: Duration) {
-    if cell.get().map(|current| value > current).unwrap_or(true) {
-        cell.set(Some(value));
+/// Timing breakdown of one direct frame: `(total, spin, paint, present)`.
+type DirectFrameTiming = (Duration, Duration, Duration, Duration);
+
+/// Keep whichever frame has the larger `total`, returning its full
+/// `(total, spin, paint, present)` breakdown. This co-records the spin/paint/
+/// present split with a single worst-total frame instead of mixing independent
+/// component maxima from different frames, so the reported decomposition can be
+/// attributed to one real frame.
+fn keep_worst_total_frame(
+    current: Option<DirectFrameTiming>,
+    candidate: DirectFrameTiming,
+) -> DirectFrameTiming {
+    match current {
+        Some(current) if current.0 >= candidate.0 => current,
+        _ => candidate,
     }
 }
 

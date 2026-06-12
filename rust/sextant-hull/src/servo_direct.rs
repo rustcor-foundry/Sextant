@@ -18,6 +18,7 @@ fn main() -> Result<(), String> {
     let search_submit_smoke = args.iter().any(|arg| arg == "--search-submit-smoke");
     let live_search_smoke = args.iter().any(|arg| arg == "--live-search-smoke");
     let live_form_smoke = args.iter().any(|arg| arg == "--live-form-smoke");
+    let live_link_smoke = args.iter().any(|arg| arg == "--live-link-smoke");
     let retained_navigation_smoke = args.iter().any(|arg| arg == "--retained-navigation-smoke");
     let local_fixture = if verified_input_smoke && !has_explicit_target(&args) {
         Some(direct_servo::start_verified_input_fixture_server()?)
@@ -32,6 +33,8 @@ fn main() -> Result<(), String> {
         Some(Url::parse("https://lite.duckduckgo.com/lite/").expect("live search URL should parse"))
     } else if live_form_smoke {
         Some(Url::parse("https://httpbin.org/forms/post").expect("live form URL should parse"))
+    } else if live_link_smoke {
+        Some(Url::parse("https://example.com").expect("live link URL should parse"))
     } else {
         None
     };
@@ -47,6 +50,7 @@ fn main() -> Result<(), String> {
         || search_submit_smoke
         || live_search_smoke
         || live_form_smoke
+        || live_link_smoke
         || retained_navigation_smoke
         || args.iter().any(|arg| {
             matches!(
@@ -77,6 +81,7 @@ fn main() -> Result<(), String> {
         scripted_search_submit_smoke: search_submit_smoke,
         scripted_live_search_smoke: live_search_smoke,
         scripted_live_form_smoke: live_form_smoke,
+        scripted_live_link_smoke: live_link_smoke,
         scripted_retained_navigation_smoke: retained_navigation_smoke,
         scripted_location: parse_scripted_location(&args),
         scripted_history: parse_scripted_history(&args),
@@ -128,6 +133,21 @@ fn main() -> Result<(), String> {
     }
     if let Some(live_search_title) = outcome.live_search_title {
         println!("[servo-direct] live search title {live_search_title}");
+    }
+    if let Some(live_link_frame) = outcome.live_link_frame {
+        println!(
+            "[servo-direct] live link frame {}",
+            direct_servo::format_duration(live_link_frame)
+        );
+    }
+    if let Some(live_link) = outcome.live_link {
+        println!("[servo-direct] live link {live_link}");
+    }
+    if let Some(live_link_url) = outcome.live_link_url {
+        println!("[servo-direct] live link url {live_link_url}");
+    }
+    if let Some(live_link_title) = outcome.live_link_title {
+        println!("[servo-direct] live link title {live_link_title}");
     }
     if let Some(retained_navigation_frame) = outcome.retained_navigation_frame {
         println!(

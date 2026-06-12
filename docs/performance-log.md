@@ -4,6 +4,43 @@ Current timing checkpoints only. Older timing history is archived in [archive/20
 
 Environment: Windows debug build, default Servo backend. Baseline rows below were captured through the built MCP/browser binaries with `SEXTANT_MCP_USE_INSTALLED_BROWSER=1`.
 
+## Complex-Page Tail Attribution - 2026-06-11
+
+Instrumentation fix: `record_direct_frame_timing` now co-records the spin/paint/present breakdown of the single worst-total direct frame (`keep_worst_total_frame`) instead of tracking each component as an independent maximum. Previously `maxDirectFrameMs` and `maxDirectSpinMs/PaintMs/PresentMs` could come from different frames, so the headline decomposition could not be attributed to one real frame. The per-slow-frame `directSlowFrames` array was already co-recorded; this aligns the headline with it. Unit test: `keeps_breakdown_of_worst_total_frame` (4/4 in `sextant-servo-direct`).
+
+Direct complexity baseline at `960x620` (cargo `dev` profile = optimized + debuginfo, default Servo backend, live network):
+
+| Page | Worst frame total | spin | paint | present | Phase | loadComplete | Complexity |
+|---|---:|---:|---:|---:|---|---:|---|
+| example.com | `375ms` | `0` | `374ms` | `1ms` | idle (audit-only) | `1.2s` | `12` els, `4` rules |
+| DuckDuckGo Lite | `31ms` | `0` | `3ms` | `28ms` | n/a | `630ms` | `27` els |
+| DuckDuckGo full | `1.1s` | `0` | `1.1s` | `1ms` | loading | `2.3s` | `816` els, `2,413` rules, `46` scripts, `75` res |
+| MDN HTML article | `796ms` | `0` | `794ms` | `1ms` | loading | `1.9s` | `1,553` els, `359` rules, `6` scripts, `37` res |
+
+Direct viewport baseline (DuckDuckGo full, co-recorded worst loading frame):
+
+| Viewport | Pixels | Worst frame total | spin | paint | present | paint/Mpx |
+|---|---:|---:|---:|---:|---:|---:|
+| `640x420` | `268,800` | `1.1s` | `0` | `1.1s` | `1ms` | `4092` |
+| `960x620` | `595,200` | `1.1s` | `0` | `1.1s` | `1ms` | `1848` |
+| `1180x760` | `896,800` | `1.2s` | `0` | `1.2s` | `1ms` | `1338` |
+
+Read:
+
+- The complex-page heavy frame is ~100% `webview.paint()` (WebRender rendering the display list). `spin` (`servo.spin_event_loop()` — script/layout/display-list building) is ~`0ms` in the worst frame, and `present` (buffer swap) is ~`1ms`.
+- Paint is flat (`1.1-1.2s`) across a `3.3x` pixel-area range, so the cost is **not** GPU fill-rate; `paint/Mpx` falls as the viewport grows. Paint instead tracks DOM/CSS complexity at a fixed viewport (DDG full `1.1s` / `816` els / `2,413` rules vs MDN `794ms` / `1,553` els / `359` rules vs DDG Lite `3ms` / `27` els).
+- Conclusion: the optimization target is WebRender frame/scene building inside `paint()`, not Servo layout (`spin`) or raw pixel fill (`present`). First measure the same frame on a release profile to size debug-build overhead, then profile inside the WebRender paint path for the heavy display list.
+- The multi-second `loadCompleteMs` tail (e.g. DDG full `2.3s`, `resourceDurationMs` ~`19.9s` across `75` resources) is a separate axis — network/subresource driven, not one heavy frame. Keep treating first-present/first-interaction as user-speed and `loadCompleteMs` as tail health.
+
+Debug-tax control test (rebuild deps with `debug-assertions = false` / `overflow-checks = false` in `[profile.dev.package."*"]`; `servo-script`/`servo-layout`/`servo` recompiled, `13m23s`):
+
+| Page | paint with checks on | paint with checks off |
+|---|---:|---:|
+| DuckDuckGo full (loading) | `1.1s` | `1.1s` |
+| MDN article (loading) | `794ms` | `773ms` |
+
+Read: stripping the remaining dependency debug tax did **not** move the heavy loading paint (DDG full identical, MDN within ~3% noise). Dependencies are already `opt-level 3` in the dev profile, so the `1.1s` `webview.paint()` is genuine WebRender render cost, not a debug-build artifact. The profile change was reverted. Our-side profile/build levers on this frame are exhausted; further movement needs WebRender-internal profiling or upstream work, so the heavy single-frame paint is treated as an upstream/structural cost rather than a tuning target for now.
+
 ## QA Cleanup - 2026-06-06
 
 Validation:

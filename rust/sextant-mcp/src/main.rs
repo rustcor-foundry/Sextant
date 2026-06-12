@@ -965,6 +965,10 @@ fn tools() -> Value {
                         "type": "boolean",
                         "description": "Direct-render only. Type into a representative hosted HTML form, submit through the raw Servo input path, verify the posted form page, and report timing."
                     },
+                    "live_link_smoke": {
+                        "type": "boolean",
+                        "description": "Direct-render only. DOM-locate the first visible cross-document link, click it through the raw Servo hit-test path, verify the resulting cross-host navigation, and report timing."
+                    },
                     "location_smoke": {
                         "type": "string",
                         "description": "Direct-render only. After first direct present, drive the raw direct address/location path with this URL, bare domain, or search text and report location timing."
@@ -1826,6 +1830,16 @@ fn window_smoke_mode_boundary_error(arguments: &Value, mode: Option<&str>) -> Op
         );
     }
     if arguments
+        .get("live_link_smoke")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        && render_path != "direct"
+    {
+        return Some(
+            "browser_window_smoke live_link_smoke requires render_path 'direct'".to_string(),
+        );
+    }
+    if arguments
         .get("location_smoke")
         .and_then(Value::as_str)
         .is_some()
@@ -2142,6 +2156,12 @@ fn browser_window_smoke_cli_arguments(args: &[String]) -> Result<Option<Value>, 
         .any(|arg| arg == "--live-form-smoke" || arg == "--window-live-form-smoke")
     {
         arguments["live_form_smoke"] = Value::Bool(true);
+    }
+    if args
+        .iter()
+        .any(|arg| arg == "--live-link-smoke" || arg == "--window-live-link-smoke")
+    {
+        arguments["live_link_smoke"] = Value::Bool(true);
     }
     if let Some(target) = operator_arg_value(args, "--location-smoke")
         .or_else(|| operator_arg_value(args, "--window-location-smoke"))
@@ -2618,6 +2638,16 @@ fn browser_direct_browsing_baseline_tool(arguments: Value) -> Value {
         form_arguments["target"] = Value::String(form_target);
     }
     cases.push(run_direct_baseline_case("live_form", true, form_arguments));
+    // Link-click navigation defaults to example.com -> iana.org. Optional for
+    // now so a transient cross-host hiccup is not a release blocker; promote to
+    // required once it proves stable in the rotation.
+    let link_arguments = json!({
+        "mode": "direct",
+        "render_path": "direct",
+        "live_link_smoke": true,
+        "timeout_seconds": timeout_seconds,
+    });
+    cases.push(run_direct_baseline_case("live_link", false, link_arguments));
 
     let required_failures: Vec<Value> = cases
         .iter()
@@ -2880,6 +2910,10 @@ fn direct_baseline_metrics(window_smoke: &Value) -> Value {
         "searchSubmitFrameMs": window_smoke.get("searchSubmitFrameMs").cloned().unwrap_or(Value::Null),
         "liveSearchFrameMs": window_smoke.get("liveSearchFrameMs").cloned().unwrap_or(Value::Null),
         "liveFormFrameMs": window_smoke.get("liveFormFrameMs").cloned().unwrap_or(Value::Null),
+        "liveLinkFrameMs": window_smoke.get("liveLinkFrameMs").cloned().unwrap_or(Value::Null),
+        "liveLink": window_smoke.get("liveLink").cloned().unwrap_or(Value::Null),
+        "liveLinkUrl": window_smoke.get("liveLinkUrl").cloned().unwrap_or(Value::Null),
+        "liveLinkTitle": window_smoke.get("liveLinkTitle").cloned().unwrap_or(Value::Null),
         "loadCompleteMs": window_smoke.get("loadCompleteMs").cloned().unwrap_or(Value::Null),
         "reloadFrameMs": window_smoke.get("reloadFrameMs").cloned().unwrap_or(Value::Null),
         "resizeFrameMs": window_smoke.get("resizeFrameMs").cloned().unwrap_or(Value::Null),
@@ -3167,6 +3201,13 @@ fn run_browser_window_smoke_tool(arguments: Value) -> Result<Value, String> {
         .unwrap_or(false)
     {
         full_args.push("--live-form-smoke".to_string());
+    }
+    if arguments
+        .get("live_link_smoke")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        full_args.push("--live-link-smoke".to_string());
     }
     if let Some(target) = required_string(&arguments, "location_smoke") {
         full_args.extend(["--location-smoke".to_string(), target]);
@@ -4868,6 +4909,10 @@ fn window_smoke_summary(report: &[String]) -> Value {
     summary["liveFormSubmittedUrl"] = Value::Null;
     summary["liveFormBlocked"] = Value::Null;
     summary["liveFormBlockReason"] = Value::Null;
+    summary["liveLinkFrameMs"] = Value::Null;
+    summary["liveLink"] = Value::Null;
+    summary["liveLinkUrl"] = Value::Null;
+    summary["liveLinkTitle"] = Value::Null;
     summary["timeoutPhase"] = Value::Null;
     summary["timeoutTitle"] = Value::Null;
     summary["timeoutUrl"] = Value::Null;
@@ -4971,6 +5016,14 @@ fn window_smoke_summary(report: &[String]) -> Value {
             summary["liveFormTitle"] = Value::String(value.trim().to_string());
         } else if let Some(value) = line.strip_prefix("[window-smoke] live form ") {
             summary["liveForm"] = Value::Bool(value.trim() == "true");
+        } else if let Some(value) = line.split("live link frame ").nth(1) {
+            summary["liveLinkFrameMs"] = duration_token_to_value(value.trim());
+        } else if let Some(value) = line.strip_prefix("[window-smoke] live link url ") {
+            summary["liveLinkUrl"] = Value::String(value.trim().to_string());
+        } else if let Some(value) = line.strip_prefix("[window-smoke] live link title ") {
+            summary["liveLinkTitle"] = Value::String(value.trim().to_string());
+        } else if let Some(value) = line.strip_prefix("[window-smoke] live link ") {
+            summary["liveLink"] = Value::Bool(value.trim() == "true");
         } else if let Some(value) = line.split("input enqueue ").nth(1) {
             summary["inputEnqueueMs"] = duration_token_to_value(value.trim());
         } else if let Some(value) = line.split("input frame ").nth(1) {

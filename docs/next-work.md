@@ -32,7 +32,8 @@ The direct lane now proves fast first present, fast early interaction, verified 
    - Bing live search now passes without the `NodeList` panic after applying the local Servo checkout patch captured in `docs/patches/servo-nodelist-bing-panic.patch`: the unpatched backtrace hit `NodeList.hasOwn` via `Array.prototype.slice.call(nodeList)`, while the patched rebuild reached a normal Bing search URL with a `6.3s` live-search frame and no `nodelist.rs` panic. `rust/scripts/apply-servo-patches.ps1` can apply/verify the patch against the Cargo-locked Servo checkout; next durability step is to carry this as an upstream Servo PR or pin/fork patch.
    - `--live-form-smoke` now drives `https://httpbin.org/forms/post`, DOM-locates `input[name="custname"]`, types through raw Servo input, clicks the page submit button, and verifies `https://httpbin.org/post`; latest hosted run reported `liveFormFrameMs=484`.
    - MCP now reports `directPresentMs`, `liveSearchAttempts`, `liveSearchDomTarget`, `liveSearchDomFormTargetUrl`, `liveFormFrameMs`, `liveForm`, `liveFormUrl`, `liveFormAttempts`, `liveFormDomTarget`, `liveFormSubmitted`, `liveFormBlocked`, `liveFormBlockReason`, `timeoutTitle`, `timeoutUrl`, `liveSearchSubmitted`, `liveSearchBlocked`, and `liveSearchBlockReason`; no-query Google `/webhp` timeouts are classified as `input-not-submitted-no-query`, while other home-page no-submit failures are classified as `input-not-submitted`; hosted form failures now distinguish `input-not-submitted`, `submitted-without-navigation`, and `submitted-without-post-verification`.
-   - Next: keep Google, Bing, and the hosted form in the regular direct smoke rotation while adding more representative live-site controls.
+   - `--live-link-smoke` now proves real hyperlink navigation, wired end-to-end through the standalone `sextant-servo-direct` bin, `sextant-browser --window-smoke`, MCP `browser_window_smoke`, and the `browser_direct_browsing_baseline` (as an optional `live_link` case). It DOM-locates the first visible cross-document `a[href]`, clicks it through raw Servo hit-testing, and verifies the resulting cross-host navigation (accepting apex/`www` redirects within the registrable domain). Latest baseline run drove `example.com`'s `iana.org` link through the retained-navigation swap to `https://www.iana.org/help/example-domains`; MCP surfaces `liveLink`, `liveLinkUrl`, `liveLinkTitle`, and `liveLinkFrameMs` (`916ms`-`1.3s`).
+   - Next: keep Google, Bing, and the hosted form in the regular direct smoke rotation while adding more representative live-site controls (multi-field forms, scroll-into-view). Promote the `live_link` baseline case from optional to required once it proves stable across runs.
    - Track `verifiedInputFrameMs`, `searchSubmitFrameMs`, `liveSearchFrameMs`, `liveFormFrameMs`, `locationUrl`, `historyFinalUrl`, `loadUrl`, `reloadUrl`, `tabUrl`, `firstInteractionFrameMs`, load state, and any focus/hit-test failure mode.
 
 3. **Keep the direct browsing baseline green**
@@ -63,6 +64,10 @@ The direct lane now proves fast first present, fast early interaction, verified 
 7. **Measure complex-page tail**
    - Keep `loadCompleteMs` for Google and other heavy pages.
    - Treat first present and first interaction as user-speed metrics; treat load completion as tail health.
+   - `record_direct_frame_timing` now co-records the worst-total direct frame's spin/paint/present (`keep_worst_total_frame`), so `maxDirectSpinMs/PaintMs/PresentMs` are a truthful decomposition of `maxDirectFrameMs` rather than independent maxima.
+   - Attribution (2026-06-11): the heavy loading frame is ~100% WebRender `webview.paint()` — `spin`≈`0ms`, `present`≈`1ms`, paint `1.1s` (DDG full) / `794ms` (MDN); paint is flat across a `3.3x` pixel-area range, so it is content/scene-bound, not GPU fill-rate. See [performance-log.md](performance-log.md).
+   - Debug-tax sizing done (2026-06-11): rebuilding deps with `debug-assertions`/`overflow-checks` off did not move the heavy paint (DDG full `1.1s` unchanged). Deps are already `opt-level 3`, so the paint is genuine WebRender cost, not a debug artifact; the profile change was reverted.
+   - Next: treat the heavy single-frame paint as an upstream/structural WebRender cost (no cheap our-side lever left); keep `loadCompleteMs` as the separate network/subresource tail metric and focus tuning effort on in-our-control areas (chrome composition, pacing, input latency).
 
 ## High-Signal Commands
 
@@ -116,6 +121,7 @@ Build/test:
 cargo fmt --all --check
 cargo check -p sextant-hull --bin sextant-browser
 cargo check -p sextant-hull --bin sextant-servo-direct
+cargo run -p sextant-hull --bin sextant-servo-direct -- --live-link-smoke --timeout-seconds 30
 cargo check -p sextant-mcp
 cargo test -p sextant-mcp parses_window_smoke_summary -- --nocapture
 cargo test -p sextant-mcp parses_window_smoke_cli_arguments -- --nocapture
@@ -132,6 +138,7 @@ cargo test -p sextant-mcp window_smoke_blocks_control_work_in_non_control_modes 
 | `--verified-input-smoke` | Serves a controlled localhost page, clicks/focuses an input, types through Servo, and reports `verifiedInputFrameMs`. |
 | `--search-submit-smoke` | Serves a controlled localhost form, types, submits with Enter, verifies `/search?q=sextant`, and reports `searchSubmitFrameMs`, `searchSubmitUrl`, and `searchSubmitTitle`. |
 | `--live-search-smoke` | Opens DuckDuckGo Lite by default, and can also target live search pages such as Google; it tries keyboard focus, a DOM-located search-box click with normal Servo text/Enter input, fixed click fallback, and focus sweep, then reports `liveSearchFrameMs`, `liveSearchUrl`, `liveSearchTitle`, attempts, timeout URL/title, and submitted/blocked diagnostics. |
+| `--live-link-smoke` | Opens `example.com` by default, DOM-locates the first visible cross-document `a[href]`, clicks it through raw Servo hit-testing, and verifies the resulting navigation by registrable-domain host match (accepts apex/`www` redirects); reports `liveLink`, `liveLinkUrl`, `liveLinkTitle`, and `liveLinkFrameMs`. Wired through the standalone bin, `--window-smoke`, MCP, and the direct browsing baseline (optional `live_link` case). |
 | `--resource-audit` | Direct load-smoke add-on that captures page resource health after load; reports image, broken image, SVG, stylesheet, script, and canvas evidence. |
 | `--location-smoke <target>` | Drives the direct title-bar location/search path and reports `locationUrl` / `locationTitle`. |
 | `--history-smoke <target>` | Navigates to target, then back/forward, and reports `historyFinalUrl` / `historyFinalTitle`. |
