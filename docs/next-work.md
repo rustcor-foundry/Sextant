@@ -44,12 +44,13 @@ The direct lane now proves fast first present, fast early interaction, verified 
    - `browser_direct_complexity_baseline` compares simple, lite, complex, and article pages at `960x620`; latest run separates audit-only paint from true loading paint and shows DuckDuckGo full `818ms` / MDN `903ms` loading paint.
    - Treat required baseline failures as release blockers for the direct lane.
 
-4. **Start direct chrome overlay design**
-   - Hosted direct composition now runs as a parent Sextant chrome window with an embedded Servo child window.
-   - Parent chrome currently owns address input, load progress, back/forward/reload, new/previous/next/close tab controls, active tab count/title, child PID, native appliance-certificate trust controls, and log-derived perf state.
-   - Hosted shell now has a bounded MCP smoke: `browser_hosted_direct_smoke` / `--hosted-direct-smoke`.
+4. **Direct chrome overlay (egui)**
+   - Interactive hosted launches now use `run_hosted_direct_app_egui`: an egui 0.27 chrome rendered through wgpu in the parent window, hosting the embedded Servo child below. Address bar, back/forward/reload, new/previous/next/close tab, load progress, and title/cert status are real egui widgets wired to the existing stdin child commands. The softbuffer `run_hosted_direct_app` is retained for `--hosted-direct-smoke`.
+   - GUI toolkit decision: egui (not Bevy) — Bevy's frame ownership would force Servo content back through a capture-bridge; egui only draws the parent chrome strip while the Servo child HWND keeps the content surface.
+   - wgpu adapter is hardware-GPU-first with a WARP software fallback (Windows Server / RDP sessions only expose D3D11, Servo's ANGLE path, not the D3D12/Vulkan wgpu needs).
+   - Fixed: the embedded child render stall (a child window's `request_redraw` does not wake a Windows `Wait` loop, so nav frames waited for OS input) via a light idle tick on the embedded child loop.
    - Preserve Direct/Incognito AI exclusion.
-   - Next: manual QA the hosted shell, polish button labels/states, and keep Agent/Assisted/Observe on the bridge until overlay/observation boundaries are explicit.
+   - Next: HiDPI chrome/content boundary alignment (chrome in logical points vs child embedded at 72 physical px), icon/tab-strip polish, trim the redundant parent startup-redraw nudge, and port the appliance-cert trust→relaunch flow from the softbuffer shell.
 
 5. **Keep bridge shell stable**
    - Re-run assisted user-DISTILL and normal window-smoke checks after direct changes.

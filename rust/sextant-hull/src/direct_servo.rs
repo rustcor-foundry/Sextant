@@ -2438,7 +2438,21 @@ impl ApplicationHandler<DirectServoUserEvent> for DirectServoApp {
             } else if host_command_processed {
                 event_loop.set_control_flow(ControlFlow::Poll);
             } else if !scripted_active && !frame_redraw_deferred {
-                event_loop.set_control_flow(ControlFlow::Wait);
+                if self.embed_parent_hwnd.is_some() {
+                    // `request_redraw` does not reliably wake a `Wait` loop for an
+                    // embedded child window on Windows, so async navigation/load
+                    // frames would otherwise not appear until an OS input event
+                    // arrived. Keep a light tick instead: fast while the page is
+                    // loading, slow once it is idle.
+                    let tick = if state.active_load_complete() {
+                        Duration::from_millis(250)
+                    } else {
+                        Duration::from_millis(16)
+                    };
+                    event_loop.set_control_flow(ControlFlow::WaitUntil(Instant::now() + tick));
+                } else {
+                    event_loop.set_control_flow(ControlFlow::Wait);
+                }
             }
             if self.scripted_load_needs_progress() {
                 event_loop.set_control_flow(ControlFlow::Poll);

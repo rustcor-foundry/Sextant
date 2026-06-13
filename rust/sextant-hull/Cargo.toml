@@ -31,11 +31,16 @@ xilem-shell = [
 servo-backend = [
     "sextant-engine/servo-backend",
     "dep:base64",
+    "dep:egui",
+    "dep:egui-wgpu",
+    "dep:egui-winit",
+    "dep:pollster",
     "dep:rustls",
     "dep:serde",
     "dep:serde_json",
     "dep:sha2",
     "dep:servo",
+    "dep:wgpu",
     "dep:windows-sys",
     "dep:winit30",
 ]
@@ -67,6 +72,12 @@ vello = { version = "0.1", optional = true }
 wgpu = { version = "0.19", optional = true }
 winit = "0.29"
 winit30 = { package = "winit", version = "0.30", optional = true }
+# egui 0.27 family aligns with winit 0.29 + wgpu 0.19 already in this tree.
+# Used to render the hosted-direct parent chrome (address bar, nav, tabs).
+egui = { version = "0.27", optional = true }
+egui-winit = { version = "0.27", optional = true }
+egui-wgpu = { version = "0.27", optional = true }
+pollster = { version = "0.3", optional = true }
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"], optional = true }
 base64 = { version = "0.22", optional = true }
 softbuffer = "0.4"

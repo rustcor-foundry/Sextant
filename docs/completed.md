@@ -9,6 +9,17 @@ Current high-signal history only. Older detailed session logs are archived under
 
 ---
 
+## 2026-06-13 - egui Hosted Direct Chrome
+
+- Added `run_hosted_direct_app_egui`: the interactive hosted-direct shell now renders its chrome with egui (egui 0.27 + egui-winit 0.27 + egui-wgpu 0.27, aligned to the existing winit 0.29 / wgpu 0.19) through a wgpu surface on the parent window, hosting the embedded Servo child below.
+- Chrome widgets (address bar, back/forward/reload, new/previous/next/close tab, load progress, title/cert status) are real egui controls wired to the existing stdin child commands. Interactive launches route to the egui shell; the softbuffer `run_hosted_direct_app` is retained for `--hosted-direct-smoke`, so no smoke regressed.
+- GUI toolkit decision: egui over Bevy. Bevy's frame ownership (ECS/wgpu owning the loop + surface) would force Servo content back through the frame-capture bridge the direct lane was built to escape; egui only draws the parent chrome strip while the Servo child HWND keeps the content surface.
+- wgpu adapter selection is hardware-GPU-first with a WARP software fallback. On this Windows Server / RDP session only D3D11 (Servo's ANGLE path) is exposed to the GPU, not the D3D12/Vulkan wgpu needs, so the chrome renders via WARP here while Servo still renders pages on the GPU; on a workstation session the hardware adapter is selected automatically. Resolution limits are raised to the adapter max so a HiDPI surface configures.
+- Fixed an embedded-child render stall: a child window's `request_redraw` does not reliably wake a Windows `Wait` event loop, so navigation/load frames waited for an OS input event (mouse move). The embedded child now keeps a light idle tick (≈16ms while loading, 250ms when idle) so async frames present on their own. User-confirmed: pages render on both launch and navigation without mouse input.
+- Validation: `cargo fmt --all --check` clean; `cargo build -p sextant-hull --bin sextant-browser` green; hosted egui shell launched against `example.com` with the embedded Servo child loading and rendering.
+
+Prior this session (committed under `f3b8ca8`): co-recorded worst-direct-frame paint attribution (heavy complex-page frame is ~100% WebRender `paint()`, content-bound, not a debug-build artifact) and the `--live-link-smoke` hyperlink-navigation control wired through the standalone bin, `--window-smoke`, MCP, and the direct browsing baseline.
+
 ## 2026-05-24 - Raw Direct Servo Browser Lane
 
 - Refactored the Servo `WindowRenderingContext` proof into shared `direct_servo` code used by both `sextant-servo-direct` and `sextant-browser --render-path direct`.

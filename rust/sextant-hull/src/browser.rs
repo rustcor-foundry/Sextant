@@ -5504,17 +5504,48 @@ fn main() {
         && !raw_direct_window
         && window_smoke.is_none()
     {
-        if let Err(error) = run_hosted_direct_app(
-            startup_input,
-            browser_mode,
-            certificate_path,
-            local_appliance_cert_fingerprint,
-            remember_local_appliance_cert,
-            allow_insecure_local_tls,
-            direct_resource_audit,
-            hosted_direct_smoke_timeout,
-            hosted_direct_smoke_action,
-        ) {
+        let interactive =
+            hosted_direct_smoke_timeout.is_none() && hosted_direct_smoke_action.is_none();
+        #[cfg(all(target_os = "windows", feature = "servo-backend"))]
+        let hosted_result = if interactive {
+            run_hosted_direct_app_egui(
+                startup_input,
+                browser_mode,
+                certificate_path,
+                local_appliance_cert_fingerprint,
+                remember_local_appliance_cert,
+                allow_insecure_local_tls,
+                direct_resource_audit,
+            )
+        } else {
+            run_hosted_direct_app(
+                startup_input,
+                browser_mode,
+                certificate_path,
+                local_appliance_cert_fingerprint,
+                remember_local_appliance_cert,
+                allow_insecure_local_tls,
+                direct_resource_audit,
+                hosted_direct_smoke_timeout,
+                hosted_direct_smoke_action,
+            )
+        };
+        #[cfg(not(all(target_os = "windows", feature = "servo-backend")))]
+        let hosted_result = {
+            let _ = interactive;
+            run_hosted_direct_app(
+                startup_input,
+                browser_mode,
+                certificate_path,
+                local_appliance_cert_fingerprint,
+                remember_local_appliance_cert,
+                allow_insecure_local_tls,
+                direct_resource_audit,
+                hosted_direct_smoke_timeout,
+                hosted_direct_smoke_action,
+            )
+        };
+        if let Err(error) = hosted_result {
             eprintln!("[sextant-browser] failed: {error}");
             std::process::exit(1);
         }
@@ -6755,6 +6786,385 @@ fn run_hosted_direct_app(
         Some(result) => result,
         None => Ok(()),
     }
+}
+
+/// Interactive hosted-direct shell with an egui chrome (address bar, navigation,
+/// tabs) rendered through wgpu, hosting the embedded Servo child window below the
+/// chrome. The softbuffer `run_hosted_direct_app` above is retained for the
+/// `--hosted-direct-smoke` proofs.
+#[cfg(all(target_os = "windows", feature = "servo-backend"))]
+fn run_hosted_direct_app_egui(
+    startup_input: Option<String>,
+    browser_mode: BrowserMode,
+    certificate_path: Option<PathBuf>,
+    local_appliance_cert_fingerprint: Option<String>,
+    remember_local_appliance_cert: Option<String>,
+    allow_insecure_local_tls: bool,
+    direct_resource_audit: bool,
+) -> Result<(), String> {
+    let target = startup_input.unwrap_or_else(|| "https://example.com".to_string());
+
+    let event_loop =
+        EventLoop::new().map_err(|error| format!("event loop initialization failed: {error}"))?;
+    let window = Arc::new(
+        WindowBuilder::new()
+            .with_title("Sextant Browser - Direct")
+            .with_inner_size(PhysicalSize::new(1180, 760))
+            .with_window_icon(sextant_window_icon())
+            .build(&event_loop)
+            .map_err(|error| format!("window creation failed: {error}"))?,
+    );
+    let parent_hwnd = window_hwnd(&window).ok_or_else(|| {
+        "hosted direct mode could not resolve the parent window handle".to_string()
+    })?;
+
+    // wgpu surface on the parent window for egui chrome rendering. Prefer DX12 /
+    // GL (Servo's child already renders through ANGLE here) and fall back to the
+    // WARP software adapter so the chrome still renders on machines without a
+    // usable discrete/integrated GPU (e.g. Windows Server).
+    // DX12 + GL only (a single-API surface keeps the WARP fallback presentable;
+    // mixing Vulkan in here associates the surface with a backend WARP cannot
+    // present to). Request a hardware adapter first so a real GPU is used where
+    // D3D12 is exposed, then fall back to the WARP software adapter (e.g. on
+    // Windows Server / RDP sessions that only expose D3D11 to ANGLE/Servo).
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        backends: wgpu::Backends::DX12 | wgpu::Backends::GL,
+        flags: wgpu::InstanceFlags::empty(),
+        ..Default::default()
+    });
+    let surface = instance
+        .create_surface(window.clone())
+        .map_err(|error| format!("wgpu surface creation failed: {error}"))?;
+    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference: wgpu::PowerPreference::HighPerformance,
+        compatible_surface: Some(&surface),
+        force_fallback_adapter: false,
+    }))
+    .or_else(|| {
+        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::default(),
+            compatible_surface: Some(&surface),
+            force_fallback_adapter: true,
+        }))
+    })
+    .ok_or_else(|| "no compatible wgpu adapter for hosted chrome".to_string())?;
+    let chosen = adapter.get_info();
+    println!(
+        "[hosted-direct] using wgpu adapter {} backend={:?} type={:?}",
+        chosen.name, chosen.backend, chosen.device_type
+    );
+    let (device, queue) = pollster::block_on(adapter.request_device(
+        &wgpu::DeviceDescriptor {
+            label: Some("hosted-direct-chrome"),
+            required_features: wgpu::Features::empty(),
+            // Keep downlevel feature limits (GL/WARP compatible) but allow the
+            // adapter's full texture/buffer resolution so a HiDPI surface fits.
+            required_limits: wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits()),
+        },
+        None,
+    ))
+    .map_err(|error| format!("wgpu device request failed: {error}"))?;
+
+    let mut size = window.inner_size();
+    let surface_caps = surface.get_capabilities(&adapter);
+    // egui expects a non-sRGB (linear) target so it can encode gamma itself.
+    let surface_format = surface_caps
+        .formats
+        .iter()
+        .copied()
+        .find(|format| !format.is_srgb())
+        .unwrap_or(surface_caps.formats[0]);
+    let mut config = wgpu::SurfaceConfiguration {
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        format: surface_format,
+        width: size.width.max(1),
+        height: size.height.max(1),
+        present_mode: wgpu::PresentMode::Fifo,
+        alpha_mode: surface_caps.alpha_modes[0],
+        view_formats: vec![],
+        desired_maximum_frame_latency: 2,
+    };
+    surface.configure(&device, &config);
+
+    let egui_ctx = egui::Context::default();
+    let mut egui_state = egui_winit::State::new(
+        egui_ctx.clone(),
+        egui::ViewportId::ROOT,
+        &window,
+        Some(window.scale_factor() as f32),
+        None,
+    );
+    let mut egui_renderer = egui_wgpu::Renderer::new(&device, surface_format, None, 1);
+
+    let mut child = Some(spawn_hosted_direct_child(
+        parent_hwnd,
+        size,
+        &target,
+        browser_mode,
+        certificate_path.as_deref(),
+        local_appliance_cert_fingerprint.as_deref(),
+        remember_local_appliance_cert.as_deref(),
+        allow_insecure_local_tls,
+        direct_resource_audit,
+    )?);
+
+    let mut summary = HostedDirectLogSummary::default();
+    let mut log_monitor = HostedDirectLogMonitor::default();
+    let log_path = child.as_ref().map(|child| child.log_path.clone());
+    let mut next_refresh = Instant::now();
+    let mut address = target.clone();
+    let mut address_focused = false;
+    let started = Instant::now();
+
+    let event_loop_result = event_loop.run(move |event, elwt| {
+        elwt.set_control_flow(ControlFlow::Wait);
+        match event {
+            Event::WindowEvent { event, window_id } if window_id == window.id() => {
+                let response = egui_state.on_window_event(&window, &event);
+                if response.repaint {
+                    window.request_redraw();
+                }
+                match event {
+                    WindowEvent::CloseRequested => {
+                        terminate_child_process(&mut child);
+                        elwt.exit();
+                    }
+                    WindowEvent::Resized(new_size) => {
+                        size = new_size;
+                        if new_size.width > 0 && new_size.height > 0 {
+                            config.width = new_size.width;
+                            config.height = new_size.height;
+                            surface.configure(&device, &config);
+                        }
+                        if let Some(child) = child.as_mut() {
+                            resize_hosted_direct_child(parent_hwnd, child, new_size);
+                        }
+                        window.request_redraw();
+                    }
+                    WindowEvent::RedrawRequested => {
+                        if config.width == 0 || config.height == 0 {
+                            return;
+                        }
+                        if !address_focused {
+                            if let Some(url) = summary.latest_url.as_deref() {
+                                address = url.to_string();
+                            }
+                        }
+                        let mut command: Option<String> = None;
+                        let raw_input = egui_state.take_egui_input(&window);
+                        let full_output = egui_ctx.run(raw_input, |ctx| {
+                            command = draw_hosted_direct_chrome_egui(
+                                ctx,
+                                &summary,
+                                &mut address,
+                                &mut address_focused,
+                            );
+                        });
+                        egui_state.handle_platform_output(&window, full_output.platform_output);
+                        if let Some(command) = command {
+                            send_hosted_direct_command(child.as_mut(), &command);
+                            next_refresh = Instant::now();
+                        }
+                        let tris =
+                            egui_ctx.tessellate(full_output.shapes, full_output.pixels_per_point);
+                        for (id, image_delta) in &full_output.textures_delta.set {
+                            egui_renderer.update_texture(&device, &queue, *id, image_delta);
+                        }
+                        let screen_descriptor = egui_wgpu::ScreenDescriptor {
+                            size_in_pixels: [config.width, config.height],
+                            pixels_per_point: full_output.pixels_per_point,
+                        };
+                        let mut encoder =
+                            device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                                label: Some("hosted-direct-chrome-encoder"),
+                            });
+                        egui_renderer.update_buffers(
+                            &device,
+                            &queue,
+                            &mut encoder,
+                            &tris,
+                            &screen_descriptor,
+                        );
+                        let frame = match surface.get_current_texture() {
+                            Ok(frame) => frame,
+                            Err(_) => {
+                                surface.configure(&device, &config);
+                                return;
+                            }
+                        };
+                        let view = frame
+                            .texture
+                            .create_view(&wgpu::TextureViewDescriptor::default());
+                        {
+                            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                                label: Some("hosted-direct-chrome-pass"),
+                                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                                    view: &view,
+                                    resolve_target: None,
+                                    ops: wgpu::Operations {
+                                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                                            r: 0.043,
+                                            g: 0.075,
+                                            b: 0.102,
+                                            a: 1.0,
+                                        }),
+                                        store: wgpu::StoreOp::Store,
+                                    },
+                                })],
+                                depth_stencil_attachment: None,
+                                timestamp_writes: None,
+                                occlusion_query_set: None,
+                            });
+                            egui_renderer.render(&mut pass, &tris, &screen_descriptor);
+                        }
+                        for id in &full_output.textures_delta.free {
+                            egui_renderer.free_texture(id);
+                        }
+                        queue.submit(Some(encoder.finish()));
+                        frame.present();
+                    }
+                    _ => {}
+                }
+            }
+            Event::AboutToWait => {
+                let now = Instant::now();
+                if let Some((_status, _path)) = poll_hosted_direct_child_exit(&mut child) {
+                    elwt.exit();
+                    return;
+                }
+                if now >= next_refresh {
+                    if let Some(path) = log_path.as_deref() {
+                        if let Some(updated) = log_monitor.refresh(path) {
+                            summary = updated;
+                            window.request_redraw();
+                        }
+                    }
+                    if let Some(child) = child.as_mut() {
+                        if resize_hosted_direct_child(parent_hwnd, child, size) {
+                            window.request_redraw();
+                        }
+                    }
+                    next_refresh = now + HOSTED_DIRECT_SUMMARY_REFRESH;
+                }
+                // Keep nudging the embedded child to repaint until it reports a
+                // first present, so the initial page is visible without an input
+                // event waking the loop.
+                if summary.first_present.is_none() && started.elapsed() < Duration::from_secs(6) {
+                    window.request_redraw();
+                    elwt.set_control_flow(ControlFlow::WaitUntil(now + Duration::from_millis(100)));
+                } else {
+                    elwt.set_control_flow(ControlFlow::WaitUntil(next_refresh));
+                }
+            }
+            _ => {}
+        }
+    });
+    event_loop_result.map_err(|error| format!("hosted direct egui event loop failed: {error}"))
+}
+
+/// Build the egui chrome strip and return a child command to send, if any.
+#[cfg(all(target_os = "windows", feature = "servo-backend"))]
+fn draw_hosted_direct_chrome_egui(
+    ctx: &egui::Context,
+    summary: &HostedDirectLogSummary,
+    address: &mut String,
+    address_focused: &mut bool,
+) -> Option<String> {
+    let mut command: Option<String> = None;
+    let multi_tab = summary.can_switch_tabs();
+    egui::TopBottomPanel::top("hosted-direct-chrome")
+        .exact_height(HOSTED_DIRECT_CHROME_H as f32)
+        .show(ctx, |ui| {
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                if ui
+                    .add_enabled(summary.can_go_back, egui::Button::new("◀"))
+                    .on_hover_text("Back")
+                    .clicked()
+                {
+                    command = Some("back".to_string());
+                }
+                if ui
+                    .add_enabled(summary.can_go_forward, egui::Button::new("▶"))
+                    .on_hover_text("Forward")
+                    .clicked()
+                {
+                    command = Some("forward".to_string());
+                }
+                if ui.button("⟳").on_hover_text("Reload").clicked() {
+                    command = Some("reload".to_string());
+                }
+                if ui.button("＋").on_hover_text("New tab").clicked() {
+                    command = Some("new-tab".to_string());
+                }
+                if ui
+                    .add_enabled(multi_tab, egui::Button::new("◁"))
+                    .on_hover_text("Previous tab")
+                    .clicked()
+                {
+                    command = Some("previous-tab".to_string());
+                }
+                if ui
+                    .add_enabled(multi_tab, egui::Button::new("▷"))
+                    .on_hover_text("Next tab")
+                    .clicked()
+                {
+                    command = Some("next-tab".to_string());
+                }
+                if ui
+                    .add_enabled(multi_tab, egui::Button::new("✕"))
+                    .on_hover_text("Close tab")
+                    .clicked()
+                {
+                    command = Some("close-tab".to_string());
+                }
+                let address_response = ui.add_sized(
+                    [ui.available_width(), 24.0],
+                    egui::TextEdit::singleline(address).hint_text("Search or enter address"),
+                );
+                *address_focused = address_response.has_focus();
+                if address_response.lost_focus()
+                    && ui.input(|input| input.key_pressed(egui::Key::Enter))
+                {
+                    let target = address.trim();
+                    if !target.is_empty() {
+                        command = Some(format!("navigate {target}"));
+                    }
+                }
+            });
+            if summary.certificate_warning_active() {
+                ui.horizontal(|ui| {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(0xd9, 0xa4, 0x41),
+                        "Certificate warning",
+                    );
+                    if ui.button("Go back").clicked() {
+                        command = Some("certificate-go-back".to_string());
+                    }
+                    if ui.button("Trust once").clicked() {
+                        command = Some("trust-once".to_string());
+                    }
+                    if ui.button("Trust this appliance").clicked() {
+                        command = Some("trust-this-appliance".to_string());
+                    }
+                });
+            } else {
+                ui.horizontal(|ui| {
+                    if summary.is_loading() {
+                        ui.add(
+                            egui::ProgressBar::new(summary.load_progress()).desired_width(160.0),
+                        );
+                    }
+                    let title = summary.active_title.as_deref().unwrap_or("");
+                    let tabs = match (summary.active_tab_index, summary.tab_count) {
+                        (Some(index), Some(count)) => format!("  [{}/{}]", index + 1, count),
+                        _ => String::new(),
+                    };
+                    ui.label(format!("{title}{tabs}"));
+                });
+            }
+        });
+    command
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
