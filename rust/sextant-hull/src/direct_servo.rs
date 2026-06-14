@@ -15,8 +15,8 @@ use serde_json::Value;
 use servo::{
     CompositionEvent, CompositionState, DevicePoint, EventLoopWaker, ImeEvent, InputEvent, JSValue,
     Key, KeyState, KeyboardEvent, LoadStatus, MouseButton, MouseButtonAction, MouseButtonEvent,
-    MouseMoveEvent, NamedKey as ServoNamedKey, Opts, Preferences, RenderingContext, Servo,
-    ServoBuilder, UserContentManager, UserScript, WebView, WebViewBuilder, WebViewDelegate,
+    MouseMoveEvent, NamedKey as ServoNamedKey, Opts, Preferences, RefreshDriver, RenderingContext,
+    Servo, ServoBuilder, UserContentManager, UserScript, WebView, WebViewBuilder, WebViewDelegate,
     WheelDelta, WheelEvent, WheelMode, WindowRenderingContext,
 };
 use sha2::{Digest, Sha256};
@@ -71,6 +71,12 @@ const EMBEDDED_STARTUP_PUMP: Duration = Duration::from_secs(4);
 const INPUT_PUMP_AFTER_EVENT: Duration = Duration::from_millis(96);
 const DIRECT_READY_FRAME_MIN_INTERVAL: Duration = Duration::from_millis(16);
 const DIRECT_LOADING_READY_FRAME_MIN_INTERVAL: Duration = Duration::from_millis(50);
+/// Minimum spacing between Servo animation frame starts (~60 fps). Servo's
+/// default timer refresh driver paces at 120 fps, which doubles the
+/// script/layout/paint work for animated pages — expensive on the software
+/// (WARP/ANGLE) render path used on GPU-less hosts. Pacing at 60 fps roughly
+/// halves that cost while staying smooth.
+const DIRECT_REFRESH_FRAME_INTERVAL: Duration = Duration::from_micros(16_667);
 const DIRECT_SHELL_BACKGROUND_RGBA: [f64; 4] = [16.0 / 255.0, 22.0 / 255.0, 29.0 / 255.0, 1.0];
 const DIRECT_COMPAT_USER_AGENT: &str =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:126.0) Gecko/20100101 Firefox/126.0";
@@ -242,6 +248,43 @@ impl EventLoopWaker for DirectServoWaker {
 
     fn wake(&self) {
         let _ = self.proxy.send_event(DirectServoUserEvent::Wake);
+    }
+}
+
+/// A [`RefreshDriver`] that paces Servo's animation frame starts at ~60 fps
+/// instead of the built-in 120 fps timer. It is paint-rate-friendly: a frame
+/// starts at most once per [`DIRECT_REFRESH_FRAME_INTERVAL`], but a frame that
+/// was already late (slow software paint) starts immediately with no added
+/// delay. A dedicated timer thread fires the callbacks Servo registers.
+struct SixtyHzRefreshDriver {
+    sender: std::sync::mpsc::Sender<Box<dyn Fn() + Send + 'static>>,
+}
+
+impl SixtyHzRefreshDriver {
+    fn new() -> Rc<Self> {
+        let (sender, receiver) =
+            std::sync::mpsc::channel::<Box<dyn Fn() + Send + 'static>>();
+        std::thread::Builder::new()
+            .name("sextant-direct-refresh".to_string())
+            .spawn(move || {
+                let mut next_frame = Instant::now();
+                while let Ok(callback) = receiver.recv() {
+                    let now = Instant::now();
+                    if next_frame > now {
+                        std::thread::sleep(next_frame - now);
+                    }
+                    next_frame = Instant::now() + DIRECT_REFRESH_FRAME_INTERVAL;
+                    callback();
+                }
+            })
+            .expect("failed to spawn sextant direct refresh driver thread");
+        Rc::new(Self { sender })
+    }
+}
+
+impl RefreshDriver for SixtyHzRefreshDriver {
+    fn observe_next_frame(&self, start_frame_callback: Box<dyn Fn() + Send + 'static>) {
+        let _ = self.sender.send(start_frame_callback);
     }
 }
 
@@ -1831,8 +1874,13 @@ impl ApplicationHandler<DirectServoUserEvent> for DirectServoApp {
         let initial_window_size = window.inner_size();
         let window_handle = window.window_handle().expect("failed to get window handle");
         let rendering_context = Rc::new(
-            WindowRenderingContext::new(display_handle, window_handle, initial_window_size)
-                .expect("failed to create Servo window rendering context"),
+            WindowRenderingContext::new_with_refresh_driver(
+                display_handle,
+                window_handle,
+                initial_window_size,
+                SixtyHzRefreshDriver::new(),
+            )
+            .expect("failed to create Servo window rendering context"),
         );
         rendering_context
             .make_current()
