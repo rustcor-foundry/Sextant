@@ -4,6 +4,27 @@ Current timing checkpoints only. Older timing history is archived in [archive/20
 
 Environment: Windows debug build, default Servo backend. Baseline rows below were captured through the built MCP/browser binaries with `SEXTANT_MCP_USE_INSTALLED_BROWSER=1`.
 
+## QA Validation — fresh build baseline - 2026-06-14
+
+After the web-feature ungating and the chrome/storage changes, re-ran
+`--direct-browsing-baseline` against the freshly built browser (isolated
+`SEXTANT_BROWSER_DATA_DIR` profile, `SEXTANT_MCP_USE_INSTALLED_BROWSER=1`).
+`success=true`, `requiredFailures=[]` — no regressions.
+
+| Case | Required | First present | Load complete | Result |
+|---|---|---:|---:|---|
+| simple_load (example.com) | yes | `185ms` | `861ms` | Example Domain |
+| complex_load (DuckDuckGo) | yes | `147ms` | `2.1s` | ok |
+| live_search | yes | `128ms` | — | submitted |
+| live_form (httpbin) | yes | `160ms` | — | reached `/post` |
+| live_link (optional) | no | `102ms` | — | → www.iana.org |
+| appliance_load (optional) | no | `154ms` | `15.4s` | appliance offline (expected) |
+
+Timings track prior baselines (present `~130-185ms`, DDG load `~2s`), so the
+rendering/storage changes did not regress browsing. Per-feature probes (IO
+callback fires, Grid lays out, IndexedDB roundtrip in both modes, WebVTT
+constructs) verified separately.
+
 ## Hosted Direct Chrome CPU + Web-Platform Features - 2026-06-14
 
 Two arcs landed: a CPU overhaul of the hosted-direct shell, and a web-compat

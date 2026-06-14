@@ -97,6 +97,7 @@ That split is why Google can feel snappy even while Servo continues background p
 | Bridge shell polish | High | Full Agent/Assisted shell still depends on bridge and should stay stable. |
 | Manual QA pass | High | Run the actual debug browser and validate normal browsing feel. |
 | Servo dependency advisories | Medium | `ml-dsa 0.0.4` and `rsa 0.9.10` are pulled through Servo's `servo-script`; `ml-dsa` has a fixed prerelease but Servo currently constrains `^0.0.4`, and `rsa` has no fixed upgrade. |
+| Media / video playback | Medium (future) | No audio/video plays today: the build links `servo-media-dummy` (no `servo-media-gstreamer`), so the media backend is the dummy. `<video>`/`<audio>` elements exist (`htmlvideoelement.rs`/`htmlmediaelement.rs`). Path to progressive `<video src>` playback: enable the `media-gstreamer` backend + ship/locate a GStreamer runtime + codecs on Windows, then verify. **YouTube/streaming additionally needs MSE (MediaSource/SourceBuffer), which Servo does not implement** (no `mediasource`/`sourcebuffer` DOM) — a large upstream-scale feature, plus Widevine/EME for some content. So: embedded/progressive video is moderate effort; YouTube is a major undertaking. |
 | Xilem/Vello | Parked | Diagnostic ladder remains archived/reference until direct path is further along. |
 
 ## Practical Recommendation
