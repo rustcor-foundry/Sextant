@@ -1895,13 +1895,23 @@ impl ApplicationHandler<DirectServoUserEvent> for DirectServoApp {
         opts.ignore_certificate_errors = self.ignore_certificate_errors;
         let mut preferences = Preferences::default();
         preferences.shell_background_color_rgba = DIRECT_SHELL_BACKGROUND_RGBA;
-        // IntersectionObserver is gated behind a Servo preference that defaults to
-        // `false`, so the constructor global is never exposed and pages that rely on
-        // it (lazy-loading, scroll-reveal animations, e.g. rustcor.com) throw a
-        // ReferenceError. ResizeObserver defaults to enabled, which is why it worked
-        // while IntersectionObserver silently did not. Enable it to match the modern
-        // web platform other engines expose.
+        // Enable widely-used web-platform features that Servo ships but leaves
+        // gated off by default (the library `Preferences` defaults are
+        // conservative). Each is verified to function in this embedded build via
+        // the feature probe. Without these, real sites silently break: a missing
+        // global throws `ReferenceError` (e.g. IntersectionObserver, used for
+        // lazy-loading / scroll-reveal), and `display: grid` collapses to block
+        // layout. ResizeObserver already defaults on, which is why it kept working
+        // while these did not.
+        // Note: layout_writing_mode_enabled is deliberately left off — Servo's
+        // layout panics on mixed horizontal/vertical writing modes ("not supported
+        // yet"), which crashes on essentially any real page, so it is not safe.
         preferences.dom_intersection_observer_enabled = true;
+        preferences.layout_grid_enabled = true;
+        preferences.dom_fontface_enabled = true;
+        preferences.dom_visual_viewport_enabled = true;
+        preferences.dom_adoptedstylesheet_enabled = true;
+        preferences.dom_composition_event_enabled = true;
         preferences.user_agent = env::var("SEXTANT_DIRECT_USER_AGENT")
             .unwrap_or_else(|_| DIRECT_COMPAT_USER_AGENT.to_string());
         if self.disable_http_cache {
