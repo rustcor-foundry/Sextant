@@ -1915,6 +1915,12 @@ impl ApplicationHandler<DirectServoUserEvent> for DirectServoApp {
         preferences.dom_visual_viewport_enabled = true;
         preferences.dom_adoptedstylesheet_enabled = true;
         preferences.dom_composition_event_enabled = true;
+        // WebVTT: VTTCue / VTTRegion are constructible and functional (verified).
+        // execCommand is deliberately left off: Servo only supports 5 commands
+        // (delete, defaultParagraphSeparator, fontSize, styleWithCss, underline);
+        // the common ones (bold, italic, insertText, createLink, lists) no-op, so
+        // exposing it would mislead rich-text editors.
+        preferences.dom_webvtt_enabled = true;
         preferences.user_agent = env::var("SEXTANT_DIRECT_USER_AGENT")
             .unwrap_or_else(|_| DIRECT_COMPAT_USER_AGENT.to_string());
         if self.disable_http_cache {

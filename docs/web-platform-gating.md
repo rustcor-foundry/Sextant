@@ -38,6 +38,7 @@ Status legend: ✅ enabled · 🧪 test next · ⛔ unsafe (panics) · 🔒 defe
 | `dom_adoptedstylesheet_enabled` | `document.adoptedStyleSheets` (web components) | probe |
 | `dom_composition_event_enabled` | `CompositionEvent` (IME text input) | probe |
 | `dom_indexeddb_enabled` | IndexedDB | probe `roundtrip=OK` over http://localhost. Storage is profile-scoped via the direct lane's `config_dir` (persistent `browser/direct-servo` for Direct; ephemeral temp dir swept on close for Incognito). `file://` correctly rejects with "operation is insecure". |
+| `dom_webvtt_enabled` | WebVTT | probe: `new VTTCue(...)` / `new VTTRegion()` construct and are functional (`VTTCueNew=OK VTTRegionNew=OK`). |
 
 ## 🧪 Priority queue (work/reward)
 
@@ -54,12 +55,20 @@ Reward = how often real sites need it. Work = build/test cost + completeness
 > layout. Survey method: check for a populated `components/script/dom/<feature>/`
 > dir or a non-stub `dom/<feature>.rs`.
 
-### P1 — implemented DOM APIs, high reward (do next)
+### P1 — implemented DOM APIs (queue worked through)
 
-| Pref | Feature | Reward | Impl evidence |
-|---|---|---|---|
-| `dom_exec_command_enabled` | `document.execCommand` | Med | Wired in `dom/document/`; rich-text editors (deprecated but widely used) |
-| `dom_webvtt_enabled` | WebVTT | Med | `dom/webvtt/` present; video captions |
+IndexedDB and WebVTT are enabled (above). `dom_exec_command_enabled` is **left
+off — partial**: Servo's `command_if_command_is_supported`
+(`dom/execcommand/execcommands.rs`) returns `Some` for only 5 commands
+(`delete`, `defaultParagraphSeparator`, `fontSize`, `styleWithCss`, `underline`
+— `underline` verified working), while the common editor commands (`bold`,
+`italic`, `insertText`, `createLink`, lists, justify) return `None` and no-op.
+`queryCommandSupported` reports this accurately, but most editors call the common
+commands directly, so exposing it would mislead them. Re-evaluate if Servo adds
+the common commands.
+
+Remaining candidates are now the niche/perf (P3), privacy-gated, and heavy tiers
+below — lower reward or larger work per feature.
 
 > Probe DOM features over **http://localhost** (`python -m http.server`), not
 > `file://` — storage/secure-context APIs reject the `file://` opaque origin
