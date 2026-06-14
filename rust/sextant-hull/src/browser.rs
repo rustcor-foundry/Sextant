@@ -6788,9 +6788,98 @@ fn run_hosted_direct_app(
     }
 }
 
-/// Interactive hosted-direct shell with an egui chrome (address bar, navigation,
-/// tabs) rendered through wgpu, hosting the embedded Servo child window below the
-/// chrome. The softbuffer `run_hosted_direct_app` above is retained for the
+/// Logical (point) height of the three-row egui chrome (tab strip, navigation,
+/// bookmarks). The embedded child is positioned below this height in physical
+/// pixels (`points * scale_factor`), so the boundary stays aligned at any DPI.
+#[cfg(all(target_os = "windows", feature = "servo-backend"))]
+const HOSTED_DIRECT_CHROME_POINTS: f32 = 108.0;
+
+/// A saved bookmark shown in the hosted-direct chrome bookmarks bar.
+#[cfg(all(target_os = "windows", feature = "servo-backend"))]
+#[derive(Clone, Serialize, Deserialize)]
+struct HostedDirectBookmark {
+    title: String,
+    url: String,
+}
+
+/// An action requested from the egui chrome for the event loop to apply.
+#[cfg(all(target_os = "windows", feature = "servo-backend"))]
+enum HostedDirectChromeAction {
+    Child(String),
+    SelectTab(usize),
+    CloseTab(usize),
+    AddBookmark,
+}
+
+#[cfg(all(target_os = "windows", feature = "servo-backend"))]
+fn hosted_direct_bookmarks_path() -> PathBuf {
+    app_data_dir().join("browser").join("bookmarks.json")
+}
+
+#[cfg(all(target_os = "windows", feature = "servo-backend"))]
+fn load_hosted_direct_bookmarks() -> Vec<HostedDirectBookmark> {
+    std::fs::read_to_string(hosted_direct_bookmarks_path())
+        .ok()
+        .and_then(|contents| serde_json::from_str(&contents).ok())
+        .unwrap_or_default()
+}
+
+#[cfg(all(target_os = "windows", feature = "servo-backend"))]
+fn save_hosted_direct_bookmarks(bookmarks: &[HostedDirectBookmark]) {
+    let path = hosted_direct_bookmarks_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(json) = serde_json::to_string_pretty(bookmarks) {
+        let _ = std::fs::write(path, json);
+    }
+}
+
+#[cfg(all(target_os = "windows", feature = "servo-backend"))]
+fn truncate_label(text: &str, max: usize) -> String {
+    let trimmed = text.trim();
+    if trimmed.chars().count() <= max {
+        return trimmed.to_string();
+    }
+    let mut out: String = trimmed.chars().take(max.saturating_sub(1)).collect();
+    out.push('…');
+    out
+}
+
+/// Position the embedded Servo child window just below the egui chrome, using the
+/// chrome's physical height so the boundary tracks the display scale.
+#[cfg(all(target_os = "windows", feature = "servo-backend"))]
+fn position_hosted_direct_child(
+    parent_hwnd: isize,
+    child: &mut HostedDirectChild,
+    parent_size: PhysicalSize<u32>,
+    chrome_height_px: u32,
+) -> bool {
+    if child.window_hwnd.is_none() {
+        child.window_hwnd = find_hosted_direct_child_window(parent_hwnd, child.child.id());
+    }
+    let Some(hwnd) = child.window_hwnd else {
+        return false;
+    };
+    let chrome = chrome_height_px.min(parent_size.height);
+    let width = parent_size.width.max(320) as i32;
+    let height = parent_size.height.saturating_sub(chrome).max(240) as i32;
+    unsafe {
+        SetWindowPos(
+            hwnd as HWND,
+            std::ptr::null_mut(),
+            0,
+            chrome as i32,
+            width,
+            height,
+            SWP_NOZORDER | SWP_NOACTIVATE,
+        ) != 0
+    }
+}
+
+/// Interactive hosted-direct shell with an egui chrome (tab strip, navigation,
+/// bookmarks) rendered through wgpu, hosting the embedded Servo child window below
+/// the chrome. The softbuffer `run_hosted_direct_app` above is retained for the
 /// `--hosted-direct-smoke` proofs.
 #[cfg(all(target_os = "windows", feature = "servo-backend"))]
 fn run_hosted_direct_app_egui(
@@ -6822,13 +6911,15 @@ fn run_hosted_direct_app_egui(
     // GL (Servo's child already renders through ANGLE here) and fall back to the
     // WARP software adapter so the chrome still renders on machines without a
     // usable discrete/integrated GPU (e.g. Windows Server).
-    // DX12 + GL only (a single-API surface keeps the WARP fallback presentable;
-    // mixing Vulkan in here associates the surface with a backend WARP cannot
-    // present to). Request a hardware adapter first so a real GPU is used where
-    // D3D12 is exposed, then fall back to the WARP software adapter (e.g. on
-    // Windows Server / RDP sessions that only expose D3D11 to ANGLE/Servo).
+    // DX12 only. It covers real GPUs (request a hardware adapter first) and the
+    // WARP software adapter is itself a D3D12 device, so the chrome still renders
+    // on machines without an exposed GPU (e.g. Windows Server / RDP). The GL
+    // backend is deliberately excluded: wgpu's GL probe tries to load ANGLE
+    // (libGLESv2/libEGL -> zlib1.dll) via the standard DLL search path and raises
+    // a "zlib.dll not found" dialog here, even though it ultimately falls back to
+    // DX12. Avoiding GL avoids that probe.
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-        backends: wgpu::Backends::DX12 | wgpu::Backends::GL,
+        backends: wgpu::Backends::DX12,
         flags: wgpu::InstanceFlags::empty(),
         ..Default::default()
     });
@@ -6914,6 +7005,8 @@ fn run_hosted_direct_app_egui(
     let mut next_refresh = Instant::now();
     let mut address = target.clone();
     let mut address_focused = false;
+    let mut bookmarks = load_hosted_direct_bookmarks();
+    let mut last_positioned: Option<(u32, u32, u32)> = None;
     let started = Instant::now();
 
     let event_loop_result = event_loop.run(move |event, elwt| {
@@ -6936,9 +7029,19 @@ fn run_hosted_direct_app_egui(
                             config.height = new_size.height;
                             surface.configure(&device, &config);
                         }
-                        if let Some(child) = child.as_mut() {
-                            resize_hosted_direct_child(parent_hwnd, child, new_size);
-                        }
+                        last_positioned = None;
+                        window.request_redraw();
+                    }
+                    WindowEvent::MouseInput {
+                        state: ElementState::Pressed,
+                        button: MouseButton::Left,
+                        ..
+                    } => {
+                        // A click reaching the parent is in the chrome (the
+                        // embedded child window covers the content area below);
+                        // grab OS keyboard focus so the egui address bar receives
+                        // typed input instead of the child holding it.
+                        focus_hosted_direct_parent_window(&window, parent_hwnd);
                         window.request_redraw();
                     }
                     WindowEvent::RedrawRequested => {
@@ -6950,20 +7053,52 @@ fn run_hosted_direct_app_egui(
                                 address = url.to_string();
                             }
                         }
-                        let mut command: Option<String> = None;
+                        let mut action: Option<HostedDirectChromeAction> = None;
                         let raw_input = egui_state.take_egui_input(&window);
                         let full_output = egui_ctx.run(raw_input, |ctx| {
-                            command = draw_hosted_direct_chrome_egui(
+                            action = draw_hosted_direct_chrome_egui(
                                 ctx,
                                 &summary,
                                 &mut address,
                                 &mut address_focused,
+                                &bookmarks,
                             );
                         });
                         egui_state.handle_platform_output(&window, full_output.platform_output);
-                        if let Some(command) = command {
-                            send_hosted_direct_command(child.as_mut(), &command);
-                            next_refresh = Instant::now();
+                        match action {
+                            Some(HostedDirectChromeAction::Child(command)) => {
+                                send_hosted_direct_command(child.as_mut(), &command);
+                                next_refresh = Instant::now();
+                            }
+                            Some(HostedDirectChromeAction::SelectTab(index)) => {
+                                send_hosted_direct_command(
+                                    child.as_mut(),
+                                    &format!("select-tab {index}"),
+                                );
+                                next_refresh = Instant::now();
+                            }
+                            Some(HostedDirectChromeAction::CloseTab(index)) => {
+                                send_hosted_direct_command(
+                                    child.as_mut(),
+                                    &format!("select-tab {index}"),
+                                );
+                                send_hosted_direct_command(child.as_mut(), "close-tab");
+                                next_refresh = Instant::now();
+                            }
+                            Some(HostedDirectChromeAction::AddBookmark) => {
+                                if let Some(url) = summary.latest_url.clone() {
+                                    if !bookmarks.iter().any(|bookmark| bookmark.url == url) {
+                                        let title = summary
+                                            .active_title
+                                            .clone()
+                                            .filter(|title| !title.is_empty())
+                                            .unwrap_or_else(|| url.clone());
+                                        bookmarks.push(HostedDirectBookmark { title, url });
+                                        save_hosted_direct_bookmarks(&bookmarks);
+                                    }
+                                }
+                            }
+                            None => {}
                         }
                         let tris =
                             egui_ctx.tessellate(full_output.shapes, full_output.pixels_per_point);
@@ -7039,12 +7174,20 @@ fn run_hosted_direct_app_egui(
                             window.request_redraw();
                         }
                     }
-                    if let Some(child) = child.as_mut() {
-                        if resize_hosted_direct_child(parent_hwnd, child, size) {
-                            window.request_redraw();
-                        }
-                    }
                     next_refresh = now + HOSTED_DIRECT_SUMMARY_REFRESH;
+                }
+                // Keep the embedded child sized to sit just below the egui chrome;
+                // its physical top offset tracks the display scale.
+                if let Some(child) = child.as_mut() {
+                    let chrome_px =
+                        (HOSTED_DIRECT_CHROME_POINTS * window.scale_factor() as f32).round() as u32;
+                    let key = (size.width, size.height, chrome_px);
+                    if last_positioned != Some(key)
+                        && position_hosted_direct_child(parent_hwnd, child, size, chrome_px)
+                    {
+                        last_positioned = Some(key);
+                        window.request_redraw();
+                    }
                 }
                 // Keep nudging the embedded child to repaint until it reports a
                 // first present, so the initial page is visible without an input
@@ -7062,61 +7205,80 @@ fn run_hosted_direct_app_egui(
     event_loop_result.map_err(|error| format!("hosted direct egui event loop failed: {error}"))
 }
 
-/// Build the egui chrome strip and return a child command to send, if any.
+/// Build the three-row egui chrome (tab strip, navigation, bookmarks) and return
+/// the action the event loop should apply, if any.
 #[cfg(all(target_os = "windows", feature = "servo-backend"))]
 fn draw_hosted_direct_chrome_egui(
     ctx: &egui::Context,
     summary: &HostedDirectLogSummary,
     address: &mut String,
     address_focused: &mut bool,
-) -> Option<String> {
-    let mut command: Option<String> = None;
-    let multi_tab = summary.can_switch_tabs();
+    bookmarks: &[HostedDirectBookmark],
+) -> Option<HostedDirectChromeAction> {
+    let mut action: Option<HostedDirectChromeAction> = None;
     egui::TopBottomPanel::top("hosted-direct-chrome")
-        .exact_height(HOSTED_DIRECT_CHROME_H as f32)
+        .exact_height(HOSTED_DIRECT_CHROME_POINTS)
         .show(ctx, |ui| {
-            ui.add_space(4.0);
+            ui.spacing_mut().item_spacing.y = 4.0;
+            // Row 1: standard-width tab strip, like Chrome/Firefox — each tab shows
+            // a favicon-placeholder initial, the (truncated) site, and a nested
+            // close button; a `+` opens a new tab.
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 3.0;
+                let multi_tab = summary.tabs.len() > 1;
+                if summary.tabs.is_empty() {
+                    let label =
+                        truncate_label(summary.active_title.as_deref().unwrap_or("New Tab"), 16);
+                    let _ = ui.add_sized([150.0, 26.0], egui::SelectableLabel::new(true, label));
+                } else {
+                    for (index, tab) in summary.tabs.iter().enumerate() {
+                        let site = hosted_direct_tab_site(&tab.url);
+                        let initial = site.chars().next().unwrap_or('•').to_ascii_uppercase();
+                        let label = format!("{initial}   {}", truncate_label(&site, 14));
+                        if ui
+                            .add_sized([138.0, 26.0], egui::SelectableLabel::new(tab.active, label))
+                            .on_hover_text(&tab.url)
+                            .clicked()
+                            && !tab.active
+                        {
+                            action = Some(HostedDirectChromeAction::SelectTab(index));
+                        }
+                        if multi_tab && ui.small_button("×").on_hover_text("Close tab").clicked() {
+                            action = Some(HostedDirectChromeAction::CloseTab(index));
+                        }
+                    }
+                }
+                ui.add_space(4.0);
+                if ui
+                    .add(
+                        egui::Button::new(egui::RichText::new("+").size(18.0))
+                            .min_size(egui::vec2(28.0, 26.0)),
+                    )
+                    .on_hover_text("New tab")
+                    .clicked()
+                {
+                    action = Some(HostedDirectChromeAction::Child("new-tab".to_string()));
+                }
+            });
+            ui.separator();
+            // Row 2: navigation controls and the address bar.
             ui.horizontal(|ui| {
                 if ui
                     .add_enabled(summary.can_go_back, egui::Button::new("◀"))
                     .on_hover_text("Back")
                     .clicked()
                 {
-                    command = Some("back".to_string());
+                    action = Some(HostedDirectChromeAction::Child("back".to_string()));
                 }
                 if ui
                     .add_enabled(summary.can_go_forward, egui::Button::new("▶"))
                     .on_hover_text("Forward")
                     .clicked()
                 {
-                    command = Some("forward".to_string());
+                    action = Some(HostedDirectChromeAction::Child("forward".to_string()));
                 }
                 if ui.button("⟳").on_hover_text("Reload").clicked() {
-                    command = Some("reload".to_string());
-                }
-                if ui.button("＋").on_hover_text("New tab").clicked() {
-                    command = Some("new-tab".to_string());
-                }
-                if ui
-                    .add_enabled(multi_tab, egui::Button::new("◁"))
-                    .on_hover_text("Previous tab")
-                    .clicked()
-                {
-                    command = Some("previous-tab".to_string());
-                }
-                if ui
-                    .add_enabled(multi_tab, egui::Button::new("▷"))
-                    .on_hover_text("Next tab")
-                    .clicked()
-                {
-                    command = Some("next-tab".to_string());
-                }
-                if ui
-                    .add_enabled(multi_tab, egui::Button::new("✕"))
-                    .on_hover_text("Close tab")
-                    .clicked()
-                {
-                    command = Some("close-tab".to_string());
+                    action = Some(HostedDirectChromeAction::Child("reload".to_string()));
                 }
                 let address_response = ui.add_sized(
                     [ui.available_width(), 24.0],
@@ -7128,10 +7290,14 @@ fn draw_hosted_direct_chrome_egui(
                 {
                     let target = address.trim();
                     if !target.is_empty() {
-                        command = Some(format!("navigate {target}"));
+                        action = Some(HostedDirectChromeAction::Child(format!(
+                            "navigate {target}"
+                        )));
                     }
                 }
             });
+            ui.separator();
+            // Row 3: bookmarks bar (or the certificate warning when active).
             if summary.certificate_warning_active() {
                 ui.horizontal(|ui| {
                     ui.colored_label(
@@ -7139,32 +7305,49 @@ fn draw_hosted_direct_chrome_egui(
                         "Certificate warning",
                     );
                     if ui.button("Go back").clicked() {
-                        command = Some("certificate-go-back".to_string());
+                        action = Some(HostedDirectChromeAction::Child(
+                            "certificate-go-back".to_string(),
+                        ));
                     }
                     if ui.button("Trust once").clicked() {
-                        command = Some("trust-once".to_string());
+                        action = Some(HostedDirectChromeAction::Child("trust-once".to_string()));
                     }
                     if ui.button("Trust this appliance").clicked() {
-                        command = Some("trust-this-appliance".to_string());
+                        action = Some(HostedDirectChromeAction::Child(
+                            "trust-this-appliance".to_string(),
+                        ));
                     }
                 });
             } else {
                 ui.horizontal(|ui| {
-                    if summary.is_loading() {
-                        ui.add(
-                            egui::ProgressBar::new(summary.load_progress()).desired_width(160.0),
-                        );
+                    if ui.button("★").on_hover_text("Bookmark this page").clicked() {
+                        action = Some(HostedDirectChromeAction::AddBookmark);
                     }
-                    let title = summary.active_title.as_deref().unwrap_or("");
-                    let tabs = match (summary.active_tab_index, summary.tab_count) {
-                        (Some(index), Some(count)) => format!("  [{}/{}]", index + 1, count),
-                        _ => String::new(),
-                    };
-                    ui.label(format!("{title}{tabs}"));
+                    if summary.is_loading() {
+                        ui.add(egui::ProgressBar::new(summary.load_progress()).desired_width(90.0));
+                    }
+                    ui.separator();
+                    if bookmarks.is_empty() {
+                        ui.weak("No bookmarks yet — ★ saves the current page");
+                    } else {
+                        for bookmark in bookmarks {
+                            if ui
+                                .button(truncate_label(&bookmark.title, 18))
+                                .on_hover_text(&bookmark.url)
+                                .clicked()
+                            {
+                                *address = bookmark.url.clone();
+                                action = Some(HostedDirectChromeAction::Child(format!(
+                                    "navigate {}",
+                                    bookmark.url
+                                )));
+                            }
+                        }
+                    }
                 });
             }
         });
-    command
+    action
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -7190,6 +7373,32 @@ struct HostedDirectLogSummary {
     certificate_back_requested: bool,
     certificate_trust_once_requested: bool,
     certificate_trust_this_appliance_requested: bool,
+    tabs: Vec<HostedDirectTab>,
+}
+
+/// One tab reported by the hosted-direct child for the chrome tab strip.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct HostedDirectTab {
+    url: String,
+    active: bool,
+}
+
+/// The site label shown on a tab: the host without a leading `www.`, or "New Tab".
+#[cfg(all(target_os = "windows", feature = "servo-backend"))]
+fn hosted_direct_tab_site(url: &str) -> String {
+    if url.is_empty() || url == "about:blank" {
+        return "New Tab".to_string();
+    }
+    let host = url::Url::parse(url)
+        .ok()
+        .and_then(|parsed| parsed.host_str().map(|host| host.to_string()));
+    match host {
+        Some(host) => host
+            .strip_prefix("www.")
+            .unwrap_or(host.as_str())
+            .to_string(),
+        None => "New Tab".to_string(),
+    }
 }
 
 #[derive(Default)]
@@ -8445,6 +8654,24 @@ fn parse_hosted_direct_log_summary_text(contents: &str) -> HostedDirectLogSummar
             }
             if let Some(url) = extract_after(rest, " url ") {
                 summary.latest_url = Some(url.to_string());
+            }
+        }
+        if let Some(rest) = line.split_once("chrome tab ").map(|(_, rest)| rest) {
+            let mut parts = rest.split_whitespace();
+            if let (Some(index), Some(active), Some(url)) =
+                (parts.next(), parts.next(), parts.next())
+            {
+                if let Ok(index) = index.parse::<usize>() {
+                    if index == 0 {
+                        summary.tabs.clear();
+                    }
+                    if index == summary.tabs.len() {
+                        summary.tabs.push(HostedDirectTab {
+                            url: url.to_string(),
+                            active: active == "1",
+                        });
+                    }
+                }
             }
         }
         if let Some(fingerprint) = extract_token_after(line, "certificate fingerprint sha256 ") {

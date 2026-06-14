@@ -1059,6 +1059,12 @@ impl DirectServoApp {
                 println!("[{}] host command previous-tab", self.log_prefix);
                 state.previous_tab();
             }
+            "select-tab" => {
+                if let Ok(index) = rest.parse::<usize>() {
+                    println!("[{}] host command select-tab {index}", self.log_prefix);
+                    state.select_tab(index);
+                }
+            }
             "trust-once" => {
                 println!("[{}] host command trust-once", self.log_prefix);
                 state.request_appliance_certificate_trust_once();
@@ -2964,7 +2970,10 @@ impl DirectServoState {
 
     fn begin_retained_navigation(&self, url: Url) {
         if let Some(state) = self.self_handle.borrow().upgrade() {
-            state.start_retained_navigation(url);
+            // In-page link/form navigation: navigate the active webview in place
+            // (not a fresh swapped-in webview) so Servo records session history
+            // and back/forward work after link clicks, matching address-bar nav.
+            state.load(url);
         }
     }
 
@@ -3618,9 +3627,29 @@ impl DirectServoState {
             sanitize_direct_chrome_label(&label),
             url
         );
-        if *self.last_chrome_status.borrow() != status {
+        // Per-tab lines for the chrome tab strip: `chrome tab <i> <active> <url>`.
+        let tab_lines: Vec<String> = {
+            let webviews = self.webviews.borrow();
+            let active_idx = self.active_index.get();
+            webviews
+                .iter()
+                .enumerate()
+                .map(|(i, webview)| {
+                    let tab_url = webview
+                        .url()
+                        .map(|url| url.to_string())
+                        .unwrap_or_else(|| "about:blank".to_string());
+                    format!("chrome tab {i} {} {tab_url}", usize::from(i == active_idx))
+                })
+                .collect()
+        };
+        let combined = format!("{status}\n{}", tab_lines.join("\n"));
+        if *self.last_chrome_status.borrow() != combined {
             println!("[{}] chrome status {status}", self.log_prefix);
-            *self.last_chrome_status.borrow_mut() = status;
+            for line in &tab_lines {
+                println!("[{}] {line}", self.log_prefix);
+            }
+            *self.last_chrome_status.borrow_mut() = combined;
         }
     }
 
@@ -4277,7 +4306,18 @@ impl DirectServoState {
     fn load(self: &Rc<Self>, url: Url) {
         self.location_active.set(false);
         self.location_replace_on_text.set(false);
-        self.start_retained_navigation(url);
+        // Navigate the active webview in place so Servo records session history
+        // and back/forward work. All webviews share the window rendering context,
+        // so this keeps the embedded window stable; only fall back to a retained
+        // navigation (new webview) when there is no active webview yet.
+        if let Some(webview) = self.active_webview() {
+            self.pending_navigation.borrow_mut().take();
+            webview.load(url);
+            self.wake_after_browser_command();
+            self.update_window_title();
+        } else {
+            self.start_retained_navigation(url);
+        }
     }
 
     fn request_window_resize(&self, target: PhysicalSize<u32>) {
@@ -4407,6 +4447,21 @@ impl DirectServoState {
         self.pending_navigation.borrow_mut().take();
         self.active_index
             .set((self.active_index.get() + len - 1) % len);
+        self.focus_active_webview();
+        self.wake_after_browser_command();
+        self.update_window_title();
+    }
+
+    fn select_tab(&self, index: usize) {
+        let len = self.webviews.borrow().len();
+        if index >= len || index == self.active_index.get() {
+            return;
+        }
+        if let Some(active) = self.active_webview() {
+            active.hide();
+        }
+        self.pending_navigation.borrow_mut().take();
+        self.active_index.set(index);
         self.focus_active_webview();
         self.wake_after_browser_command();
         self.update_window_title();
