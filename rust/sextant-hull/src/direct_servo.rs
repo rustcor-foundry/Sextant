@@ -13,11 +13,11 @@ use std::time::{Duration, Instant};
 use base64::{engine::general_purpose, Engine as _};
 use serde_json::Value;
 use servo::{
-    CompositionEvent, CompositionState, DevicePoint, ImeEvent, InputEvent, JSValue, Key, KeyState,
-    KeyboardEvent, LoadStatus, MouseButton, MouseButtonAction, MouseButtonEvent, MouseMoveEvent,
-    NamedKey as ServoNamedKey, Opts, Preferences, RenderingContext, Servo, ServoBuilder,
-    UserContentManager, UserScript, WebView, WebViewBuilder, WebViewDelegate, WheelDelta,
-    WheelEvent, WheelMode, WindowRenderingContext,
+    CompositionEvent, CompositionState, DevicePoint, EventLoopWaker, ImeEvent, InputEvent, JSValue,
+    Key, KeyState, KeyboardEvent, LoadStatus, MouseButton, MouseButtonAction, MouseButtonEvent,
+    MouseMoveEvent, NamedKey as ServoNamedKey, Opts, Preferences, RenderingContext, Servo,
+    ServoBuilder, UserContentManager, UserScript, WebView, WebViewBuilder, WebViewDelegate,
+    WheelDelta, WheelEvent, WheelMode, WindowRenderingContext,
 };
 use sha2::{Digest, Sha256};
 use url::Url;
@@ -221,6 +221,28 @@ enum HistorySmokePhase {
 #[derive(Clone, Copy, Debug)]
 enum DirectServoUserEvent {
     HostCommand,
+    /// Servo's `EventLoopWaker` fired (e.g. the RefreshDriver wants an animation
+    /// frame). Wakes our winit loop so `spin_event_loop` runs the rendering
+    /// update that drives requestAnimationFrame, IntersectionObserver, etc.
+    Wake,
+}
+
+/// Bridges Servo's `EventLoopWaker` to our winit event loop. Servo (and its
+/// RefreshDriver) call `wake()` from other threads when there is rendering work;
+/// without this the embedder loop never spins and rAF/IO/ResizeObserver stall.
+#[derive(Clone)]
+struct DirectServoWaker {
+    proxy: EventLoopProxy<DirectServoUserEvent>,
+}
+
+impl EventLoopWaker for DirectServoWaker {
+    fn clone_box(&self) -> Box<dyn EventLoopWaker> {
+        Box::new(self.clone())
+    }
+
+    fn wake(&self) {
+        let _ = self.proxy.send_event(DirectServoUserEvent::Wake);
+    }
 }
 
 struct DirectServoApp {
@@ -230,6 +252,7 @@ struct DirectServoApp {
     title: String,
     log_prefix: &'static str,
     setup_servo_logging: bool,
+    event_loop_proxy: Option<EventLoopProxy<DirectServoUserEvent>>,
     scripted_text: Option<String>,
     scripted_first_interaction_smoke: bool,
     scripted_verified_input_smoke: bool,
@@ -502,6 +525,7 @@ impl DirectServoApp {
             title: options.title,
             log_prefix: options.log_prefix,
             setup_servo_logging: options.setup_servo_logging,
+            event_loop_proxy: None,
             scripted_text: options.scripted_text,
             scripted_first_interaction_smoke: options.scripted_first_interaction_smoke,
             scripted_verified_input_smoke: options.scripted_verified_input_smoke,
@@ -1823,6 +1847,13 @@ impl ApplicationHandler<DirectServoUserEvent> for DirectServoApp {
         opts.ignore_certificate_errors = self.ignore_certificate_errors;
         let mut preferences = Preferences::default();
         preferences.shell_background_color_rgba = DIRECT_SHELL_BACKGROUND_RGBA;
+        // IntersectionObserver is gated behind a Servo preference that defaults to
+        // `false`, so the constructor global is never exposed and pages that rely on
+        // it (lazy-loading, scroll-reveal animations, e.g. rustcor.com) throw a
+        // ReferenceError. ResizeObserver defaults to enabled, which is why it worked
+        // while IntersectionObserver silently did not. Enable it to match the modern
+        // web platform other engines expose.
+        preferences.dom_intersection_observer_enabled = true;
         preferences.user_agent = env::var("SEXTANT_DIRECT_USER_AGENT")
             .unwrap_or_else(|_| DIRECT_COMPAT_USER_AGENT.to_string());
         if self.disable_http_cache {
@@ -1833,10 +1864,15 @@ impl ApplicationHandler<DirectServoUserEvent> for DirectServoApp {
                 append_no_proxy_host(&mut preferences.network_http_no_proxy, host);
             }
         }
-        let servo = ServoBuilder::default()
-            .opts(opts)
-            .preferences(preferences)
-            .build();
+        let mut servo_builder = ServoBuilder::default().opts(opts).preferences(preferences);
+        if let Some(proxy) = self.event_loop_proxy.clone() {
+            // Give Servo a waker that wakes our winit loop. Without it the
+            // RefreshDriver can never get the embedder to spin for animation
+            // frames, so requestAnimationFrame / IntersectionObserver /
+            // ResizeObserver updates never run.
+            servo_builder = servo_builder.event_loop_waker(Box::new(DirectServoWaker { proxy }));
+        }
+        let servo = servo_builder.build();
         if self.setup_servo_logging {
             servo.setup_logging();
         }
@@ -1937,6 +1973,15 @@ impl ApplicationHandler<DirectServoUserEvent> for DirectServoApp {
                         state.window.request_redraw();
                         event_loop.set_control_flow(ControlFlow::Poll);
                     }
+                }
+            }
+            DirectServoUserEvent::Wake => {
+                // Servo asked the embedder to spin (e.g. the RefreshDriver wants an
+                // animation frame). `about_to_wait` spins the Servo event loop; a
+                // redraw keeps the embedded child presenting the resulting frame so
+                // requestAnimationFrame / IntersectionObserver updates run.
+                if let Some(state) = self.state.as_ref() {
+                    state.window.request_redraw();
                 }
             }
         }
@@ -2545,9 +2590,9 @@ pub fn run(mut options: DirectServoOptions) -> Result<DirectServoOutcome, String
     let event_loop: EventLoop<DirectServoUserEvent> = EventLoop::with_user_event()
         .build()
         .map_err(|error| error.to_string())?;
+    let event_loop_proxy = event_loop.create_proxy();
     if options.read_host_commands_from_stdin {
-        let proxy = event_loop.create_proxy();
-        options.host_command_rx = Some(spawn_stdin_host_command_reader(proxy));
+        options.host_command_rx = Some(spawn_stdin_host_command_reader(event_loop_proxy.clone()));
     }
     let smoke = options.smoke;
     let verified_input_smoke = options.scripted_verified_input_smoke;
@@ -2568,6 +2613,7 @@ pub fn run(mut options: DirectServoOptions) -> Result<DirectServoOutcome, String
         event_loop.set_control_flow(ControlFlow::Wait);
     }
     let mut app = DirectServoApp::new(options);
+    app.event_loop_proxy = Some(event_loop_proxy);
     event_loop
         .run_app(&mut app)
         .map_err(|error| format!("direct Servo event loop failed: {error}"))?;
