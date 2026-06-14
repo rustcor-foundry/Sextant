@@ -8,6 +8,8 @@ Focus on Servo/direct real-window browsing until it is first-class and performan
 
 The direct lane now proves fast first present, fast early interaction, verified controlled click/type input, controlled form submit, a representative live search on DuckDuckGo Lite, local appliance TLS handling, and a repeatable MCP baseline. The next gap is making that raw lane feel like the real browser: broader live-site interaction, direct chrome/tab/address overlay, and stable normal browsing.
 
+**Active thrust (2026-06-14): web-platform feature ungating.** Servo ships many stable features gated off by conservative defaults; real sites silently break on them. We probe-verify and enable the safe ones in the direct lane. Enabled so far: IntersectionObserver, CSS Grid, FontFace, VisualViewport, adoptedStyleSheets, CompositionEvent. The prioritized work/reward roadmap and per-feature status live in [web-platform-gating.md](web-platform-gating.md) — work the P1 queue (container queries, multi-column, variable fonts, `attr()`) next, one probe-verified batch per commit. Recent landings also overhauled the hosted-direct chrome render path (adaptive wgpu/softbuffer, idle CPU ~343%→0%, egui redraw-loop fix, 60fps animation cap); see [performance-log.md](performance-log.md).
+
 ## Immediate Tasks
 
 1. **Add user-facing appliance certificate flow**
@@ -45,12 +47,12 @@ The direct lane now proves fast first present, fast early interaction, verified 
    - Treat required baseline failures as release blockers for the direct lane.
 
 4. **Direct chrome overlay (egui)**
-   - Interactive hosted launches now use `run_hosted_direct_app_egui`: an egui 0.27 chrome rendered through wgpu in the parent window, hosting the embedded Servo child below. Address bar, back/forward/reload, new/previous/next/close tab, load progress, and title/cert status are real egui widgets wired to the existing stdin child commands. The softbuffer `run_hosted_direct_app` is retained for `--hosted-direct-smoke`.
+   - Interactive hosted launches use `run_hosted_direct_app_egui`: an egui 0.27 chrome in the parent window hosting the embedded Servo child below. Address bar, back/forward/reload, new/previous/next/close tab, load progress, and title/cert status are real egui widgets wired to the stdin child commands. The softbuffer `run_hosted_direct_app` is retained for `--hosted-direct-smoke`.
    - GUI toolkit decision: egui (not Bevy) — Bevy's frame ownership would force Servo content back through a capture-bridge; egui only draws the parent chrome strip while the Servo child HWND keeps the content surface.
-   - wgpu adapter is hardware-GPU-first with a WARP software fallback (Windows Server / RDP sessions only expose D3D11, Servo's ANGLE path, not the D3D12/Vulkan wgpu needs).
-   - Fixed: the embedded child render stall (a child window's `request_redraw` does not wake a Windows `Wait` loop, so nav frames waited for OS input) via a light idle tick on the embedded child loop.
+   - Render backend is adaptive (`init_chrome_backend`): wgpu when a hardware GPU adapter is present (`device_type != Cpu`), else a CPU softbuffer software rasterizer (`rasterize_chrome`). On GPU-less hosts the old wgpu/WARP path spun a rasterizer thread pool (~3.4 cores idle); software is ~0%. The web content is always rendered by the Servo child (GPU when available). See [performance-log.md](performance-log.md).
+   - Fixed: an egui `RedrawRequested→repaint→request_redraw` feedback loop redrew the static chrome ~37x/s (masked by the WARP pool) — guarded against re-requesting a redraw for `RedrawRequested`. Also fixed the embedded child render stall via the Servo `EventLoopWaker` bridge (`DirectServoWaker`).
    - Preserve Direct/Incognito AI exclusion.
-   - Next: HiDPI chrome/content boundary alignment (chrome in logical points vs child embedded at 72 physical px), icon/tab-strip polish, trim the redundant parent startup-redraw nudge, and port the appliance-cert trust→relaunch flow from the softbuffer shell.
+   - Next: HiDPI chrome/content boundary alignment (chrome in logical points vs child embedded at 72 physical px), icon/tab-strip polish, and port the appliance-cert trust→relaunch flow from the softbuffer shell.
 
 5. **Keep bridge shell stable**
    - Re-run assisted user-DISTILL and normal window-smoke checks after direct changes.
@@ -162,3 +164,5 @@ cargo test -p sextant-mcp window_smoke_blocks_control_work_in_non_control_modes 
 - Do not call first present "loaded"; use `loadCompleteMs` for that.
 - Keep current bridge smokes green while direct matures.
 - Record any timing movement in [performance-log.md](performance-log.md).
+- Update the docs before every push (`current-state.md`, `performance-log.md`, this file, and any feature roadmap like [web-platform-gating.md](web-platform-gating.md)). Do not let them go stale between pushes.
+- Never enable a Servo feature gate blind — probe-verify it functions first; some gates protect incomplete code that panics (e.g. `layout_writing_mode_enabled`). See [web-platform-gating.md](web-platform-gating.md).

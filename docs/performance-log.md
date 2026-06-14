@@ -4,6 +4,51 @@ Current timing checkpoints only. Older timing history is archived in [archive/20
 
 Environment: Windows debug build, default Servo backend. Baseline rows below were captured through the built MCP/browser binaries with `SEXTANT_MCP_USE_INSTALLED_BROWSER=1`.
 
+## Hosted Direct Chrome CPU + Web-Platform Features - 2026-06-14
+
+Two arcs landed: a CPU overhaul of the hosted-direct shell, and a web-compat
+pass that ungates Servo features. See [web-platform-gating.md](web-platform-gating.md).
+
+### Chrome render CPU (idle, static page, this WARP software host)
+
+The egui chrome was rendered through wgpu. On this GPU-less host (Tesla P40 in
+TCC/compute-only mode, so the only D3D12 adapter is the WARP "Microsoft Basic
+Render Driver"), wgpu's DX12+WARP backend kept a rasterizer thread pool
+spin-waiting, and an egui `RedrawRequested -> repaint -> request_redraw`
+feedback loop redrew the static chrome ~37x/s (masked inside the WARP threads).
+
+| Stage | Parent chrome idle CPU |
+|---|---:|
+| Before (wgpu/WARP + repaint loop) | ~343% (≈3.4 cores) |
+| Software rasterizer (softbuffer) + repaint-loop guard | **0%** |
+
+Chrome is now adaptive (`init_chrome_backend`): wgpu when a hardware GPU adapter
+is present (`device_type != Cpu`), softbuffer software rasterizer otherwise. On
+this host it selects software; idle parent `0%`, child `0%`. Web content is
+unaffected (always rendered by the Servo child, GPU when available).
+
+### Animation rate cap
+
+Servo's timer refresh driver paces animation frame starts at 120fps; on the
+software paint path that doubles per-frame script/layout/paint work. A custom
+60fps `RefreshDriver` (`SixtyHzRefreshDriver`, paint-rate-friendly) caps it.
+
+| Page | Child CPU before | after 60fps cap |
+|---|---:|---:|
+| rustcor.com (animating, post IO-enable) | ~867% | ~130-270% |
+| static page | `0%` | `0%` |
+
+Net rustcor.com: parent ~280% + child ~867% (≈11 cores) → parent `0%` + child
+~130-270% (≈1.5-2.7 cores).
+
+### Web-platform features
+
+Enabled verified-safe gated Servo features: IntersectionObserver (was a silent
+`ReferenceError` that broke lazy-load / scroll-reveal — rustcor rendered blank),
+CSS Grid (`display: grid` was collapsing to block layout), FontFace,
+VisualViewport, adoptedStyleSheets, CompositionEvent. Each was probe-verified;
+`layout_writing_mode_enabled` was found to panic the style thread and left off.
+
 ## Complex-Page Tail Attribution - 2026-06-11
 
 Instrumentation fix: `record_direct_frame_timing` now co-records the spin/paint/present breakdown of the single worst-total direct frame (`keep_worst_total_frame`) instead of tracking each component as an independent maximum. Previously `maxDirectFrameMs` and `maxDirectSpinMs/PaintMs/PresentMs` could come from different frames, so the headline decomposition could not be attributed to one real frame. The per-slow-frame `directSlowFrames` array was already co-recorded; this aligns the headline with it. Unit test: `keeps_breakdown_of_worst_total_frame` (4/4 in `sextant-servo-direct`).
