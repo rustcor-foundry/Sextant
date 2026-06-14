@@ -262,8 +262,7 @@ struct SixtyHzRefreshDriver {
 
 impl SixtyHzRefreshDriver {
     fn new() -> Rc<Self> {
-        let (sender, receiver) =
-            std::sync::mpsc::channel::<Box<dyn Fn() + Send + 'static>>();
+        let (sender, receiver) = std::sync::mpsc::channel::<Box<dyn Fn() + Send + 'static>>();
         std::thread::Builder::new()
             .name("sextant-direct-refresh".to_string())
             .spawn(move || {
@@ -1908,6 +1907,10 @@ impl ApplicationHandler<DirectServoUserEvent> for DirectServoApp {
         // yet"), which crashes on essentially any real page, so it is not safe.
         preferences.dom_intersection_observer_enabled = true;
         preferences.layout_grid_enabled = true;
+        // IndexedDB is profile-scoped via the direct lane's `config_dir`
+        // (`browser.rs` sets a persistent dir for Direct and the ephemeral
+        // Incognito dir), so it does not fall back to cwd-relative storage.
+        preferences.dom_indexeddb_enabled = true;
         preferences.dom_fontface_enabled = true;
         preferences.dom_visual_viewport_enabled = true;
         preferences.dom_adoptedstylesheet_enabled = true;

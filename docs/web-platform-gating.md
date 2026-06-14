@@ -37,6 +37,7 @@ Status legend: ✅ enabled · 🧪 test next · ⛔ unsafe (panics) · 🔒 defe
 | `dom_visual_viewport_enabled` | `window.visualViewport` | probe |
 | `dom_adoptedstylesheet_enabled` | `document.adoptedStyleSheets` (web components) | probe |
 | `dom_composition_event_enabled` | `CompositionEvent` (IME text input) | probe |
+| `dom_indexeddb_enabled` | IndexedDB | probe `roundtrip=OK` over http://localhost. Storage is profile-scoped via the direct lane's `config_dir` (persistent `browser/direct-servo` for Direct; ephemeral temp dir swept on close for Incognito). `file://` correctly rejects with "operation is insecure". |
 
 ## 🧪 Priority queue (work/reward)
 
@@ -64,11 +65,17 @@ Reward = how often real sites need it. Work = build/test cost + completeness
 > `file://` — storage/secure-context APIs reject the `file://` opaque origin
 > (IndexedDB threw "operation is insecure" there but `roundtrip=OK` over http).
 
-### 🔧 Functional but blocked on a prerequisite
+### ✓ Resolved prerequisite (IndexedDB storage scoping)
 
-| Pref | Feature | Status |
-|---|---|---|
-| `dom_indexeddb_enabled` | IndexedDB | **Verified functional** (`roundtrip=OK` over http://localhost), but **not safe to enable yet**: Servo's IndexedDB base dir is `config_dir/IndexedDB`, falling back to a **cwd-relative `IndexedDB/`** when `config_dir` is `None` (`components/storage/indexeddb/mod.rs`). The hosted-direct child is not passed a `config_dir`, so storage lands cwd-relative and would **persist in Incognito** (privacy violation). Prerequisite: wire the per-mode data dir (profile for Direct, ephemeral for Incognito) into the child's `Opts.config_dir`, then enable. |
+Servo's IndexedDB base dir is `config_dir/IndexedDB`, falling back to a
+cwd-relative `IndexedDB/` when `config_dir` is `None`
+(`components/storage/indexeddb/mod.rs`). The direct lane previously passed
+`config_dir` only for Incognito (an ephemeral temp dir); Direct got `None`, so
+storage leaked cwd-relative. Fixed in `browser.rs`: Direct now uses a persistent
+`browser/direct-servo` profile dir, Incognito keeps the ephemeral temp dir, and
+the Incognito parent sweeps leftover `sextant-browser-direct-incognito-*` temp
+dirs on close (the embedded child is hard-killed, so it cannot self-clean). This
+also profile-scopes cookies/HSTS/auth-cache, not just IndexedDB.
 
 ### P3 — niche / perf / likely stubbed
 

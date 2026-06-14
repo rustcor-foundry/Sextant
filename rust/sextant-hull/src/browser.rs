@@ -5971,6 +5971,21 @@ fn run_direct_servo_browser(
         None
     };
 
+    // Servo config dir for the direct lane (cookies, IndexedDB, HSTS, auth cache):
+    // the ephemeral dir in Incognito, otherwise a persistent profile dir so
+    // storage is profile-scoped instead of falling back to Servo's cwd-relative
+    // default (which would leak `IndexedDB/` next to the working directory and
+    // persist in Incognito). `direct_data_dir` stays Incognito-only so the exit
+    // cleanup never removes the persistent Direct profile.
+    let direct_config_dir: Option<PathBuf> = match direct_data_dir.as_ref() {
+        Some(ephemeral) => Some(ephemeral.clone()),
+        None => {
+            let data_dir = app_data_dir().join("browser").join("direct-servo");
+            std::fs::create_dir_all(&data_dir).map_err(|error| error.to_string())?;
+            Some(data_dir)
+        }
+    };
+
     if smoke_mode {
         println!("[window-smoke] starting visible browser shell smoke");
         println!(
@@ -6047,7 +6062,7 @@ fn run_direct_servo_browser(
         scripted_resize_smoke: start_resize_smoke,
         scripted_tab_smoke: start_shell_interaction,
         resource_audit: direct_resource_audit,
-        config_dir: direct_data_dir.clone(),
+        config_dir: direct_config_dir.clone(),
         disable_http_cache: browser_mode == BrowserMode::Incognito,
         certificate_path: certificate_path.clone(),
         ignore_certificate_errors,
@@ -6909,7 +6924,14 @@ impl ChromeTextureStore {
             };
             match image_delta.pos {
                 None => {
-                    self.textures.insert(*id, ChromeTexture { w: dw, h: dh, px: src });
+                    self.textures.insert(
+                        *id,
+                        ChromeTexture {
+                            w: dw,
+                            h: dh,
+                            px: src,
+                        },
+                    );
                 }
                 Some([x0, y0]) => {
                     if let Some(tex) = self.textures.get_mut(id) {
@@ -7173,8 +7195,8 @@ fn init_chrome_backend(window: &Arc<Window>) -> Result<ChromeBackend, String> {
             &wgpu::DeviceDescriptor {
                 label: Some("hosted-direct-chrome"),
                 required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::downlevel_defaults()
-                    .using_resolution(adapter.limits()),
+                required_limits:
+                    wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits()),
             },
             None,
         ))
@@ -7330,7 +7352,9 @@ impl ChromeBackend {
                     .clamp(1, fb_h);
                 if let Ok(mut buffer) = sw.surface.buffer_mut() {
                     let buf_len = buffer.len();
-                    let strip = (chrome_px as usize).saturating_mul(fb_w as usize).min(buf_len);
+                    let strip = (chrome_px as usize)
+                        .saturating_mul(fb_w as usize)
+                        .min(buf_len);
                     for pixel in buffer.iter_mut().take(strip) {
                         *pixel = CHROME_BG;
                     }
@@ -7571,7 +7595,35 @@ fn run_hosted_direct_app_egui(
             _ => {}
         }
     });
+    // In Incognito the embedded child is hard-killed on close, so its ephemeral
+    // Servo data dir (cookies, IndexedDB, ...) is never cleaned by the child's own
+    // exit path. Sweep leftover unlocked incognito dirs here; a dir still in use by
+    // a concurrent instance stays locked and is left untouched.
+    if browser_mode == BrowserMode::Incognito {
+        sweep_direct_incognito_data_dirs();
+    }
     event_loop_result.map_err(|error| format!("hosted direct egui event loop failed: {error}"))
+}
+
+/// Remove leftover ephemeral Incognito Servo data dirs from `%TEMP%`. Dirs still
+/// held open by a running instance fail to delete and are skipped, so this is safe
+/// to call while other Incognito windows may be open.
+#[cfg(all(target_os = "windows", feature = "servo-backend"))]
+fn sweep_direct_incognito_data_dirs() {
+    let Ok(entries) = std::fs::read_dir(env::temp_dir()) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let is_incognito_dir = path.is_dir()
+            && path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("sextant-browser-direct-incognito-"));
+        if is_incognito_dir {
+            let _ = std::fs::remove_dir_all(&path);
+        }
+    }
 }
 
 /// Build the three-row egui chrome (tab strip, navigation, bookmarks) and return
