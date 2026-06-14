@@ -7105,11 +7105,268 @@ fn rasterize_chrome(
     }
 }
 
+/// GPU-backed chrome: egui rendered through wgpu. Selected only when a hardware
+/// adapter is present (a real GPU), where wgpu is efficient and there is no WARP
+/// rasterizer-pool idle spin.
+#[cfg(all(target_os = "windows", feature = "servo-backend"))]
+struct GpuChrome {
+    _instance: wgpu::Instance,
+    _adapter: wgpu::Adapter,
+    surface: wgpu::Surface<'static>,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    config: wgpu::SurfaceConfiguration,
+    renderer: egui_wgpu::Renderer,
+}
+
+/// CPU-backed chrome: egui software-rasterized into a softbuffer surface.
+/// Selected on GPU-less hosts where wgpu would fall back to the WARP software
+/// device, whose rasterizer thread pool spins even while idle.
+#[cfg(all(target_os = "windows", feature = "servo-backend"))]
+struct SoftwareChrome {
+    // Declared before `_context` so the surface is dropped first.
+    surface: Surface<Arc<Window>, Arc<Window>>,
+    _context: Context<Arc<Window>>,
+    textures: ChromeTextureStore,
+    surface_size: Option<(u32, u32)>,
+}
+
+/// The selected chrome render backend. The web content is always rendered by the
+/// Servo child (which uses the GPU when available); this only governs the chrome
+/// strip drawn by the parent.
+#[cfg(all(target_os = "windows", feature = "servo-backend"))]
+enum ChromeBackend {
+    Gpu(GpuChrome),
+    Software(SoftwareChrome),
+}
+
+/// Choose the chrome render backend: prefer a hardware GPU (wgpu/DX12), and fall
+/// back to a pure-CPU softbuffer surface when the only adapter is WARP (the
+/// "Microsoft Basic Render Driver", reported as `DeviceType::Cpu`) or none. This
+/// keeps GPU rendering on capable machines while avoiding the WARP idle spin on
+/// GPU-less hosts (e.g. Windows Server / RDP).
+#[cfg(all(target_os = "windows", feature = "servo-backend"))]
+fn init_chrome_backend(window: &Arc<Window>) -> Result<ChromeBackend, String> {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        backends: wgpu::Backends::DX12,
+        flags: wgpu::InstanceFlags::empty(),
+        ..Default::default()
+    });
+    let surface = instance
+        .create_surface(window.clone())
+        .map_err(|error| format!("wgpu surface creation failed: {error}"))?;
+    // Only a real GPU qualifies for the wgpu path; WARP reports `DeviceType::Cpu`.
+    let hardware = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference: wgpu::PowerPreference::HighPerformance,
+        compatible_surface: Some(&surface),
+        force_fallback_adapter: false,
+    }))
+    .filter(|adapter| adapter.get_info().device_type != wgpu::DeviceType::Cpu);
+
+    if let Some(adapter) = hardware {
+        let info = adapter.get_info();
+        println!(
+            "[hosted-direct] GPU chrome via wgpu adapter {} backend={:?} type={:?}",
+            info.name, info.backend, info.device_type
+        );
+        let (device, queue) = pollster::block_on(adapter.request_device(
+            &wgpu::DeviceDescriptor {
+                label: Some("hosted-direct-chrome"),
+                required_features: wgpu::Features::empty(),
+                required_limits: wgpu::Limits::downlevel_defaults()
+                    .using_resolution(adapter.limits()),
+            },
+            None,
+        ))
+        .map_err(|error| format!("wgpu device request failed: {error}"))?;
+        let size = window.inner_size();
+        let surface_caps = surface.get_capabilities(&adapter);
+        // egui expects a non-sRGB (linear) target so it can encode gamma itself.
+        let surface_format = surface_caps
+            .formats
+            .iter()
+            .copied()
+            .find(|format| !format.is_srgb())
+            .unwrap_or(surface_caps.formats[0]);
+        let config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format: surface_format,
+            width: size.width.max(1),
+            height: size.height.max(1),
+            present_mode: wgpu::PresentMode::Fifo,
+            alpha_mode: surface_caps.alpha_modes[0],
+            view_formats: vec![],
+            desired_maximum_frame_latency: 2,
+        };
+        surface.configure(&device, &config);
+        let renderer = egui_wgpu::Renderer::new(&device, surface_format, None, 1);
+        Ok(ChromeBackend::Gpu(GpuChrome {
+            _instance: instance,
+            _adapter: adapter,
+            surface,
+            device,
+            queue,
+            config,
+            renderer,
+        }))
+    } else {
+        println!(
+            "[hosted-direct] software chrome: no hardware GPU adapter (WARP/none); using softbuffer"
+        );
+        // Release the probe's wgpu surface before binding softbuffer to the window.
+        drop(surface);
+        drop(instance);
+        let context = Context::new(window.clone())
+            .map_err(|error| format!("softbuffer context initialization failed: {error}"))?;
+        let sb_surface = Surface::new(&context, window.clone())
+            .map_err(|error| format!("softbuffer surface initialization failed: {error}"))?;
+        Ok(ChromeBackend::Software(SoftwareChrome {
+            surface: sb_surface,
+            _context: context,
+            textures: ChromeTextureStore::default(),
+            surface_size: None,
+        }))
+    }
+}
+
+#[cfg(all(target_os = "windows", feature = "servo-backend"))]
+impl ChromeBackend {
+    fn resize(&mut self, new_size: PhysicalSize<u32>) {
+        if let ChromeBackend::Gpu(gpu) = self {
+            if new_size.width > 0 && new_size.height > 0 {
+                gpu.config.width = new_size.width;
+                gpu.config.height = new_size.height;
+                gpu.surface.configure(&gpu.device, &gpu.config);
+            }
+        }
+        // The software backend resizes its softbuffer surface lazily in `render`.
+    }
+
+    fn render(
+        &mut self,
+        egui_ctx: &egui::Context,
+        shapes: Vec<egui::epaint::ClippedShape>,
+        textures_delta: egui::TexturesDelta,
+        pixels_per_point: f32,
+        size: PhysicalSize<u32>,
+    ) {
+        match self {
+            ChromeBackend::Gpu(gpu) => {
+                let tris = egui_ctx.tessellate(shapes, pixels_per_point);
+                for (id, image_delta) in &textures_delta.set {
+                    gpu.renderer
+                        .update_texture(&gpu.device, &gpu.queue, *id, image_delta);
+                }
+                let screen_descriptor = egui_wgpu::ScreenDescriptor {
+                    size_in_pixels: [gpu.config.width, gpu.config.height],
+                    pixels_per_point,
+                };
+                let mut encoder =
+                    gpu.device
+                        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                            label: Some("hosted-direct-chrome-encoder"),
+                        });
+                gpu.renderer.update_buffers(
+                    &gpu.device,
+                    &gpu.queue,
+                    &mut encoder,
+                    &tris,
+                    &screen_descriptor,
+                );
+                let frame = match gpu.surface.get_current_texture() {
+                    Ok(frame) => frame,
+                    Err(_) => {
+                        gpu.surface.configure(&gpu.device, &gpu.config);
+                        return;
+                    }
+                };
+                let view = frame
+                    .texture
+                    .create_view(&wgpu::TextureViewDescriptor::default());
+                {
+                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("hosted-direct-chrome-pass"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: &view,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(wgpu::Color {
+                                    r: 0.043,
+                                    g: 0.075,
+                                    b: 0.102,
+                                    a: 1.0,
+                                }),
+                                store: wgpu::StoreOp::Store,
+                            },
+                        })],
+                        depth_stencil_attachment: None,
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                    });
+                    gpu.renderer.render(&mut pass, &tris, &screen_descriptor);
+                }
+                for id in &textures_delta.free {
+                    gpu.renderer.free_texture(id);
+                }
+                gpu.queue.submit(Some(encoder.finish()));
+                frame.present();
+            }
+            ChromeBackend::Software(sw) => {
+                let tris = egui_ctx.tessellate(shapes, pixels_per_point);
+                sw.textures.apply(&textures_delta);
+                let fb_w = size.width.max(1);
+                let fb_h = size.height.max(1);
+                if sw.surface_size != Some((fb_w, fb_h)) {
+                    if let (Some(w), Some(h)) = (NonZeroU32::new(fb_w), NonZeroU32::new(fb_h)) {
+                        if sw.surface.resize(w, h).is_ok() {
+                            sw.surface_size = Some((fb_w, fb_h));
+                        }
+                    }
+                }
+                // Only paint the top chrome strip; everything below belongs to the
+                // embedded Servo child window, so we present just that rect (a full
+                // softbuffer present would flicker the child).
+                let chrome_px = ((HOSTED_DIRECT_CHROME_POINTS * pixels_per_point).round() as u32)
+                    .clamp(1, fb_h);
+                if let Ok(mut buffer) = sw.surface.buffer_mut() {
+                    let buf_len = buffer.len();
+                    let strip = (chrome_px as usize).saturating_mul(fb_w as usize).min(buf_len);
+                    for pixel in buffer.iter_mut().take(strip) {
+                        *pixel = CHROME_BG;
+                    }
+                    rasterize_chrome(
+                        &tris,
+                        &sw.textures,
+                        &mut buffer,
+                        fb_w as usize,
+                        chrome_px as usize,
+                        pixels_per_point,
+                    );
+                    match (NonZeroU32::new(fb_w), NonZeroU32::new(chrome_px)) {
+                        (Some(width), Some(height)) => {
+                            let _ = buffer.present_with_damage(&[softbuffer::Rect {
+                                x: 0,
+                                y: 0,
+                                width,
+                                height,
+                            }]);
+                        }
+                        _ => {
+                            let _ = buffer.present();
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Interactive hosted-direct shell with an egui chrome (tab strip, navigation,
-/// bookmarks) software-rasterized into a softbuffer surface (a pure-CPU path with
-/// no D3D/WARP device), hosting the embedded Servo child window below the chrome.
-/// The softbuffer `run_hosted_direct_app` above is retained for the
-/// `--hosted-direct-smoke` proofs.
+/// bookmarks). The chrome is rendered through the GPU (wgpu) when a hardware
+/// adapter is available, or software-rasterized into a softbuffer surface as a
+/// fallback on GPU-less hosts; see [`init_chrome_backend`]. It hosts the embedded
+/// Servo child window below the chrome. The softbuffer `run_hosted_direct_app`
+/// above is retained for the `--hosted-direct-smoke` proofs.
 #[cfg(all(target_os = "windows", feature = "servo-backend"))]
 fn run_hosted_direct_app_egui(
     startup_input: Option<String>,
@@ -7136,18 +7393,9 @@ fn run_hosted_direct_app_egui(
         "hosted direct mode could not resolve the parent window handle".to_string()
     })?;
 
-    // Software-rendered chrome: a softbuffer (CPU) surface on the parent window.
-    // The egui chrome is tessellated as usual and software-rasterized into this
-    // buffer by `rasterize_chrome`. This deliberately avoids wgpu here: on a
-    // GPU-less host (e.g. Windows Server / RDP, where the only D3D12 adapter is
-    // the WARP software device) wgpu's DX12+WARP backend keeps a rasterizer
-    // thread pool spin-waiting, burning ~3 cores even while the static chrome is
-    // idle. softbuffer only touches the CPU when we actually redraw, so an idle
-    // chrome costs ~0% CPU.
-    let sb_context = Context::new(window.clone())
-        .map_err(|error| format!("softbuffer context initialization failed: {error}"))?;
-    let mut sb_surface = Surface::new(&sb_context, window.clone())
-        .map_err(|error| format!("softbuffer surface initialization failed: {error}"))?;
+    // Render the chrome through the GPU when one is available, or fall back to a
+    // pure-CPU softbuffer surface on GPU-less hosts (see `init_chrome_backend`).
+    let mut chrome = init_chrome_backend(&window)?;
 
     let mut size = window.inner_size();
     let egui_ctx = egui::Context::default();
@@ -7158,8 +7406,6 @@ fn run_hosted_direct_app_egui(
         Some(window.scale_factor() as f32),
         None,
     );
-    let mut chrome_textures = ChromeTextureStore::default();
-    let mut sb_surface_size: Option<(u32, u32)> = None;
 
     let mut child = Some(spawn_hosted_direct_child(
         parent_hwnd,
@@ -7201,7 +7447,7 @@ fn run_hosted_direct_app_egui(
                     }
                     WindowEvent::Resized(new_size) => {
                         size = new_size;
-                        // softbuffer is resized lazily in RedrawRequested.
+                        chrome.resize(new_size);
                         last_positioned = None;
                         window.request_redraw();
                     }
@@ -7273,55 +7519,13 @@ fn run_hosted_direct_app_egui(
                             }
                             None => {}
                         }
-                        let ppp = full_output.pixels_per_point;
-                        let tris = egui_ctx.tessellate(full_output.shapes, ppp);
-                        chrome_textures.apply(&full_output.textures_delta);
-
-                        let fb_w = size.width.max(1);
-                        let fb_h = size.height.max(1);
-                        if sb_surface_size != Some((fb_w, fb_h)) {
-                            if let (Some(w), Some(h)) = (NonZeroU32::new(fb_w), NonZeroU32::new(fb_h))
-                            {
-                                if sb_surface.resize(w, h).is_ok() {
-                                    sb_surface_size = Some((fb_w, fb_h));
-                                }
-                            }
-                        }
-                        // Only paint the top chrome strip; everything below belongs
-                        // to the embedded Servo child window, so we present just that
-                        // rect (a full-buffer present would flicker the child).
-                        let chrome_px = ((HOSTED_DIRECT_CHROME_POINTS * ppp).round() as u32)
-                            .clamp(1, fb_h);
-                        if let Ok(mut buffer) = sb_surface.buffer_mut() {
-                            let buf_len = buffer.len();
-                            let strip = (chrome_px as usize)
-                                .saturating_mul(fb_w as usize)
-                                .min(buf_len);
-                            for pixel in buffer.iter_mut().take(strip) {
-                                *pixel = CHROME_BG;
-                            }
-                            rasterize_chrome(
-                                &tris,
-                                &chrome_textures,
-                                &mut buffer,
-                                fb_w as usize,
-                                chrome_px as usize,
-                                ppp,
-                            );
-                            match (NonZeroU32::new(fb_w), NonZeroU32::new(chrome_px)) {
-                                (Some(width), Some(height)) => {
-                                    let _ = buffer.present_with_damage(&[softbuffer::Rect {
-                                        x: 0,
-                                        y: 0,
-                                        width,
-                                        height,
-                                    }]);
-                                }
-                                _ => {
-                                    let _ = buffer.present();
-                                }
-                            }
-                        }
+                        chrome.render(
+                            &egui_ctx,
+                            full_output.shapes,
+                            full_output.textures_delta,
+                            full_output.pixels_per_point,
+                            size,
+                        );
                     }
                     _ => {}
                 }
