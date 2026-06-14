@@ -43,29 +43,46 @@ Status legend: ✅ enabled · 🧪 test next · ⛔ unsafe (panics) · 🔒 defe
 Reward = how often real sites need it. Work = build/test cost + completeness
 (panic) risk. Builds here are sextant-hull-only (~40s, no Servo recompile).
 
-### P1 — high reward, likely safe (do next)
+> **2026-06-14 finding:** the gated *layout* features beyond Grid are
+> **parse-only** in this Servo — the prefs appear only in the codegen CSS-parse
+> map (`script_bindings/codegen/run.py`), with no evaluation in
+> `components/style/` or `components/layout/`. Enabling them is a no-op (probe:
+> `container=no multicol=no`) and could make feature-detecting sites render
+> *worse* (they detect "support" then use a layout that never applies). So the
+> real remaining wins are **DOM APIs that have real implementations**, not CSS
+> layout. Survey method: check for a populated `components/script/dom/<feature>/`
+> dir or a non-stub `dom/<feature>.rs`.
 
-| Pref | Feature | Reward | Notes |
+### P1 — implemented DOM APIs, high reward (do next)
+
+| Pref | Feature | Reward | Impl evidence |
 |---|---|---|---|
-| `layout_container_queries_enabled` | CSS Container Queries | High | Core of modern responsive design |
-| `layout_columns_enabled` | CSS multi-column | Med-High | Simpler than grid; likely stable |
-| `layout_variable_fonts_enabled` | Variable fonts | Med | Common on modern type |
-| `layout_css_attr_enabled` | CSS `attr()` | Low-Med | Verify scope (typed `attr()` is newer) |
+| `dom_exec_command_enabled` | `document.execCommand` | Med | Wired in `dom/document/`; rich-text editors (deprecated but widely used) |
+| `dom_webvtt_enabled` | WebVTT | Med | `dom/webvtt/` present; video captions |
 
-### P2 — high reward, higher completeness risk (test carefully)
+> Probe DOM features over **http://localhost** (`python -m http.server`), not
+> `file://` — storage/secure-context APIs reject the `file://` opaque origin
+> (IndexedDB threw "operation is insecure" there but `roundtrip=OK` over http).
 
-| Pref | Feature | Reward | Notes |
-|---|---|---|---|
-| `dom_indexeddb_enabled` | IndexedDB | High | Web-app storage; data-path risk if partial |
-| `dom_offscreen_canvas_enabled` | OffscreenCanvas | Med | Some apps/games |
-| `dom_exec_command_enabled` | `document.execCommand` | Med | Rich-text editors (deprecated but used) |
-| `dom_webvtt_enabled` | WebVTT | Med | Video captions |
+### 🔧 Functional but blocked on a prerequisite
 
-### P3 — niche / perf
+| Pref | Feature | Status |
+|---|---|---|
+| `dom_indexeddb_enabled` | IndexedDB | **Verified functional** (`roundtrip=OK` over http://localhost), but **not safe to enable yet**: Servo's IndexedDB base dir is `config_dir/IndexedDB`, falling back to a **cwd-relative `IndexedDB/`** when `config_dir` is `None` (`components/storage/indexeddb/mod.rs`). The hosted-direct child is not passed a `config_dir`, so storage lands cwd-relative and would **persist in Incognito** (privacy violation). Prerequisite: wire the per-mode data dir (profile for Direct, ephemeral for Incognito) into the child's `Opts.config_dir`, then enable. |
 
+### P3 — niche / perf / likely stubbed
+
+`dom_offscreen_canvas_enabled` (no `dom/offscreencanvas*` file — likely stubbed),
 `dom_cookiestore_enabled`, `dom_sanitizer_enabled`, `dom_canvas_capture_enabled`,
 `dom_navigator_protocol_handlers_enabled`, `dom_allow_preloading_module_descendants`,
 `dom_servoparser_async_html_tokenizer_enabled` (parser change — extra care).
+
+### ⚠️ Parse-only / not laid out (no benefit — leave off)
+
+`layout_container_queries_enabled`, `layout_columns_enabled` (verified: parse, no
+layout). `layout_css_attr_enabled` and `layout_variable_fonts_enabled` are also
+layout-gated and unverified — low priority since Grid is the only implemented
+layout gate found.
 
 ## 🔒 Deferred — needs permission UX / privacy policy
 

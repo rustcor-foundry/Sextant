@@ -9,3 +9,7 @@ rust/target/
 *.log
 .env*
 !.env.example
+
+# Servo IndexedDB storage when config_dir is unset (test artifact)
+IndexedDB/
+**/IndexedDB/
