@@ -163,15 +163,19 @@ impl SextantInference {
         prompt: &str,
         config: &InferenceConfig,
     ) -> Result<String, String> {
-        // llama.cpp /completion endpoint
+        // Use llama.cpp's OpenAI-compatible chat endpoint, which applies the
+        // model's chat template. Instruct models need that to follow
+        // instructions; the raw /completion path feeds an unwrapped prompt and
+        // produces unreliable (often unparseable) output.
         let url = config
             .endpoint
-            .join("/completion")
+            .join("/v1/chat/completions")
             .map_err(|e| e.to_string())?;
         let body = serde_json::json!({
-            "prompt": prompt,
+            "model": config.model_name,
+            "messages": [{ "role": "user", "content": prompt }],
             "temperature": config.temperature,
-            "n_predict": config.max_tokens,
+            "max_tokens": config.max_tokens,
         });
 
         let res = self
@@ -183,7 +187,7 @@ impl SextantInference {
             .map_err(|e| e.to_string())?;
 
         let json: serde_json::Value = res.json().await.map_err(|e| e.to_string())?;
-        json["content"]
+        json["choices"][0]["message"]["content"]
             .as_str()
             .map(|s| s.to_string())
             .ok_or("Invalid response from llama.cpp".into())
