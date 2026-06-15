@@ -2216,6 +2216,17 @@ impl BrowserApp {
             self.deny_pilot_consent();
             return;
         }
+        #[cfg(feature = "xilem-shell")]
+        if self.pending_consent.is_none() && self.native_intent_allowed() {
+            if self.consent_authorize_rect.contains(x, y) {
+                self.run_preset_intent(AI_RAIL_PRESETS[0].1);
+                return;
+            }
+            if self.consent_deny_rect.contains(x, y) {
+                self.run_preset_intent(AI_RAIL_PRESETS[1].1);
+                return;
+            }
+        }
         if let Some(tab_id) = self
             .page_tab_rects
             .iter()
@@ -3075,6 +3086,16 @@ impl BrowserApp {
     /// reproducible and does not depend on a running model server.
     fn run_native_intent_sync(&mut self, raw: &str) {
         self.dispatch_native_intent(raw, false);
+    }
+
+    /// Run a quick-intent preset (AI-rail launcher): mirror the intent into the
+    /// address field, show the browser view, and plan it through the local model
+    /// brain (same path as the interactive intent bar).
+    #[cfg(feature = "xilem-shell")]
+    fn run_preset_intent(&mut self, intent: &str) {
+        self.address_input = intent.to_string();
+        self.main_view = MainView::Browser;
+        self.run_native_intent(intent);
     }
 
     fn dispatch_native_intent(&mut self, raw: &str, use_brain: bool) {
@@ -12785,6 +12806,21 @@ mod tests {
         assert_eq!(pilot_status_color("PILOT NAVIGATING"), STATUS_INFO);
     }
 
+    #[cfg(feature = "xilem-shell")]
+    #[test]
+    fn preset_intent_mirrors_address_and_shows_browser() -> Result<(), String> {
+        let data_dir = env::temp_dir().join(format!("sextant-browser-preset-{}", Uuid::new_v4()));
+        let mut app = BrowserApp::new_with_data_dir(data_dir.clone())?;
+        app.set_browser_mode(BrowserMode::Agent);
+
+        app.run_preset_intent(AI_RAIL_PRESETS[0].1);
+        assert_eq!(app.address_input.as_str(), AI_RAIL_PRESETS[0].1);
+        assert!(app.main_view == MainView::Browser);
+
+        let _ = std::fs::remove_dir_all(&data_dir);
+        Ok(())
+    }
+
     #[test]
     fn browser_shell_can_authorize_pending_pilot_consent() -> Result<(), String> {
         let data_dir = env::temp_dir().join(format!(
@@ -16779,6 +16815,18 @@ fn proof_report_title(report: &[String]) -> &'static str {
     }
 }
 
+/// Quick-intent presets (Xilem dashboard salvage: the intent-bar preset buttons).
+/// Shown in the AI rail's consent band when no consent is pending and the mode
+/// allows native intents; clicking runs the intent through the local model brain.
+#[cfg(feature = "xilem-shell")]
+const AI_RAIL_PRESETS: [(&str, &str); 2] = [
+    (
+        "SUMMARIZE",
+        "intent: open example.com and summarize the page",
+    ),
+    ("DISTILL HERE", "intent: distill the active page into Wake"),
+];
+
 /// Map a pilot status to a palette color (Xilem dashboard salvage): green for
 /// idle/complete/authorized, amber for consent/blocked, red for failed, cyan for
 /// in-progress (reasoning/navigating/distilling/perceiving/planning). Tolerates
@@ -17019,6 +17067,30 @@ fn draw_ai_rail(buffer: &mut [u32], width: u32, height: u32, app: &BrowserApp) {
             TEXT_DIM,
             1,
         );
+    } else if app.native_intent_allowed() {
+        // Quick-intent presets reuse the (free) consent button band.
+        draw_text(
+            buffer,
+            width,
+            height,
+            rail_x + 20,
+            444,
+            "QUICK INTENTS",
+            TEXT_DIM,
+            1,
+        );
+        for (index, (label, _intent)) in AI_RAIL_PRESETS.iter().enumerate() {
+            let rect = if index == 0 {
+                app.consent_authorize_rect
+            } else {
+                app.consent_deny_rect
+            };
+            let hovered = app
+                .cursor
+                .map(|(x, y)| rect.contains(x, y))
+                .unwrap_or(false);
+            draw_button(buffer, width, height, rect, label, hovered, true);
+        }
     }
 
     draw_text(

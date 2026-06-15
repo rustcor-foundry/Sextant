@@ -107,9 +107,11 @@ layout with strong **color-coded state semantics**. Its palette (Masonry
    perceiving/planning), amber consent/blocked, red (`STATUS_ERROR`) failed.
    Replaced the old green/amber binary and fixed the doubled `PILOT PILOT` label.
    (Original Xilem source: `runtime_status_color`, `views.rs:754`.)
-2. **Intent bar with preset buttons** (`intent_bar_view`): `PRESET SEARCH`,
-   `PRESET CONSENT`, `COMMAND`, `NEW TAB`, `AIR GAP`, `PRIVACY` quick actions.
-   The bridge has the address/intent bar but no one-tap presets.
+2. ✅ **Intent-bar presets** — *ported 2026-06-15.* `AI_RAIL_PRESETS` shows a
+   QUICK INTENTS row (SUMMARIZE / DISTILL HERE) in the AI rail's consent band
+   when no consent is pending and the mode allows native intents; clicking runs
+   the intent through the local model brain (`run_preset_intent`). (Original
+   Xilem source: `intent_bar_view` — `PRESET SEARCH`/`COMMAND`/etc.)
 3. **Startup phase status** (`startup_status_color`, `views.rs:765`):
    Ready/Degraded/Booting/WarmingUp coloring — nice for the status bar.
 4. **Validation badges/checklist** (`validation_badge`, `validation_item_views`):
