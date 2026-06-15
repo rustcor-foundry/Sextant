@@ -1014,7 +1014,7 @@ impl SextantState {
                         self.selected_provider = AiProvider::Local;
                         self.applied_provider = AiProvider::Local;
                         if self.local_model.trim().is_empty() {
-                            self.local_model = "llama-3-8b".to_string();
+                            self.local_model = "qwen2.5-coder-32b".to_string();
                         }
                         self.applied_provider_config = ProviderConfig {
                             provider: AiProvider::Local,
