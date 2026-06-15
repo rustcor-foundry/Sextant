@@ -168,3 +168,4 @@ cargo test -p sextant-mcp window_smoke_blocks_control_work_in_non_control_modes 
 - Record any timing movement in [performance-log.md](performance-log.md).
 - Update the docs before every push (`current-state.md`, `performance-log.md`, this file, and any feature roadmap like [web-platform-gating.md](web-platform-gating.md)). Do not let them go stale between pushes.
 - Never enable a Servo feature gate blind — probe-verify it functions first; some gates protect incomplete code that panics (e.g. `layout_writing_mode_enabled`). See [web-platform-gating.md](web-platform-gating.md).
+- Preserve the **full browser mode look**: the bridge shell (`sextant-browser`) palette/components are canonical; new UI must match them, and the parked Xilem dashboard must be screenshot/salvaged before any Xilem-stack removal. See [full-browser-mode-design.md](full-browser-mode-design.md).
