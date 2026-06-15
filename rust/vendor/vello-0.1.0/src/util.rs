@@ -10,8 +10,8 @@ use std::sync::Arc;
 use super::Result;
 
 use wgpu::{
-    Adapter, Device, Instance, Limits, Queue, Surface, SurfaceConfiguration, SurfaceTarget,
-    TextureFormat, RequestAdapterOptions,
+    Adapter, Device, Instance, Limits, Queue, RequestAdapterOptions, Surface, SurfaceConfiguration,
+    SurfaceTarget, TextureFormat,
 };
 
 /// Simple render context that maintains wgpu state for rendering the pipeline.
@@ -87,7 +87,10 @@ impl RenderContext {
         eprintln!("[vello] create_surface: chosen format {:?}", format);
         let present_mode = if capabilities.present_modes.contains(&present_mode) {
             present_mode
-        } else if capabilities.present_modes.contains(&wgpu::PresentMode::Fifo) {
+        } else if capabilities
+            .present_modes
+            .contains(&wgpu::PresentMode::Fifo)
+        {
             wgpu::PresentMode::Fifo
         } else {
             capabilities
@@ -169,9 +172,7 @@ impl RenderContext {
             std::env::var("SEXTANT_WGPU_FORCE_FALLBACK").as_deref(),
             Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
         );
-        eprintln!(
-            "[vello] new_device: begin force_fallback_adapter={force_fallback_adapter}"
-        );
+        eprintln!("[vello] new_device: begin force_fallback_adapter={force_fallback_adapter}");
         // Prefer the env-selected or default adapter (real hardware GPU when present).
         // `SEXTANT_WGPU_FORCE_FALLBACK=1` skips this and goes straight to software.
         let default_adapter = if force_fallback_adapter {
@@ -254,9 +255,7 @@ impl RenderContext {
         }));
         let lost_callback_flag = device_lost.clone();
         device.set_device_lost_callback(move |reason, message| {
-            eprintln!(
-                "[vello] device lost callback: reason={reason:?} message={message}"
-            );
+            eprintln!("[vello] device lost callback: reason={reason:?} message={message}");
             lost_callback_flag.store(true, Ordering::SeqCst);
         });
         let device_handle = DeviceHandle {
@@ -266,7 +265,10 @@ impl RenderContext {
             device_lost,
         };
         self.devices.push(device_handle);
-        eprintln!("[vello] new_device: stored device index {}", self.devices.len() - 1);
+        eprintln!(
+            "[vello] new_device: stored device index {}",
+            self.devices.len() - 1
+        );
         Some(self.devices.len() - 1)
     }
 }

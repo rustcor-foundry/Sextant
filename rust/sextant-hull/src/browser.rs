@@ -10,9 +10,13 @@ use sextant_engine::{
 };
 #[cfg(feature = "xilem-shell")]
 use sextant_firewall::{FirewallAction, SextantFirewall};
+#[cfg(feature = "xilem-shell")]
+use sextant_inference::InferenceBackend;
 use sextant_log::{CaptainsLog, LogEntry, LogStatus};
 #[cfg(feature = "xilem-shell")]
 use sextant_pilot::PilotAction;
+#[cfg(feature = "xilem-shell")]
+use sextant_pilot::{LocalBrain, PilotBrain};
 #[cfg(feature = "xilem-shell")]
 use sextant_privacy::{PrivacyLevel, PrivacyMasker};
 #[cfg(feature = "xilem-shell")]
@@ -1011,6 +1015,187 @@ impl Drop for PersistenceLane {
     }
 }
 
+/// Background lane that turns a natural-language intent into a structured
+/// `Vec<PilotAction>` plan using the local model brain. Mirrors `PersistenceLane`:
+/// the UI thread sends an intent and polls the reply channel each frame, so the
+/// (potentially multi-second) LLM call never blocks rendering or input.
+#[cfg(feature = "xilem-shell")]
+enum PilotBrainCommand {
+    Reason {
+        intent: String,
+        context: Vec<WakeEntry>,
+        reply_tx: mpsc::Sender<Result<Vec<PilotAction>, String>>,
+    },
+    Shutdown,
+}
+
+#[cfg(feature = "xilem-shell")]
+struct PilotBrainLane {
+    endpoint: String,
+    model: String,
+    command_tx: mpsc::Sender<PilotBrainCommand>,
+    worker: Option<thread::JoinHandle<()>>,
+}
+
+#[cfg(feature = "xilem-shell")]
+impl PilotBrainLane {
+    fn new() -> Self {
+        // Defaults to the on-box llama.cpp 32B server wired in main.rs/state.rs;
+        // overridable for testing without rebuilding. Backend selection (Ollama vs
+        // llama.cpp) becomes user-facing in a later pass.
+        let endpoint = std::env::var("SEXTANT_LOCAL_ENDPOINT")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| "http://127.0.0.1:8101".to_string());
+        let model = std::env::var("SEXTANT_LOCAL_MODEL")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| "qwen2.5-coder-32b".to_string());
+
+        let (command_tx, command_rx) = mpsc::channel::<PilotBrainCommand>();
+        let worker_endpoint = endpoint.clone();
+        let worker_model = model.clone();
+        let worker = thread::Builder::new()
+            .name("sextant-pilot-brain-lane".to_string())
+            .spawn(move || {
+                // Build the runtime + brain inside the worker so neither crosses the
+                // thread boundary and each reason() call gets a blocking driver.
+                let runtime = match tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
+                    Ok(runtime) => runtime,
+                    Err(error) => {
+                        while let Ok(command) = command_rx.recv() {
+                            match command {
+                                PilotBrainCommand::Reason { reply_tx, .. } => {
+                                    let _ = reply_tx.send(Err(format!(
+                                        "pilot brain runtime init failed: {error}"
+                                    )));
+                                }
+                                PilotBrainCommand::Shutdown => break,
+                            }
+                        }
+                        return;
+                    }
+                };
+                let brain = match Url::parse(&worker_endpoint) {
+                    Ok(url) => Some(LocalBrain::new(
+                        InferenceBackend::LlamaCpp,
+                        url,
+                        &worker_model,
+                    )),
+                    Err(error) => {
+                        eprintln!("[pilot-brain] invalid endpoint '{worker_endpoint}': {error}");
+                        None
+                    }
+                };
+                while let Ok(command) = command_rx.recv() {
+                    match command {
+                        PilotBrainCommand::Reason {
+                            intent,
+                            context,
+                            reply_tx,
+                        } => {
+                            let result = match &brain {
+                                Some(brain) => runtime.block_on(brain.reason(&intent, &context)),
+                                None => Err(format!(
+                                    "local model endpoint '{worker_endpoint}' is not a valid URL"
+                                )),
+                            };
+                            let _ = reply_tx.send(result);
+                        }
+                        PilotBrainCommand::Shutdown => break,
+                    }
+                }
+            })
+            .expect("failed to spawn pilot brain lane");
+        Self {
+            endpoint,
+            model,
+            command_tx,
+            worker: Some(worker),
+        }
+    }
+
+    fn describe(&self) -> String {
+        format!("{} @ {}", self.model, self.endpoint)
+    }
+
+    fn reason(
+        &self,
+        intent: String,
+        context: Vec<WakeEntry>,
+    ) -> Result<mpsc::Receiver<Result<Vec<PilotAction>, String>>, String> {
+        let (reply_tx, result_rx) = mpsc::channel();
+        self.command_tx
+            .send(PilotBrainCommand::Reason {
+                intent,
+                context,
+                reply_tx,
+            })
+            .map_err(|error| format!("pilot brain lane unavailable: {error}"))?;
+        Ok(result_rx)
+    }
+}
+
+#[cfg(feature = "xilem-shell")]
+impl Drop for PilotBrainLane {
+    fn drop(&mut self) {
+        let _ = self.command_tx.send(PilotBrainCommand::Shutdown);
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
+#[cfg(feature = "xilem-shell")]
+struct PendingPilotPlan {
+    intent: String,
+    result_rx: mpsc::Receiver<Result<Vec<PilotAction>, String>>,
+    started: Instant,
+}
+
+/// Structured record of one pilot run: intent -> typed plan -> analysis -> status.
+/// Serializable so the egui shell can render it today and a future visual
+/// dashboard (or MCP) can consume the same stream without a rewrite.
+#[cfg(feature = "xilem-shell")]
+#[derive(Clone, Debug, serde::Serialize)]
+struct PilotStepRecord {
+    kind: String,
+    detail: String,
+}
+
+#[cfg(feature = "xilem-shell")]
+#[derive(Clone, Debug, serde::Serialize)]
+struct PilotRunArtifact {
+    intent: String,
+    planner: String,
+    plan: Vec<PilotStepRecord>,
+    analysis: Vec<String>,
+    status: String,
+    reason_ms: u128,
+}
+
+#[cfg(feature = "xilem-shell")]
+fn pilot_action_record(action: &PilotAction) -> PilotStepRecord {
+    let (kind, detail) = match action {
+        PilotAction::Navigate(url) => ("navigate", short_url(url)),
+        PilotAction::OpenTab(url) => ("open_tab", short_url(url)),
+        PilotAction::Distill => ("distill", String::new()),
+        PilotAction::Perceive => ("perceive", String::new()),
+        PilotAction::PerceiveMultiModal => ("perceive_multimodal", String::new()),
+        PilotAction::Analyze(message) => ("analyze", message.clone()),
+        PilotAction::RequestConsent(message) => ("request_consent", message.clone()),
+        PilotAction::SwitchTab(tab_id) => ("switch_tab", short_id(*tab_id)),
+        PilotAction::CloseTab(tab_id) => ("close_tab", short_id(*tab_id)),
+    };
+    PilotStepRecord {
+        kind: kind.to_string(),
+        detail,
+    }
+}
+
 #[derive(Clone, Copy, Default)]
 struct DrawStats {
     total: Duration,
@@ -1125,6 +1310,15 @@ struct BrowserApp {
     frame_dirty: bool,
     frame_refresh_budget: u8,
     validation: ValidationState,
+    #[cfg(feature = "xilem-shell")]
+    pilot_brain_lane: PilotBrainLane,
+    #[cfg(feature = "xilem-shell")]
+    pending_pilot_plan: Option<PendingPilotPlan>,
+    // Latest structured pilot run, retained as the hook a future visual dashboard /
+    // MCP reads; the human-readable view already renders via pilot_plan/result.
+    #[cfg(feature = "xilem-shell")]
+    #[allow(dead_code)]
+    last_pilot_run: Option<PilotRunArtifact>,
 }
 
 impl BrowserApp {
@@ -1298,6 +1492,12 @@ impl BrowserApp {
             frame_dirty: false,
             frame_refresh_budget: 0,
             validation: ValidationState::default(),
+            #[cfg(feature = "xilem-shell")]
+            pilot_brain_lane: PilotBrainLane::new(),
+            #[cfg(feature = "xilem-shell")]
+            pending_pilot_plan: None,
+            #[cfg(feature = "xilem-shell")]
+            last_pilot_run: None,
         };
         app.refresh_logs();
         Ok(app)
@@ -2683,7 +2883,20 @@ impl BrowserApp {
         }
     }
 
+    /// Live agent-intent entry (interactive address/intent bar): plans with the
+    /// local model brain.
     fn run_native_intent(&mut self, raw: &str) {
+        self.dispatch_native_intent(raw, true);
+    }
+
+    /// Deterministic, synchronous intent entry for smokes, the MCP `--intent-run`
+    /// operator mode, and tests: plans with the built-in heuristic so behavior is
+    /// reproducible and does not depend on a running model server.
+    fn run_native_intent_sync(&mut self, raw: &str) {
+        self.dispatch_native_intent(raw, false);
+    }
+
+    fn dispatch_native_intent(&mut self, raw: &str, use_brain: bool) {
         let Some(intent) = native_intent_body(raw) else {
             self.last_status = "That input did not resolve to a native intent.".to_string();
             self.last_ok = false;
@@ -2723,11 +2936,16 @@ impl BrowserApp {
 
         #[cfg(feature = "xilem-shell")]
         {
-            self.run_pilot_action_intent(&intent);
+            if use_brain {
+                self.run_pilot_action_intent(&intent);
+            } else {
+                self.plan_and_execute_heuristic(&intent);
+            }
         }
 
         #[cfg(not(feature = "xilem-shell"))]
         {
+            let _ = use_brain;
             if intent_needs_consent(&intent) {
                 self.pilot_status = "AWAITING CONSENT".to_string();
                 self.pilot_plan
@@ -2812,11 +3030,48 @@ impl BrowserApp {
 
     #[cfg(feature = "xilem-shell")]
     fn run_pilot_action_intent(&mut self, intent: &str) {
-        self.pilot_status = "PILOT PLANNING".to_string();
-        self.pilot_result = "Planning explicit browser work through Pilot actions.".to_string();
+        // Dispatch the intent to the local model brain off-thread; the resulting
+        // plan is picked up by `collect_pending_pilot_plan` and executed then. If
+        // the brain is unreachable we fall back to the built-in heuristic planner
+        // so the agent keeps working when no model server is up.
+        if self.pending_pilot_plan.is_some() {
+            self.last_status = "A pilot intent is already being planned.".to_string();
+            self.last_ok = false;
+            self.validation.error_seen = true;
+            return;
+        }
 
-        let actions = match pilot_action_plan(intent) {
-            Ok(actions) => actions,
+        self.pilot_status = "PILOT REASONING".to_string();
+        self.pilot_result = format!("Reasoning with {}...", self.pilot_brain_lane.describe());
+        let context = self.wake_results.clone();
+        match self.pilot_brain_lane.reason(intent.to_string(), context) {
+            Ok(result_rx) => {
+                self.last_status =
+                    format!("Planning intent with local model: {}", truncate(intent, 48));
+                self.last_ok = true;
+                self.pilot_plan = vec!["Reasoning with local model".to_string()];
+                self.pending_pilot_plan = Some(PendingPilotPlan {
+                    intent: intent.to_string(),
+                    result_rx,
+                    started: Instant::now(),
+                });
+            }
+            Err(error) => {
+                self.last_status =
+                    format!("Local model unavailable ({error}); using built-in planner.");
+                self.validation.error_seen = true;
+                self.plan_and_execute_heuristic(intent);
+            }
+        }
+    }
+
+    /// Built-in deterministic planner used as a fallback when the local model is
+    /// unreachable or returns an error. This is the legacy `run_pilot_action_intent`
+    /// behavior, preserved so the agent degrades gracefully instead of failing hard.
+    #[cfg(feature = "xilem-shell")]
+    fn plan_and_execute_heuristic(&mut self, intent: &str) {
+        match pilot_action_plan(intent) {
+            Ok(actions) => self.execute_planned_actions(intent, actions, "builtin-heuristic", 0),
             Err(error) => {
                 self.pilot_status = "FAILED".to_string();
                 self.pilot_result = error.clone();
@@ -2827,14 +3082,101 @@ impl BrowserApp {
                     &format!("pilot intent {}", intent),
                     LogStatus::Failure(error),
                 );
-                return;
             }
-        };
+        }
+    }
 
+    /// Execute a resolved action plan (from either the brain or the heuristic) and
+    /// capture a structured `PilotRunArtifact` of the run for the shell/dashboard.
+    #[cfg(feature = "xilem-shell")]
+    fn execute_planned_actions(
+        &mut self,
+        intent: &str,
+        actions: Vec<PilotAction>,
+        planner: &str,
+        reason_ms: u128,
+    ) {
         self.pilot_plan = actions.iter().map(pilot_action_step_label).collect();
+        let plan_records: Vec<PilotStepRecord> = actions.iter().map(pilot_action_record).collect();
         let mut analysis = Vec::new();
-        if self.execute_pilot_actions(intent, actions, &mut analysis) {
-            self.finish_successful_pilot_intent(intent, analysis);
+        let completed = self.execute_pilot_actions(intent, actions, &mut analysis);
+        if completed {
+            self.finish_successful_pilot_intent(intent, analysis.clone());
+        }
+        let artifact = PilotRunArtifact {
+            intent: intent.to_string(),
+            planner: planner.to_string(),
+            plan: plan_records,
+            analysis,
+            status: self.pilot_status.clone(),
+            reason_ms,
+        };
+        // Emit the structured run as JSON: proves the structured stream and gives a
+        // future visual dashboard / MCP a stable artifact to consume.
+        if let Ok(json) = serde_json::to_string(&artifact) {
+            println!("[pilot-run] {json}");
+        }
+        self.last_pilot_run = Some(artifact);
+    }
+
+    /// Whether a local-model plan is currently in flight. Always defined so the
+    /// event-loop control-flow chain compiles without the `xilem-shell` feature.
+    fn pilot_plan_pending(&self) -> bool {
+        #[cfg(feature = "xilem-shell")]
+        {
+            self.pending_pilot_plan.is_some()
+        }
+        #[cfg(not(feature = "xilem-shell"))]
+        {
+            false
+        }
+    }
+
+    /// Per-frame poll of the brain lane (mirrors `collect_pending_distillation`).
+    #[cfg(feature = "xilem-shell")]
+    fn collect_pending_pilot_plan(&mut self) -> Option<Duration> {
+        let pending = self.pending_pilot_plan.as_ref()?;
+        match pending.result_rx.try_recv() {
+            Ok(result) => {
+                let pending = self
+                    .pending_pilot_plan
+                    .take()
+                    .expect("pending pilot plan disappeared");
+                let elapsed = pending.started.elapsed();
+                let intent = pending.intent;
+                match result {
+                    Ok(actions) => {
+                        self.execute_planned_actions(
+                            &intent,
+                            actions,
+                            "local-model",
+                            elapsed.as_millis(),
+                        );
+                    }
+                    Err(error) => {
+                        self.last_status = format!(
+                            "Local model planning failed ({error}); using built-in planner."
+                        );
+                        self.validation.error_seen = true;
+                        self.plan_and_execute_heuristic(&intent);
+                    }
+                }
+                Some(elapsed)
+            }
+            Err(mpsc::TryRecvError::Empty) => None,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                let pending = self
+                    .pending_pilot_plan
+                    .take()
+                    .expect("pending pilot plan disappeared");
+                let elapsed = pending.started.elapsed();
+                let intent = pending.intent;
+                self.last_status =
+                    "Local model lane dropped the plan; using built-in planner.".to_string();
+                self.validation.error_seen = true;
+                self.plan_and_execute_heuristic(&intent);
+                Some(elapsed)
+            }
         }
     }
 
@@ -10003,6 +10345,12 @@ fn run_visible_app(
                     app.update_title(&window);
                     window.request_redraw();
                 }
+                #[cfg(feature = "xilem-shell")]
+                if app.collect_pending_pilot_plan().is_some() {
+                    println!("[window-user] {}", app.last_status);
+                    app.update_title(&window);
+                    window.request_redraw();
+                }
                 if app.collect_pending_frame_capture() {
                     if let Some(started) = smoke_input_started {
                         if smoke_requires_input_latency && !smoke_input_done {
@@ -10041,6 +10389,12 @@ fn run_visible_app(
                 } else if app.pending_persistence.is_some() {
                     elwt.set_control_flow(ControlFlow::WaitUntil(
                         Instant::now() + Duration::from_millis(16),
+                    ));
+                } else if app.pilot_plan_pending() {
+                    // The local-model plan can take seconds; keep the loop ticking
+                    // coarsely so `collect_pending_pilot_plan` runs without input.
+                    elwt.set_control_flow(ControlFlow::WaitUntil(
+                        Instant::now() + Duration::from_millis(50),
                     ));
                 } else if app.pending_wake_search.is_some() {
                     elwt.set_control_flow(ControlFlow::WaitUntil(
@@ -10123,7 +10477,7 @@ fn sextant_window_icon() -> Option<Icon> {
 fn start_visible_input(app: &mut BrowserApp, input: &str) -> Result<bool, String> {
     app.address_input = input.to_string();
     if native_intent_body(input).is_some() {
-        app.run_native_intent(input);
+        app.run_native_intent_sync(input);
         if !app.last_ok {
             return Err(app.last_status.clone());
         }
@@ -10689,7 +11043,7 @@ fn ensure_active_tab(app: &BrowserApp, tab_id: Uuid, label: &str) -> Result<(), 
 fn run_showcase_workflow(app: &mut BrowserApp) -> Result<Vec<String>, String> {
     let mut report = Vec::new();
     let intent = "intent: open https://example.com and distill";
-    app.run_native_intent(intent);
+    app.run_native_intent_sync(intent);
     if !app.last_ok {
         return Err(format!("showcase intent failed: {}", app.last_status));
     }
@@ -10850,7 +11204,7 @@ fn run_intent_script_inner(
     report.push(format!("isolated data dir: {}", data_dir.display()));
 
     app.address_input = intent.to_string();
-    app.run_native_intent(intent);
+    app.run_native_intent_sync(intent);
     if !app.last_ok {
         return Err(app.last_status);
     }
@@ -12140,7 +12494,7 @@ mod tests {
             env::temp_dir().join(format!("sextant-browser-deny-consent-{}", Uuid::new_v4()));
         let mut app = BrowserApp::new_with_data_dir(data_dir.clone())?;
 
-        app.run_native_intent("intent: buy example.com and checkout");
+        app.run_native_intent_sync("intent: buy example.com and checkout");
         assert_eq!(app.pilot_status, "AWAITING CONSENT");
         assert!(app.pending_consent.is_some());
 
@@ -12154,6 +12508,53 @@ mod tests {
             .any(|entry| entry.intent.starts_with("pilot consent deny ")));
 
         let _ = std::fs::remove_dir_all(data_dir);
+        Ok(())
+    }
+
+    /// End-to-end check that the live agent path plans with the local model brain
+    /// and records a structured run. Ignored by default: needs a model server on
+    /// SEXTANT_LOCAL_ENDPOINT (default http://127.0.0.1:8101).
+    #[cfg(feature = "xilem-shell")]
+    #[test]
+    #[ignore = "requires a local model server (SEXTANT_LOCAL_ENDPOINT, default :8101)"]
+    fn brain_intent_produces_structured_plan() -> Result<(), String> {
+        let data_dir =
+            env::temp_dir().join(format!("sextant-browser-brain-intent-{}", Uuid::new_v4()));
+        let mut app = BrowserApp::new_with_data_dir(data_dir.clone())?;
+        app.set_browser_mode(BrowserMode::Agent);
+
+        app.run_native_intent("intent: open example.com and summarize the page");
+        assert!(
+            app.pending_pilot_plan.is_some(),
+            "intent should dispatch to the brain lane (status: {})",
+            app.last_status
+        );
+
+        let deadline = Instant::now() + Duration::from_secs(90);
+        while app.pending_pilot_plan.is_some() && Instant::now() < deadline {
+            let _ = app.collect_pending_pilot_plan();
+            thread::sleep(Duration::from_millis(50));
+        }
+        assert!(
+            app.pending_pilot_plan.is_none(),
+            "brain plan should resolve before the deadline"
+        );
+
+        let run = app
+            .last_pilot_run
+            .as_ref()
+            .expect("a structured pilot run artifact should be recorded");
+        assert_eq!(
+            run.planner, "local-model",
+            "plan should come from the brain"
+        );
+        assert!(
+            run.plan.iter().any(|step| step.kind == "navigate"),
+            "brain plan should include a navigate step; got {:?}",
+            run.plan
+        );
+
+        let _ = std::fs::remove_dir_all(&data_dir);
         Ok(())
     }
 
@@ -13526,7 +13927,7 @@ mod tests {
             BrowserMode::Incognito,
         ] {
             app.set_browser_mode(mode);
-            app.run_native_intent("intent: open https://example.com and distill");
+            app.run_native_intent_sync("intent: open https://example.com and distill");
             assert!(!app.last_ok);
             assert_eq!(app.pilot_status, "BLOCKED");
             assert!(app.last_status.contains("blocks native intents"));
