@@ -5,6 +5,28 @@ Purpose: **preserve the look of full browser mode.** The bridge shell
 (`SEXTANT_FULL_SHELL=1`) holds dashboard ideas worth salvaging. This file
 captures both so the look survives refactors and any future Xilem removal.
 
+## Direction (locked 2026-06-15): high-res retro via egui
+
+Decision: **keep the retro terminal-HUD look, but render it through egui** for
+**anti-aliased text + true HiDPI** — the "ironic high-res retro." The current
+softbuffer bridge shell's 5×7 bitmap font is what reads low-res; egui gives crisp
+AA + native DPI scaling, and "retro" is preserved as an egui *theme* (dark/cyan
+palette, sharp corners `Rounding::ZERO`, monospace ALL-CAPS, cyan-edged panels).
+
+Validated by the **`--retro-egui-proof`** mode (`run_retro_egui_proof` /
+`apply_retro_egui_theme` / `draw_retro_egui_proof` in `browser.rs`): a retro HUD
+rendered through egui on this **GPU-less box via the software rasterizer** —
+crisp AA monospace, a `HiDPI x1.0–2.0` toggle that scales razor-sharp, acceptable
+CPU perf. egui is already the direct-lane chrome, so this unifies **both lanes**
+on egui (themed retro) and lets us retire the hand-rolled bitmap-font renderer.
+
+Enabler kept regardless: `ChromeBackend::render(..., full: bool)` — a `full`
+flag so the software rasterizer can clear/rasterize/present the **whole window**
+(the strip-only path was built for the thin direct chrome and ghosted a
+full-window UI). Real-bridge port = move each `draw_*_panel` onto the egui theme
+with the *actual* data (tabs/Wake/Log/Guard/Sense/Perf/Validation/Settings + the
+AI rail), reusing the §A palette below as egui `Visuals`. See [[gui_toolkit_decision]].
+
 Rule of thumb: **new UI must stay consistent with the bridge palette/components
 below.** Do not delete Xilem view code until its salvage items here are either
 ported or have reference screenshots captured.
