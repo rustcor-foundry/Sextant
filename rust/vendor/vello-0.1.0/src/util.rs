@@ -30,8 +30,21 @@ pub struct DeviceHandle {
 impl RenderContext {
     pub fn new() -> Result<Self> {
         eprintln!("[vello] RenderContext::new: begin");
+        // On Windows prefer DX12 only (overridable via WGPU_BACKEND). The Vulkan backend
+        // fails to enumerate on headless / compute-only (TCC) GPU hosts and, when present in
+        // a PRIMARY instance, prevents wgpu from selecting the DX12 WARP software adapter --
+        // so Vello would hard-panic with "Error creating device". DX12 alone returns WARP
+        // (DeviceType::Cpu) here, matching the proven egui-chrome backend probe.
+        let backends = wgpu::util::backend_bits_from_env().unwrap_or_else(|| {
+            if cfg!(target_os = "windows") {
+                wgpu::Backends::DX12
+            } else {
+                wgpu::Backends::PRIMARY
+            }
+        });
+        eprintln!("[vello] RenderContext::new: backends={backends:?}");
         let instance = Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::util::backend_bits_from_env().unwrap_or(wgpu::Backends::PRIMARY),
+            backends,
             dx12_shader_compiler: wgpu::Dx12Compiler::Fxc,
             ..Default::default()
         });
@@ -159,12 +172,15 @@ impl RenderContext {
         eprintln!(
             "[vello] new_device: begin force_fallback_adapter={force_fallback_adapter}"
         );
-        let adapter = match wgpu::util::initialize_adapter_from_env_or_default(
-            &self.instance,
-            compatible_surface,
-        )
-        .await
-        {
+        // Prefer the env-selected or default adapter (real hardware GPU when present).
+        // `SEXTANT_WGPU_FORCE_FALLBACK=1` skips this and goes straight to software.
+        let default_adapter = if force_fallback_adapter {
+            None
+        } else {
+            wgpu::util::initialize_adapter_from_env_or_default(&self.instance, compatible_surface)
+                .await
+        };
+        let adapter = match default_adapter {
             Some(adapter) => {
                 let info = adapter.get_info();
                 eprintln!(
@@ -173,25 +189,37 @@ impl RenderContext {
                 );
                 adapter
             }
-            None if force_fallback_adapter => {
-                eprintln!("[vello] new_device: requesting explicit fallback adapter");
-                let adapter = self.instance
+            None => {
+                // No hardware/default adapter. This happens on a headless or compute-only
+                // (TCC) GPU where Vulkan/DX12 enumerate no *non-fallback* adapter. Retry with
+                // the software (WARP on Windows) fallback so the UI renders in software instead
+                // of hard-panicking with "Error creating device" -- the same GPU-less strategy
+                // the egui chrome uses (wgpu -> softbuffer).
+                eprintln!(
+                    "[vello] new_device: no default adapter; requesting software fallback (WARP) adapter"
+                );
+                match self
+                    .instance
                     .request_adapter(&RequestAdapterOptions {
                         power_preference: wgpu::PowerPreference::LowPower,
                         force_fallback_adapter: true,
                         compatible_surface,
                     })
-                    .await?;
-                let info = adapter.get_info();
-                eprintln!(
-                    "[vello] new_device: fallback adapter name='{}' backend={:?} device_type={:?}",
-                    info.name, info.backend, info.device_type
-                );
-                adapter
-            }
-            None => {
-                eprintln!("[vello] new_device: no adapter found");
-                return None;
+                    .await
+                {
+                    Some(adapter) => {
+                        let info = adapter.get_info();
+                        eprintln!(
+                            "[vello] new_device: fallback adapter name='{}' backend={:?} device_type={:?}",
+                            info.name, info.backend, info.device_type
+                        );
+                        adapter
+                    }
+                    None => {
+                        eprintln!("[vello] new_device: no adapter found (even software fallback)");
+                        return None;
+                    }
+                }
             }
         };
         let features = adapter.features();
