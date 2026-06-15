@@ -101,10 +101,12 @@ layout with strong **color-coded state semantics**. Its palette (Masonry
 
 ### Salvage candidates (fold into the bridge shell over time)
 
-1. **Color-coded pilot/runtime status** (`runtime_status_color`,
-   `views.rs:754`): idle→green, reasoning/navigating/distilling→blue,
-   awaiting-consent→amber. The bridge shows `pilot_status` as plain text in the
-   AI rail — adopt this state→color mapping there.
+1. ✅ **Color-coded pilot/runtime status** — *ported 2026-06-15.*
+   `pilot_status_color()` colors the AI-rail status chip: green idle/complete/
+   authorized, cyan (`STATUS_INFO`) in-progress (reasoning/navigating/distilling/
+   perceiving/planning), amber consent/blocked, red (`STATUS_ERROR`) failed.
+   Replaced the old green/amber binary and fixed the doubled `PILOT PILOT` label.
+   (Original Xilem source: `runtime_status_color`, `views.rs:754`.)
 2. **Intent bar with preset buttons** (`intent_bar_view`): `PRESET SEARCH`,
    `PRESET CONSENT`, `COMMAND`, `NEW TAB`, `AIR GAP`, `PRIVACY` quick actions.
    The bridge has the address/intent bar but no one-tap presets.

@@ -84,6 +84,10 @@ const TEXT_SOFT: u32 = 0x00b8c6d2;
 const TEXT_PLACEHOLDER: u32 = 0x006f7f8a;
 const STATUS_OK: u32 = 0x002fbf71;
 const STATUS_WARN: u32 = 0x00d9a441;
+const STATUS_ERROR: u32 = 0x00e0524a;
+// In-progress accent for pilot/runtime status (Xilem dashboard salvage). Reuses
+// the cyan button accent so the bridge stays on its existing palette.
+const STATUS_INFO: u32 = BUTTON_BRIGHT;
 const BORDER: u32 = 0x00313d48;
 const BORDER_SOFT: u32 = 0x0024333d;
 const RAIL_WIDTH: u32 = 320;
@@ -12770,6 +12774,18 @@ mod tests {
     }
 
     #[test]
+    fn pilot_status_color_maps_states() {
+        assert_eq!(pilot_status_color("IDLE"), STATUS_OK);
+        assert_eq!(pilot_status_color("PILOT COMPLETE"), STATUS_OK);
+        assert_eq!(pilot_status_color("CONSENT AUTHORIZED"), STATUS_OK);
+        assert_eq!(pilot_status_color("FAILED"), STATUS_ERROR);
+        assert_eq!(pilot_status_color("BLOCKED"), STATUS_WARN);
+        assert_eq!(pilot_status_color("AWAITING CONSENT"), STATUS_WARN);
+        assert_eq!(pilot_status_color("PILOT REASONING"), STATUS_INFO);
+        assert_eq!(pilot_status_color("PILOT NAVIGATING"), STATUS_INFO);
+    }
+
+    #[test]
     fn browser_shell_can_authorize_pending_pilot_consent() -> Result<(), String> {
         let data_dir = env::temp_dir().join(format!(
             "sextant-browser-authorize-consent-{}",
@@ -14309,8 +14325,7 @@ mod tests {
 
     #[test]
     fn local_appliance_tls_override_is_limited_to_local_targets() {
-        let private =
-            Url::parse("https://192.0.2.130:8080/app").expect("private URL should parse");
+        let private = Url::parse("https://192.0.2.130:8080/app").expect("private URL should parse");
         let localhost = Url::parse("https://localhost:8443").expect("local URL should parse");
         let mdns = Url::parse("https://pylon.local:8443").expect("local URL should parse");
         let public = Url::parse("https://example.com").expect("public URL should parse");
@@ -16764,6 +16779,19 @@ fn proof_report_title(report: &[String]) -> &'static str {
     }
 }
 
+/// Map a pilot status to a palette color (Xilem dashboard salvage): green for
+/// idle/complete/authorized, amber for consent/blocked, red for failed, cyan for
+/// in-progress (reasoning/navigating/distilling/perceiving/planning). Tolerates
+/// an optional leading "PILOT " prefix on the status string.
+fn pilot_status_color(status: &str) -> u32 {
+    match status.trim_start_matches("PILOT ").trim() {
+        "IDLE" | "COMPLETE" | "CONSENT AUTHORIZED" => STATUS_OK,
+        "FAILED" => STATUS_ERROR,
+        "BLOCKED" | "AWAITING CONSENT" | "CONSENT DENIED" | "CONSENT RESUMING" => STATUS_WARN,
+        _ => STATUS_INFO,
+    }
+}
+
 fn draw_ai_rail(buffer: &mut [u32], width: u32, height: u32, app: &BrowserApp) {
     let rail_x = right_rail_x(width);
     fill_rect(
@@ -16834,12 +16862,11 @@ fn draw_ai_rail(buffer: &mut [u32], width: u32, height: u32, app: &BrowserApp) {
             w: 126,
             h: 22,
         },
-        &format!("PILOT {}", truncate(&app.pilot_status, 9)),
-        if app.pilot_status == "FAILED" {
-            STATUS_WARN
-        } else {
-            STATUS_OK
-        },
+        &format!(
+            "PILOT {}",
+            truncate(app.pilot_status.trim_start_matches("PILOT ").trim(), 11)
+        ),
+        pilot_status_color(&app.pilot_status),
         app.pilot_status != "FAILED",
     );
     let active_url = app
