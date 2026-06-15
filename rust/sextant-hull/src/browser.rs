@@ -335,6 +335,8 @@ enum MainView {
     Perception,
     Perf,
     Validation,
+    #[cfg(feature = "xilem-shell")]
+    Settings,
 }
 
 #[derive(Default)]
@@ -1015,6 +1017,98 @@ impl Drop for PersistenceLane {
     }
 }
 
+/// User-configurable local AI backend selection, persisted to
+/// `<profile>/ai-provider.json` and editable from the Settings tab. Resolution
+/// order on load: file -> env overrides -> built-in defaults.
+#[cfg(feature = "xilem-shell")]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct AiLocalConfig {
+    backend: String,
+    endpoint: String,
+    model: String,
+}
+
+#[cfg(feature = "xilem-shell")]
+impl AiLocalConfig {
+    const BACKENDS: [&'static str; 3] = ["llamacpp", "ollama", "vllm"];
+
+    fn default_for(backend: &str) -> Self {
+        let (endpoint, model) = match backend {
+            "ollama" => ("http://127.0.0.1:11434", "qwen2.5:3b"),
+            "vllm" => ("http://127.0.0.1:8000", "qwen2.5-coder-32b"),
+            // llama.cpp default points at the on-box 32B server.
+            _ => ("http://127.0.0.1:8101", "qwen2.5-coder-32b"),
+        };
+        Self {
+            backend: backend.to_string(),
+            endpoint: endpoint.to_string(),
+            model: model.to_string(),
+        }
+    }
+
+    fn config_path(profile_dir: &Path) -> PathBuf {
+        profile_dir.join("ai-provider.json")
+    }
+
+    fn load(profile_dir: &Path) -> Self {
+        let mut config = std::fs::read_to_string(Self::config_path(profile_dir))
+            .ok()
+            .and_then(|raw| serde_json::from_str::<AiLocalConfig>(&raw).ok())
+            .unwrap_or_else(|| Self::default_for("llamacpp"));
+        // Environment overrides win so a launch can target a different server
+        // without rewriting the file.
+        if let Some(value) = env_override("SEXTANT_LOCAL_BACKEND") {
+            config.backend = value.to_lowercase();
+        }
+        if let Some(value) = env_override("SEXTANT_LOCAL_ENDPOINT") {
+            config.endpoint = value;
+        }
+        if let Some(value) = env_override("SEXTANT_LOCAL_MODEL") {
+            config.model = value;
+        }
+        config.normalize();
+        config
+    }
+
+    fn save(&self, profile_dir: &Path) -> Result<(), String> {
+        let json = serde_json::to_string_pretty(self).map_err(|error| error.to_string())?;
+        std::fs::write(Self::config_path(profile_dir), json).map_err(|error| error.to_string())
+    }
+
+    fn normalize(&mut self) {
+        self.backend = self.backend.trim().to_lowercase();
+        if !Self::BACKENDS.contains(&self.backend.as_str()) {
+            self.backend = "llamacpp".to_string();
+        }
+        self.endpoint = self.endpoint.trim().to_string();
+        self.model = self.model.trim().to_string();
+    }
+
+    fn backend_enum(&self) -> InferenceBackend {
+        match self.backend.as_str() {
+            "ollama" => InferenceBackend::Ollama,
+            "vllm" => InferenceBackend::VLLM,
+            _ => InferenceBackend::LlamaCpp,
+        }
+    }
+
+    fn backend_label(backend: &str) -> &'static str {
+        match backend {
+            "ollama" => "Ollama",
+            "vllm" => "vLLM",
+            _ => "llama.cpp",
+        }
+    }
+}
+
+#[cfg(feature = "xilem-shell")]
+fn env_override(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
 /// Background lane that turns a natural-language intent into a structured
 /// `Vec<PilotAction>` plan using the local model brain. Mirrors `PersistenceLane`:
 /// the UI thread sends an intent and polls the reply channel each frame, so the
@@ -1039,18 +1133,10 @@ struct PilotBrainLane {
 
 #[cfg(feature = "xilem-shell")]
 impl PilotBrainLane {
-    fn new() -> Self {
-        // Defaults to the on-box llama.cpp 32B server wired in main.rs/state.rs;
-        // overridable for testing without rebuilding. Backend selection (Ollama vs
-        // llama.cpp) becomes user-facing in a later pass.
-        let endpoint = std::env::var("SEXTANT_LOCAL_ENDPOINT")
-            .ok()
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| "http://127.0.0.1:8101".to_string());
-        let model = std::env::var("SEXTANT_LOCAL_MODEL")
-            .ok()
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| "qwen2.5-coder-32b".to_string());
+    fn new(config: &AiLocalConfig) -> Self {
+        let backend = config.backend_enum();
+        let endpoint = config.endpoint.clone();
+        let model = config.model.clone();
 
         let (command_tx, command_rx) = mpsc::channel::<PilotBrainCommand>();
         let worker_endpoint = endpoint.clone();
@@ -1080,11 +1166,7 @@ impl PilotBrainLane {
                     }
                 };
                 let brain = match Url::parse(&worker_endpoint) {
-                    Ok(url) => Some(LocalBrain::new(
-                        InferenceBackend::LlamaCpp,
-                        url,
-                        &worker_model,
-                    )),
+                    Ok(url) => Some(LocalBrain::new(backend, url, &worker_model)),
                     Err(error) => {
                         eprintln!("[pilot-brain] invalid endpoint '{worker_endpoint}': {error}");
                         None
@@ -1319,6 +1401,10 @@ struct BrowserApp {
     #[cfg(feature = "xilem-shell")]
     #[allow(dead_code)]
     last_pilot_run: Option<PilotRunArtifact>,
+    #[cfg(feature = "xilem-shell")]
+    ai_config: AiLocalConfig,
+    #[cfg(feature = "xilem-shell")]
+    settings_tab_rect: Rect,
 }
 
 impl BrowserApp {
@@ -1332,6 +1418,8 @@ impl BrowserApp {
         #[cfg(feature = "xilem-shell")]
         let (guard_firewall, guard_policy_source) = load_browser_guard_firewall(&data_dir)?;
         let persistence_lane = PersistenceLane::new(&data_dir)?;
+        #[cfg(feature = "xilem-shell")]
+        let ai_config = AiLocalConfig::load(&profile_data_dir);
         #[cfg(any(feature = "xilem-shell", feature = "servo-backend"))]
         let appliance_cert_entries = ApplianceCertTrustStore::load(&profile_data_dir)?.entries;
         let mut app = Self {
@@ -1493,11 +1581,20 @@ impl BrowserApp {
             frame_refresh_budget: 0,
             validation: ValidationState::default(),
             #[cfg(feature = "xilem-shell")]
-            pilot_brain_lane: PilotBrainLane::new(),
+            pilot_brain_lane: PilotBrainLane::new(&ai_config),
             #[cfg(feature = "xilem-shell")]
             pending_pilot_plan: None,
             #[cfg(feature = "xilem-shell")]
             last_pilot_run: None,
+            #[cfg(feature = "xilem-shell")]
+            ai_config,
+            #[cfg(feature = "xilem-shell")]
+            settings_tab_rect: Rect {
+                x: 0,
+                y: 0,
+                w: 1,
+                h: 1,
+            },
         };
         app.refresh_logs();
         Ok(app)
@@ -1730,6 +1827,15 @@ impl BrowserApp {
             w: 118,
             h: 30,
         };
+        #[cfg(feature = "xilem-shell")]
+        {
+            self.settings_tab_rect = Rect {
+                x: 674,
+                y: CHROME_H + STRIP_H + 5,
+                w: 96,
+                h: 30,
+            };
+        }
         self.mode_rects.clear();
         let mut mode_x: u32 = 146;
         let mode_y = 12;
@@ -2085,6 +2191,11 @@ impl BrowserApp {
             self.main_view = MainView::Validation;
             return;
         }
+        #[cfg(feature = "xilem-shell")]
+        if self.settings_tab_rect.contains(x, y) {
+            self.main_view = MainView::Settings;
+            return;
+        }
         if self.can_page_tabs_previous() && self.page_tab_prev_rect.contains(x, y) {
             self.page_tabs_previous();
             return;
@@ -2112,6 +2223,11 @@ impl BrowserApp {
         }
 
         if self.main_view == MainView::Guard && self.handle_guard_panel_click(x, y) {
+            return;
+        }
+
+        #[cfg(feature = "xilem-shell")]
+        if self.main_view == MainView::Settings && self.handle_settings_panel_click(x, y) {
             return;
         }
 
@@ -2167,6 +2283,67 @@ impl BrowserApp {
             }
         }
         false
+    }
+
+    #[cfg(feature = "xilem-shell")]
+    fn handle_settings_panel_click(&mut self, x: f64, y: f64) -> bool {
+        let panel = main_panel_rect(
+            right_rail_x(self.window_size.width.max(1)),
+            self.window_size.height.max(1),
+        );
+        for (backend, rect) in settings_backend_button_rects(panel) {
+            if rect.contains(x, y) {
+                self.apply_ai_backend(backend);
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Switch the local AI backend, persist it, and rebuild the brain lane so the
+    /// next intent plans through the newly selected server.
+    #[cfg(feature = "xilem-shell")]
+    fn apply_ai_backend(&mut self, backend: &str) {
+        if self.pending_pilot_plan.is_some() {
+            // Rebuilding the lane joins its worker thread, which would block on an
+            // in-flight model call. Make the user finish the current intent first.
+            self.last_status =
+                "Finish the current intent before changing the AI backend.".to_string();
+            self.last_ok = false;
+            self.validation.error_seen = true;
+            return;
+        }
+        if self.ai_config.backend == backend {
+            self.last_status = format!(
+                "{} backend is already active.",
+                AiLocalConfig::backend_label(backend)
+            );
+            self.last_ok = true;
+            return;
+        }
+        let config = AiLocalConfig::default_for(backend);
+        match config.save(&self.profile_data_dir) {
+            Ok(()) => {
+                self.ai_config = config;
+                self.pilot_brain_lane = PilotBrainLane::new(&self.ai_config);
+                self.last_status = format!(
+                    "AI backend set to {} @ {} ({}).",
+                    AiLocalConfig::backend_label(&self.ai_config.backend),
+                    self.ai_config.endpoint,
+                    self.ai_config.model
+                );
+                self.last_ok = true;
+                let _ = self.record_log(
+                    &format!("ai backend {}", self.ai_config.backend),
+                    LogStatus::Success,
+                );
+            }
+            Err(error) => {
+                self.last_status = format!("Failed to save AI settings: {error}");
+                self.last_ok = false;
+                self.validation.error_seen = true;
+            }
+        }
     }
 
     fn wake_input_hit_rect(&self) -> Rect {
@@ -12558,6 +12735,40 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(feature = "xilem-shell")]
+    #[test]
+    fn settings_backend_selection_persists_and_rebuilds() -> Result<(), String> {
+        let data_dir =
+            env::temp_dir().join(format!("sextant-browser-ai-settings-{}", Uuid::new_v4()));
+        let mut app = BrowserApp::new_with_data_dir(data_dir.clone())?;
+
+        // Selecting Ollama applies its default endpoint/model deterministically and
+        // rebuilds the brain lane without error.
+        app.apply_ai_backend("ollama");
+        assert!(
+            app.last_ok,
+            "backend switch should succeed: {}",
+            app.last_status
+        );
+        assert_eq!(app.ai_config.backend, "ollama");
+        assert_eq!(app.ai_config.endpoint, "http://127.0.0.1:11434");
+
+        // Persisted to <profile>/ai-provider.json (read directly to avoid env overrides).
+        let raw = std::fs::read_to_string(AiLocalConfig::config_path(&app.profile_data_dir))
+            .map_err(|error| error.to_string())?;
+        let saved: AiLocalConfig = serde_json::from_str(&raw).map_err(|error| error.to_string())?;
+        assert_eq!(saved.backend, "ollama");
+        assert_eq!(saved.model, "qwen2.5:3b");
+
+        // Switching back to llama.cpp restores the on-box 32B defaults.
+        app.apply_ai_backend("llamacpp");
+        assert_eq!(app.ai_config.endpoint, "http://127.0.0.1:8101");
+        assert_eq!(app.ai_config.model, "qwen2.5-coder-32b");
+
+        let _ = std::fs::remove_dir_all(&data_dir);
+        Ok(())
+    }
+
     #[test]
     fn browser_shell_can_authorize_pending_pilot_consent() -> Result<(), String> {
         let data_dir = env::temp_dir().join(format!(
@@ -14596,6 +14807,11 @@ fn draw(
             draw_validation_panel(&mut buffer, width, height, app);
             None
         }
+        #[cfg(feature = "xilem-shell")]
+        MainView::Settings => {
+            draw_settings_panel(&mut buffer, width, height, app);
+            None
+        }
     };
     draw_ai_rail(&mut buffer, width, height, app);
     draw_status_bar(&mut buffer, width, height, app);
@@ -14804,6 +15020,15 @@ fn draw_controls(buffer: &mut [u32], width: u32, height: u32, app: &BrowserApp) 
         app.validation_tab_rect,
         "VALIDATION",
         app.main_view == MainView::Validation,
+    );
+    #[cfg(feature = "xilem-shell")]
+    draw_pill(
+        buffer,
+        width,
+        height,
+        app.settings_tab_rect,
+        "SETTINGS",
+        app.main_view == MainView::Settings,
     );
     let ai_ready = app.capabilities().ai_observe_dom;
     draw_status_chip(
@@ -15710,6 +15935,134 @@ fn draw_guard_panel(buffer: &mut [u32], width: u32, height: u32, app: &BrowserAp
         );
     }
     draw_appliance_cert_settings(buffer, width, height, panel, app);
+}
+
+#[cfg(feature = "xilem-shell")]
+fn settings_backend_button_rects(panel: Rect) -> Vec<(&'static str, Rect)> {
+    let button_w = 150;
+    let gap = 14;
+    let y = panel.y + 78;
+    AiLocalConfig::BACKENDS
+        .iter()
+        .enumerate()
+        .map(|(index, backend)| {
+            let x = panel.x + 24 + index as u32 * (button_w + gap);
+            (
+                *backend,
+                Rect {
+                    x,
+                    y,
+                    w: button_w,
+                    h: 34,
+                },
+            )
+        })
+        .collect()
+}
+
+#[cfg(feature = "xilem-shell")]
+fn draw_settings_panel(buffer: &mut [u32], width: u32, height: u32, app: &BrowserApp) {
+    let rail_x = right_rail_x(width);
+    let panel = main_panel_rect(rail_x, height);
+    draw_panel_surface(buffer, width, height, panel, STATUS_OK);
+    draw_text(
+        buffer,
+        width,
+        height,
+        panel.x + 20,
+        panel.y + 18,
+        "LOCAL AI MODEL",
+        TEXT,
+        1,
+    );
+    draw_text(
+        buffer,
+        width,
+        height,
+        panel.x + 24,
+        panel.y + 52,
+        "BACKEND",
+        TEXT_DIM,
+        1,
+    );
+
+    let active = app.ai_config.backend.as_str();
+    for (backend, rect) in settings_backend_button_rects(panel) {
+        // Highlight the active backend by drawing it in the "hovered" style.
+        let selected = backend == active;
+        draw_button(
+            buffer,
+            width,
+            height,
+            rect,
+            AiLocalConfig::backend_label(backend),
+            selected,
+            true,
+        );
+    }
+
+    let info_y = panel.y + 138;
+    let max_chars = (panel.w.saturating_sub(48) / char_advance(1)) as usize;
+    draw_text(
+        buffer,
+        width,
+        height,
+        panel.x + 24,
+        info_y,
+        &truncate(&format!("ENDPOINT  {}", app.ai_config.endpoint), max_chars),
+        TEXT_SOFT,
+        1,
+    );
+    draw_text(
+        buffer,
+        width,
+        height,
+        panel.x + 24,
+        info_y + 26,
+        &truncate(&format!("MODEL     {}", app.ai_config.model), max_chars),
+        TEXT_SOFT,
+        1,
+    );
+    draw_text(
+        buffer,
+        width,
+        height,
+        panel.x + 24,
+        info_y + 52,
+        &truncate(
+            &format!(
+                "ACTIVE    {} brain @ {}",
+                AiLocalConfig::backend_label(active),
+                app.ai_config.endpoint
+            ),
+            max_chars,
+        ),
+        STATUS_OK,
+        1,
+    );
+    draw_text(
+        buffer,
+        width,
+        height,
+        panel.x + 24,
+        info_y + 92,
+        "Click a backend to select it and rebuild the agent brain.",
+        TEXT_DIM,
+        1,
+    );
+    draw_text(
+        buffer,
+        width,
+        height,
+        panel.x + 24,
+        info_y + 114,
+        &truncate(
+            "Endpoint/model use that backend's default; edit <profile>/ai-provider.json or set SEXTANT_LOCAL_ENDPOINT / SEXTANT_LOCAL_MODEL to customize.",
+            max_chars,
+        ),
+        TEXT_DIM,
+        1,
+    );
 }
 
 fn guard_appliance_refresh_rect(panel: Rect) -> Rect {
