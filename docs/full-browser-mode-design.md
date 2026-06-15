@@ -113,21 +113,31 @@ layout with strong **color-coded state semantics**. Its palette (Masonry
    the intent through the local model brain (`run_preset_intent`). (Original
    Xilem source: `intent_bar_view` — `PRESET SEARCH`/`COMMAND`/etc.)
 3. **Startup phase status** (`startup_status_color`, `views.rs:765`):
-   Ready/Degraded/Booting/WarmingUp coloring — nice for the status bar.
-4. **Validation badges/checklist** (`validation_badge`, `validation_item_views`):
-   PROVIDER/etc. pass/warn/fail badges. The bridge has a Validation tab; adopt
-   the badge styling.
-5. **Consent flow surface** (`AwaitingConsent` amber state + next-step prompt) —
-   richer than the bridge's current consent line.
-6. **Provider picker** (Gemini/OpenAI/Anthropic/Local) — partly covered by the
-   new Settings tab (Local backends); the online-provider picker is still
-   Xilem-only.
+   Ready/Degraded/Booting/WarmingUp coloring. *N/A for the bridge* — it has no
+   `StartupPhase` concept; readiness already shows via the status-bar `last_ok`
+   dot + `ai_status_label()`.
+4. ✅ **Validation badges** — *already present in the bridge.*
+   `draw_validation_panel` color-codes each row via `validation_status_color`
+   (Pass→green, Attention→amber, Waiting→dim) with a status dot — matches the
+   Xilem `validation_badge` look. No port needed.
+5. ✅ **Consent surface** — *already present.* The bridge AI rail shows
+   `AUTHORIZE`/`DENY` buttons and the amber `AWAITING CONSENT` state (now via
+   `pilot_status_color`) plus the consent message. No port needed.
+6. **Provider picker** — Local backends done via the **Settings tab** (#1). The
+   online-provider picker (Gemini/OpenAI/Anthropic + API-key entry) is still
+   Xilem-only and **deferred**: a larger feature (secret entry/storage) beyond
+   look-preservation, to revisit when online providers are wired into the bridge.
 
 ---
 
 ## C. Preservation checklist (before any Xilem-stack removal)
 
 - [ ] Capture `xilem-dashboard.png` (first paint) + `bridge-shell-*.png` per tab.
-- [ ] Port or explicitly defer each Salvage candidate in §B.
-- [ ] Confirm new bridge UI uses only the §A palette/components.
+- [x] Port or explicitly defer each Salvage candidate in §B *(2026-06-15: #1
+  pilot-status color + #2 intent presets ported; #4 badges / #5 consent already
+  in the bridge; #3 N/A; #6 online provider picker deferred).*
+- [x] Confirm new bridge UI uses only the §A palette/components *(color salvage,
+  presets, and Settings tab all use the existing palette/`draw_*` helpers).*
+- [ ] **GUI QA pass** of the bridge full mode (status colors cycle; QUICK INTENTS
+  placement; per-tab look) + capture the screenshots above.
 - [ ] Only then remove the `sextant-hull` Xilem bin + vendored vello/masonry/xilem.
