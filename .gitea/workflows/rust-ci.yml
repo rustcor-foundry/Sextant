@@ -9,40 +9,28 @@ on:
 
 jobs:
   # Fast gate on the lx-ws02 self-hosted runner (openSUSE, Rust 1.96 + rustfmt +
-  # clippy preinstalled). Builds the whole workspace WITHOUT default features so
-  # it never pulls the heavy Servo git dependency. The runner has no Node, so we
-  # check out manually with git instead of actions/checkout.
+  # clippy preinstalled). Whole workspace WITHOUT default features so it never
+  # pulls the heavy Servo git dependency. One run step (no Node-based
+  # actions/checkout): manual git checkout, then fmt / check / test / clippy.
   fast-linux:
     runs-on: lx-ws02
     steps:
-      - name: Checkout (manual; host runner has no Node)
+      - name: Checkout + fmt + check + test + clippy
         env:
           TOKEN: ${{ github.token }}
         run: |
-          set -eu
+          set -euo pipefail
+          export PATH="$HOME/.cargo/bin:$PATH"
           WORK="${RUNNER_TEMP:-/tmp}/sextant-${GITHUB_SHA}"
           rm -rf "$WORK"
           git clone --no-tags "https://${TOKEN}@gitea.w-sky.net/${GITHUB_REPOSITORY}.git" "$WORK"
           git -C "$WORK" fetch --no-tags origin "$GITHUB_SHA" || true
           git -C "$WORK" checkout --quiet "$GITHUB_SHA"
-          echo "WORK=$WORK" >> "$GITHUB_ENV"
-          echo "PATH=$HOME/.cargo/bin:$PATH" >> "$GITHUB_ENV"
-
-      - name: Format
-        working-directory: ${{ env.WORK }}/rust
-        run: cargo fmt --all --check
-
-      - name: Check (no default features)
-        working-directory: ${{ env.WORK }}/rust
-        run: cargo check --workspace --no-default-features --locked
-
-      - name: Test (no default features)
-        working-directory: ${{ env.WORK }}/rust
-        run: cargo test --workspace --no-default-features --locked
-
-      - name: Clippy (advisory)
-        working-directory: ${{ env.WORK }}/rust
-        run: cargo clippy --workspace --no-default-features
+          cd "$WORK/rust"
+          cargo fmt --all --check
+          cargo check --workspace --no-default-features --locked
+          cargo test --workspace --no-default-features --locked
+          cargo clippy --workspace --no-default-features
 
   # NOTE: the Servo-backed product build (sextant-browser, default features) is
   # intentionally not gated here yet. lx-ws02 is Linux so it can't build the
