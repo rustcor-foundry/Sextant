@@ -434,6 +434,20 @@ impl CitadelVault {
     }
 }
 
+impl Drop for CitadelVault {
+    /// Wipe the master key and seed from memory when the vault is dropped, not
+    /// only on an explicit `lock()`. Without this, an early return, panic unwind,
+    /// or a short-lived vault leaves raw key material in freed memory.
+    fn drop(&mut self) {
+        if let Some(mut key) = self.master_key.take() {
+            key.zeroize();
+        }
+        if let Some(mut seed) = self.master_seed.take() {
+            seed.zeroize();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
