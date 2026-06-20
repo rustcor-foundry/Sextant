@@ -8,19 +8,48 @@ on:
   workflow_dispatch:
 
 jobs:
-  rust-workspace:
+  # Fast gate: the whole workspace built WITHOUT default features, so it never
+  # pulls the heavy Servo git dependency. Covers the 15 portable crates plus the
+  # hull's reader/fallback path, gated on formatting with an advisory clippy pass.
+  # This is the lane that must stay green on every push/PR.
+  fast-linux:
     runs-on: ubuntu-latest
     container:
       image: rust:1.89-bookworm
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Cargo Check
-        working-directory: rust
-        run: cargo check --workspace
+      - name: Add rustfmt + clippy
+        run: rustup component add rustfmt clippy
 
-      - name: Cargo Test
+      - name: Format
         working-directory: rust
-        run: cargo test --workspace
+        run: cargo fmt --all --check
+
+      - name: Check (no default features)
+        working-directory: rust
+        run: cargo check --workspace --no-default-features --locked
+
+      - name: Test (no default features)
+        working-directory: rust
+        run: cargo test --workspace --no-default-features --locked
+
+      - name: Clippy (advisory)
+        working-directory: rust
+        run: cargo clippy --workspace --no-default-features
+
+  # Product gate: build the Servo-backed sextant-browser as it actually ships.
+  # Requires a self-hosted Windows runner with the MSVC toolchain and Servo build
+  # prerequisites; rust/.cargo/config.toml supplies the linker + INCLUDE/LIB env.
+  # The first run compiles Servo (slow); keep the runner's target/ cache warm so
+  # later runs are incremental. Adjust `runs-on` to match your runner's labels.
+  windows-product:
+    runs-on: [self-hosted, windows]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check sextant-browser (default features, Servo)
+        working-directory: rust
+        run: cargo check -p sextant-hull --bin sextant-browser --locked
