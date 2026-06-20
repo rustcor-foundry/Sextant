@@ -383,13 +383,27 @@ impl CitadelVault {
         struct Export {
             personas: HashMap<String, Persona>,
             identities: HashMap<String, VaultIdentity>,
+            // Identity private keys, encrypted with the master key (the same way
+            // `secrets` are). `VaultIdentity::secret_key` is `skip_serializing`, so
+            // it is never written in plaintext; persist it here encrypted so an
+            // exported/synced vault can still sign after import instead of silently
+            // restoring empty, unusable keys.
+            secret_keys: HashMap<String, Vec<u8>>,
             secrets: HashMap<String, Vec<u8>>,
             salt: Option<String>,
+        }
+
+        let mut secret_keys = HashMap::new();
+        for (id, identity) in &self.identities {
+            if !identity.secret_key.is_empty() {
+                secret_keys.insert(id.clone(), self.encrypt_data(&identity.secret_key)?);
+            }
         }
 
         let export = Export {
             personas: self.personas.clone(),
             identities: self.identities.clone(),
+            secret_keys,
             secrets: self.secrets.clone(),
             salt: self.salt.clone(),
         };
@@ -402,25 +416,50 @@ impl CitadelVault {
         struct Import {
             personas: HashMap<String, Persona>,
             identities: HashMap<String, VaultIdentity>,
+            #[serde(default)]
+            secret_keys: HashMap<String, Vec<u8>>,
             secrets: HashMap<String, Vec<u8>>,
             salt: Option<String>,
         }
 
         let import: Import = serde_json::from_str(data).map_err(|e| e.to_string())?;
+        let mut identities = import.identities;
+        // Restore the encrypted identity private keys (skipped on serialize) so
+        // imported identities can sign. Requires the vault be unlocked with the
+        // master key the keys were encrypted under.
+        for (id, encrypted) in &import.secret_keys {
+            if let Some(identity) = identities.get_mut(id) {
+                identity.secret_key = self.decrypt_data(encrypted)?;
+            }
+        }
         self.personas = import.personas;
-        self.identities = import.identities;
+        self.identities = identities;
         self.secrets = import.secrets;
         self.salt = import.salt;
         Ok(())
     }
 
-    /// Simulates a hardware-backed cryptographic signature for user consent.
-    /// This requires the vault to be unlocked and represents the "Captain's Key" interaction.
+    /// Produces a local, tamper-evident consent token ("Captain's Key"): an
+    /// HMAC-SHA512 over the message keyed by a dedicated, domain-separated key
+    /// derived from the master seed. Requires the vault to be unlocked.
+    ///
+    /// Note: this is a symmetric MAC, not a publicly verifiable signature — only a
+    /// holder of the seed can produce or check it. Use `sign_with_identity` /
+    /// `sign_with_pq` when third-party verifiability is required.
     pub fn sign_consent(&self, message: &str) -> Result<String, String> {
         if !self.is_locked {
             if let Some(seed) = self.master_seed {
+                // Derive a dedicated consent key rather than keying the HMAC
+                // directly on the HD derivation root (avoids reusing the seed
+                // across unrelated purposes).
+                let consent_key = {
+                    let mut kdf =
+                        <HmacSha512 as Mac>::new_from_slice(&seed).map_err(|e| e.to_string())?;
+                    kdf.update(b"sextant/consent-key/v1");
+                    kdf.finalize().into_bytes()
+                };
                 let mut hmac =
-                    <HmacSha512 as Mac>::new_from_slice(&seed).map_err(|e| e.to_string())?;
+                    <HmacSha512 as Mac>::new_from_slice(&consent_key).map_err(|e| e.to_string())?;
                 hmac.update(message.as_bytes());
                 hmac.update(b"CONSENT_DOMAIN_SEPARATOR");
                 let result = hmac.finalize().into_bytes();
@@ -491,5 +530,30 @@ mod tests {
         .unwrap();
         let signature_ec = EcSignature::from_der(&sig_ec).unwrap();
         assert!(pk_ec.verify(msg, &signature_ec).is_ok());
+    }
+
+    #[test]
+    fn export_import_round_trip_preserves_identity_signing() {
+        let mut vault = CitadelVault::new();
+        vault.initialize_new("password123").unwrap();
+        let persona = vault.create_persona("Default", "Primary").unwrap();
+        let identity = vault
+            .derive_identity(&persona.id, "Main", KeyType::Ed25519, "m/44'/0'/0'/0/0")
+            .unwrap();
+
+        let msg = b"Sextant export round-trip";
+        let sig_before = vault.sign_with_identity(&identity.id, msg).unwrap();
+
+        // Export and re-import into the same (still unlocked) vault. Without the
+        // encrypted secret-key round-trip, the imported identity loses its private
+        // key and `sign_with_identity` fails with "Invalid key length".
+        let exported = vault.export_encrypted().unwrap();
+        vault.import_encrypted(&exported).unwrap();
+
+        let sig_after = vault
+            .sign_with_identity(&identity.id, msg)
+            .expect("imported identity should still sign");
+        // Ed25519 is deterministic, so a preserved key reproduces the signature.
+        assert_eq!(sig_before, sig_after);
     }
 }
