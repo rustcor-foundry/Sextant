@@ -748,14 +748,17 @@ mod tests {
             .iter()
             .filter(|action| matches!(action, PilotAction::RequestConsent(_)))
             .count();
-        assert_eq!(consent_count, 1, "must not add a second gate, got {:?}", plan);
+        assert_eq!(
+            consent_count, 1,
+            "must not add a second gate, got {:?}",
+            plan
+        );
     }
 
     #[test]
     fn model_plan_safe_intent_is_not_gated() {
         let intent = "open example.com and summarize the page";
-        let model_json =
-            r#"{"actions":[{"action":"navigate","url":"https://example.com"},{"action":"distill"}]}"#;
+        let model_json = r#"{"actions":[{"action":"navigate","url":"https://example.com"},{"action":"distill"}]}"#;
         let plan = parse_model_plan(intent, model_json).expect("plan parses");
         assert!(
             !plan

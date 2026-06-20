@@ -6153,7 +6153,11 @@ fn main() {
 
     // Experimental egui bridge shell (parity port in progress). Opt in with
     // SEXTANT_EGUI_BRIDGE=1; only the interactive bridge path (no smoke).
-    #[cfg(all(target_os = "windows", feature = "servo-backend", feature = "xilem-shell"))]
+    #[cfg(all(
+        target_os = "windows",
+        feature = "servo-backend",
+        feature = "xilem-shell"
+    ))]
     if window_smoke.is_none() && env_override("SEXTANT_EGUI_BRIDGE").is_some() {
         if let Err(error) = run_visible_app_egui(browser_mode) {
             eprintln!("[sextant-browser] egui bridge failed: {error}");
@@ -8228,12 +8232,20 @@ fn run_retro_egui_proof() -> Result<(), String> {
 // ============================================================================
 
 /// Convert a softbuffer `0x00RRGGBB` palette color to an egui `Color32`.
-#[cfg(all(target_os = "windows", feature = "servo-backend", feature = "xilem-shell"))]
+#[cfg(all(
+    target_os = "windows",
+    feature = "servo-backend",
+    feature = "xilem-shell"
+))]
 fn rgb32(color: u32) -> egui::Color32 {
     egui::Color32::from_rgb((color >> 16) as u8, (color >> 8) as u8, color as u8)
 }
 
-#[cfg(all(target_os = "windows", feature = "servo-backend", feature = "xilem-shell"))]
+#[cfg(all(
+    target_os = "windows",
+    feature = "servo-backend",
+    feature = "xilem-shell"
+))]
 fn egui_bridge_tabs() -> Vec<(MainView, &'static str)> {
     vec![
         (MainView::Browser, "BROWSER"),
@@ -8247,7 +8259,11 @@ fn egui_bridge_tabs() -> Vec<(MainView, &'static str)> {
     ]
 }
 
-#[cfg(all(target_os = "windows", feature = "servo-backend", feature = "xilem-shell"))]
+#[cfg(all(
+    target_os = "windows",
+    feature = "servo-backend",
+    feature = "xilem-shell"
+))]
 fn egui_metric_card(
     ui: &mut egui::Ui,
     label: &str,
@@ -8274,7 +8290,11 @@ fn egui_metric_card(
 /// Per-view central content. First pass: Browser shows the active URL (the Servo
 /// frame viewport is the final port step), Settings has the backend selector, and
 /// the data tabs show summaries pending their full panel port.
-#[cfg(all(target_os = "windows", feature = "servo-backend", feature = "xilem-shell"))]
+#[cfg(all(
+    target_os = "windows",
+    feature = "servo-backend",
+    feature = "xilem-shell"
+))]
 fn egui_bridge_central(
     ui: &mut egui::Ui,
     app: &mut BrowserApp,
@@ -8526,7 +8546,9 @@ fn egui_bridge_central(
                                 ui.label(
                                     egui::RichText::new(truncate(&node.selector, 40)).color(dim),
                                 );
-                                ui.label(egui::RichText::new(truncate(&node.text, 80)).color(color));
+                                ui.label(
+                                    egui::RichText::new(truncate(&node.text, 80)).color(color),
+                                );
                                 ui.end_row();
                             }
                         });
@@ -8535,7 +8557,11 @@ fn egui_bridge_central(
             }
         }
         MainView::Perf => {
-            ui.label(egui::RichText::new("BROWSER PERFORMANCE").color(cyan).strong());
+            ui.label(
+                egui::RichText::new("BROWSER PERFORMANCE")
+                    .color(cyan)
+                    .strong(),
+            );
             ui.label(
                 egui::RichText::new(format!("LATEST {}", app.perf.summary()))
                     .color(dim)
@@ -8621,7 +8647,11 @@ fn egui_bridge_central(
 /// GUARD-tab local appliance certificate trust list: status, REFRESH/FORGET
 /// controls, and a selectable list of persisted origin+fingerprint entries.
 /// Click intents are recorded and applied after the immutable render borrow ends.
-#[cfg(all(target_os = "windows", feature = "servo-backend", feature = "xilem-shell"))]
+#[cfg(all(
+    target_os = "windows",
+    feature = "servo-backend",
+    feature = "xilem-shell"
+))]
 fn egui_appliance_cert_section(ui: &mut egui::Ui, app: &mut BrowserApp) {
     let dim = egui::Color32::from_rgb(0x93, 0xa4, 0xb0);
     ui.label(
@@ -8687,7 +8717,11 @@ fn egui_appliance_cert_section(ui: &mut egui::Ui, app: &mut BrowserApp) {
 
 /// Convert a captured Servo frame (`0x00RRGGBB` packed pixels) into an egui
 /// `ColorImage` for upload as a texture. Defends the `len == w*h` invariant.
-#[cfg(all(target_os = "windows", feature = "servo-backend", feature = "xilem-shell"))]
+#[cfg(all(
+    target_os = "windows",
+    feature = "servo-backend",
+    feature = "xilem-shell"
+))]
 fn frame_to_color_image(frame: &RenderedFrame) -> egui::ColorImage {
     let width = frame.width as usize;
     let height = frame.height as usize;
@@ -8709,7 +8743,11 @@ fn frame_to_color_image(frame: &RenderedFrame) -> egui::ColorImage {
 
 /// Cheap content hash (FNV-1a over packed pixels + dims) so the viewport texture
 /// is re-uploaded only when the captured frame actually changes.
-#[cfg(all(target_os = "windows", feature = "servo-backend", feature = "xilem-shell"))]
+#[cfg(all(
+    target_os = "windows",
+    feature = "servo-backend",
+    feature = "xilem-shell"
+))]
 fn frame_fingerprint(frame: &RenderedFrame) -> u64 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for &packed in &frame.pixels {
@@ -8721,7 +8759,11 @@ fn frame_fingerprint(frame: &RenderedFrame) -> u64 {
 }
 
 /// Map an egui `Key` to the engine's `BrowserKey` for viewport key forwarding.
-#[cfg(all(target_os = "windows", feature = "servo-backend", feature = "xilem-shell"))]
+#[cfg(all(
+    target_os = "windows",
+    feature = "servo-backend",
+    feature = "xilem-shell"
+))]
 fn browser_key_from_egui(key: egui::Key) -> Option<BrowserKey> {
     Some(match key {
         egui::Key::Enter => BrowserKey::Enter,
@@ -8742,7 +8784,11 @@ fn browser_key_from_egui(key: egui::Key) -> Option<BrowserKey> {
 /// viewport pixels (the captured frame size) so it is independent of the on-screen
 /// display scale / aspect-fit. Keyboard is forwarded only while the viewport image
 /// holds egui focus, so it never steals input from the address / Wake text fields.
-#[cfg(all(target_os = "windows", feature = "servo-backend", feature = "xilem-shell"))]
+#[cfg(all(
+    target_os = "windows",
+    feature = "servo-backend",
+    feature = "xilem-shell"
+))]
 fn forward_egui_viewport_input(
     ui: &egui::Ui,
     app: &mut BrowserApp,
@@ -8760,7 +8806,10 @@ fn forward_egui_viewport_input(
     };
 
     // Pointer movement (hover or drag), throttled by the shared move limiter.
-    if let Some(pos) = response.hover_pos().or_else(|| response.interact_pointer_pos()) {
+    if let Some(pos) = response
+        .hover_pos()
+        .or_else(|| response.interact_pointer_pos())
+    {
         let (x, y) = to_frame(pos);
         app.forward_browser_mouse_move(x, y, false);
     }
@@ -8770,7 +8819,11 @@ fn forward_egui_viewport_input(
         if let Some(pos) = response.interact_pointer_pos() {
             let (x, y) = to_frame(pos);
             app.forward_browser_mouse_move(x, y, true);
-            app.queue_viewport_input(ViewportInputEvent::MouseButton { x, y, pressed: true });
+            app.queue_viewport_input(ViewportInputEvent::MouseButton {
+                x,
+                y,
+                pressed: true,
+            });
             if response.clicked() {
                 app.queue_viewport_input(ViewportInputEvent::MouseButton {
                     x,
@@ -8826,7 +8879,11 @@ fn forward_egui_viewport_input(
     }
 }
 
-#[cfg(all(target_os = "windows", feature = "servo-backend", feature = "xilem-shell"))]
+#[cfg(all(
+    target_os = "windows",
+    feature = "servo-backend",
+    feature = "xilem-shell"
+))]
 fn draw_egui_bridge(
     ctx: &egui::Context,
     app: &mut BrowserApp,
@@ -8859,8 +8916,7 @@ fn draw_egui_bridge(
         // Row 2: full-width address/intent bar + RUN.
         ui.horizontal(|ui| {
             let button_w = 56.0;
-            let field_w =
-                (ui.available_width() - button_w - ui.spacing().item_spacing.x).max(80.0);
+            let field_w = (ui.available_width() - button_w - ui.spacing().item_spacing.x).max(80.0);
             let resp = ui.add(
                 egui::TextEdit::singleline(&mut app.address_input)
                     .desired_width(field_w)
@@ -8901,7 +8957,11 @@ fn draw_egui_bridge(
         .show(ctx, |ui| {
             ui.add_space(4.0);
             ui.label(RichText::new("MAYA SIDECAR").color(dim).small());
-            let status_label = app.pilot_status.trim_start_matches("PILOT ").trim().to_string();
+            let status_label = app
+                .pilot_status
+                .trim_start_matches("PILOT ")
+                .trim()
+                .to_string();
             ui.label(
                 RichText::new(format!("\u{25CF} {status_label}"))
                     .color(rgb32(pilot_status_color(&app.pilot_status))),
@@ -8984,7 +9044,11 @@ fn draw_egui_bridge(
                 "WAKE",
                 &app.wake_results.len().to_string(),
                 "SEARCH HITS",
-                if app.wake_results.is_empty() { dim } else { green },
+                if app.wake_results.is_empty() {
+                    dim
+                } else {
+                    green
+                },
             );
             egui_metric_card(ui, "PAGE", page, "DISTILL STATUS", cyan);
         });
@@ -8995,7 +9059,11 @@ fn draw_egui_bridge(
     });
 }
 
-#[cfg(all(target_os = "windows", feature = "servo-backend", feature = "xilem-shell"))]
+#[cfg(all(
+    target_os = "windows",
+    feature = "servo-backend",
+    feature = "xilem-shell"
+))]
 fn poll_egui_bridge_lanes(app: &mut BrowserApp) -> bool {
     let mut changed = false;
     changed |= app.collect_pending_navigation().is_some();
@@ -9018,7 +9086,11 @@ fn poll_egui_bridge_lanes(app: &mut BrowserApp) -> bool {
     changed
 }
 
-#[cfg(all(target_os = "windows", feature = "servo-backend", feature = "xilem-shell"))]
+#[cfg(all(
+    target_os = "windows",
+    feature = "servo-backend",
+    feature = "xilem-shell"
+))]
 fn egui_bridge_has_pending_async(app: &BrowserApp) -> bool {
     app.pending_navigation.is_some()
         || app.pending_distillation.is_some()
@@ -9034,7 +9106,11 @@ fn egui_bridge_has_pending_async(app: &BrowserApp) -> bool {
 
 /// Experimental egui bridge shell entry (`SEXTANT_EGUI_BRIDGE=1`). Reuses the
 /// production egui+softbuffer chrome path so it renders on this GPU-less host.
-#[cfg(all(target_os = "windows", feature = "servo-backend", feature = "xilem-shell"))]
+#[cfg(all(
+    target_os = "windows",
+    feature = "servo-backend",
+    feature = "xilem-shell"
+))]
 fn run_visible_app_egui(browser_mode: BrowserMode) -> Result<(), String> {
     let event_loop =
         EventLoop::new().map_err(|error| format!("event loop initialization failed: {error}"))?;
