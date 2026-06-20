@@ -8,48 +8,44 @@ on:
   workflow_dispatch:
 
 jobs:
-  # Fast gate: the whole workspace built WITHOUT default features, so it never
-  # pulls the heavy Servo git dependency. Covers the 15 portable crates plus the
-  # hull's reader/fallback path, gated on formatting with an advisory clippy pass.
-  # This is the lane that must stay green on every push/PR.
+  # Fast gate on the lx-ws02 self-hosted runner (openSUSE, Rust 1.96 + rustfmt +
+  # clippy preinstalled). Builds the whole workspace WITHOUT default features so
+  # it never pulls the heavy Servo git dependency. The runner has no Node, so we
+  # check out manually with git instead of actions/checkout.
   fast-linux:
-    runs-on: ubuntu-latest
-    container:
-      image: rust:1.89-bookworm
+    runs-on: lx-ws02
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Add rustfmt + clippy
-        run: rustup component add rustfmt clippy
+      - name: Checkout (manual; host runner has no Node)
+        env:
+          TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          WORK="${RUNNER_TEMP:-/tmp}/sextant-${GITHUB_SHA}"
+          rm -rf "$WORK"
+          git clone --no-tags "https://${TOKEN}@gitea.w-sky.net/${GITHUB_REPOSITORY}.git" "$WORK"
+          git -C "$WORK" fetch --no-tags origin "$GITHUB_SHA" || true
+          git -C "$WORK" checkout --quiet "$GITHUB_SHA"
+          echo "WORK=$WORK" >> "$GITHUB_ENV"
+          echo "PATH=$HOME/.cargo/bin:$PATH" >> "$GITHUB_ENV"
 
       - name: Format
-        working-directory: rust
+        working-directory: ${{ env.WORK }}/rust
         run: cargo fmt --all --check
 
       - name: Check (no default features)
-        working-directory: rust
+        working-directory: ${{ env.WORK }}/rust
         run: cargo check --workspace --no-default-features --locked
 
       - name: Test (no default features)
-        working-directory: rust
+        working-directory: ${{ env.WORK }}/rust
         run: cargo test --workspace --no-default-features --locked
 
       - name: Clippy (advisory)
-        working-directory: rust
+        working-directory: ${{ env.WORK }}/rust
         run: cargo clippy --workspace --no-default-features
 
-  # Product gate: build the Servo-backed sextant-browser as it actually ships.
-  # Requires a self-hosted Windows runner with the MSVC toolchain and Servo build
-  # prerequisites; rust/.cargo/config.toml supplies the linker + INCLUDE/LIB env.
-  # The first run compiles Servo (slow); keep the runner's target/ cache warm so
-  # later runs are incremental. Adjust `runs-on` to match your runner's labels.
-  windows-product:
-    runs-on: [self-hosted, windows]
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Check sextant-browser (default features, Servo)
-        working-directory: rust
-        run: cargo check -p sextant-hull --bin sextant-browser --locked
+  # NOTE: the Servo-backed product build (sextant-browser, default features) is
+  # intentionally not gated here yet. lx-ws02 is Linux so it can't build the
+  # Windows product, and the earlier self-hosted Windows job was failing. Options
+  # for later: a heavy Linux servo-backend build on lx-ws02, or a fixed Windows
+  # runner. Tracked separately.
