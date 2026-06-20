@@ -163,7 +163,7 @@ impl CitadelVault {
             description: description.to_string(),
             created_at: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_secs(),
         };
         self.personas.insert(id, persona.clone());
@@ -284,7 +284,7 @@ impl CitadelVault {
             derivation_path: path.to_string(),
             created_at: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_secs(),
         };
 
