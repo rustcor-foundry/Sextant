@@ -514,6 +514,24 @@ fn parse_model_plan(intent: &str, response: &str) -> Result<Vec<PilotAction>, St
         }
     }
 
+    // Deterministic consent floor: a model-authored plan must not run a
+    // sensitive intent without a Captain's Key gate, even when the model omits
+    // request_consent. Inject the gate before any side-effecting action so it is
+    // enforced in code rather than left to the model's cooperation.
+    if !plan.is_empty()
+        && intent_needs_consent(intent)
+        && !plan
+            .iter()
+            .any(|action| matches!(action, PilotAction::RequestConsent(_)))
+    {
+        plan.insert(
+            0,
+            PilotAction::RequestConsent(
+                "Authorize the sensitive action with the Captain's Key?".to_string(),
+            ),
+        );
+    }
+
     if plan.is_empty() {
         Ok(fallback_plan(intent))
     } else {
@@ -706,6 +724,47 @@ impl PilotBrain for LocalBrain {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn model_plan_without_consent_is_gated_for_sensitive_intent() {
+        // The model returns a side-effecting plan but omits request_consent for a
+        // clearly sensitive intent; the deterministic floor must inject the gate.
+        let intent = "buy a laptop at https://shop.example and checkout";
+        let model_json = r#"{"actions":[{"action":"navigate","url":"https://shop.example"}]}"#;
+        let plan = parse_model_plan(intent, model_json).expect("plan parses");
+        assert!(
+            matches!(plan.first(), Some(PilotAction::RequestConsent(_))),
+            "sensitive intent must be consent-gated before any action, got {:?}",
+            plan
+        );
+    }
+
+    #[test]
+    fn model_plan_keeps_single_consent_when_model_already_gates() {
+        let intent = "buy a laptop and checkout";
+        let model_json = r#"{"actions":[{"action":"request_consent","message":"ok?"},{"action":"navigate","url":"https://shop.example"}]}"#;
+        let plan = parse_model_plan(intent, model_json).expect("plan parses");
+        let consent_count = plan
+            .iter()
+            .filter(|action| matches!(action, PilotAction::RequestConsent(_)))
+            .count();
+        assert_eq!(consent_count, 1, "must not add a second gate, got {:?}", plan);
+    }
+
+    #[test]
+    fn model_plan_safe_intent_is_not_gated() {
+        let intent = "open example.com and summarize the page";
+        let model_json =
+            r#"{"actions":[{"action":"navigate","url":"https://example.com"},{"action":"distill"}]}"#;
+        let plan = parse_model_plan(intent, model_json).expect("plan parses");
+        assert!(
+            !plan
+                .iter()
+                .any(|action| matches!(action, PilotAction::RequestConsent(_))),
+            "safe intent must not be consent-gated, got {:?}",
+            plan
+        );
+    }
     use sextant_log::CaptainsLog;
     use sextant_wake::DigitalWake;
 
