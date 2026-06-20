@@ -15652,7 +15652,8 @@ mod tests {
 
     #[test]
     fn local_appliance_tls_override_is_limited_to_local_targets() {
-        let private = Url::parse("https://192.0.2.130:8080/app").expect("private URL should parse");
+        let private =
+            Url::parse("https://192.168.2.130:8080/app").expect("private URL should parse");
         let localhost = Url::parse("https://localhost:8443").expect("local URL should parse");
         let mdns = Url::parse("https://pylon.local:8443").expect("local URL should parse");
         let public = Url::parse("https://example.com").expect("public URL should parse");
