@@ -61,6 +61,7 @@ mod direct_servo;
 const BG: u32 = 0x0010161d;
 /// Background under the egui chrome strip (matches the panel frame fill); only
 /// visible in sub-pixel gaps since egui paints its own panel background.
+#[cfg(all(target_os = "windows", feature = "servo-backend"))]
 const CHROME_BG: u32 = 0x000b131a;
 #[cfg(any(feature = "xilem-shell", feature = "servo-backend"))]
 const APPLIANCE_CERT_TRUST_FILE: &str = "appliance-cert-trust.json";
@@ -9224,6 +9225,7 @@ fn run_visible_app_egui(browser_mode: BrowserMode) -> Result<(), String> {
     event_loop_result.map_err(|error| format!("egui bridge event loop failed: {error}"))
 }
 
+#[cfg(all(target_os = "windows", feature = "servo-backend"))]
 fn run_hosted_direct_app_egui(
     startup_input: Option<String>,
     browser_mode: BrowserMode,
@@ -18107,7 +18109,8 @@ fn proof_report_title(report: &[String]) -> &'static str {
 /// Quick-intent presets (Xilem dashboard salvage: the intent-bar preset buttons).
 /// Shown in the AI rail's consent band when no consent is pending and the mode
 /// allows native intents; clicking runs the intent through the local model brain.
-#[cfg(feature = "xilem-shell")]
+/// Always compiled (label data) so the softbuffer reader shell builds without the
+/// `xilem-shell` feature; the click path that runs an intent stays feature-gated.
 const AI_RAIL_PRESETS: [(&str, &str); 2] = [
     (
         "SUMMARIZE",
