@@ -47,8 +47,35 @@ jobs:
           cargo test --workspace --no-default-features --locked
           cargo clippy --workspace --no-default-features
 
-  # NOTE: the Servo-backed product build (sextant-browser, default features) is
-  # intentionally not gated here yet. lx-ws02 is Linux so it can't build the
-  # Windows product, and the earlier self-hosted Windows job was failing. Options
-  # for later: a heavy Linux servo-backend build on lx-ws02, or a fixed Windows
-  # runner. Tracked separately.
+  # Product gate: the Servo-backed sextant-browser as it ships (default features),
+  # on the ws-ws01 Windows runner (MSVC + Servo toolchain). Heavy Servo build, so
+  # it runs on push/dispatch only (not every PR). Manual git checkout + sibling
+  # clone like fast-linux; a persistent CARGO_TARGET_DIR builds Servo once then
+  # incrementally. Earlier this job died in 15s on the same missing-distill issue.
+  windows-product:
+    runs-on: windows
+    if: github.event_name != 'pull_request'
+    steps:
+      - name: Checkout + check sextant-browser (default features, Servo)
+        shell: pwsh
+        env:
+          TOKEN: ${{ github.token }}
+          WSKY_TOKEN: ${{ secrets.WSKY_TOKEN }}
+          CARGO_TARGET_DIR: C:\gitea-runner\cache\sextant-target
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
+
+          $base = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { $env:TEMP }
+          $work = Join-Path $base "sextant-$($env:GITHUB_SHA)"
+          if (Test-Path $work) { Remove-Item -Recurse -Force $work }
+          git clone --no-tags "https://$($env:TOKEN)@gitea.w-sky.net/$($env:GITHUB_REPOSITORY).git" $work
+          git -C $work checkout --quiet $env:GITHUB_SHA
+
+          $sibling = Join-Path $base 'wsky-distiller'
+          if (Test-Path $sibling) { Remove-Item -Recurse -Force $sibling }
+          git clone --depth 1 --no-tags "https://$($env:WSKY_TOKEN)@gitea.w-sky.net/rustcor/wsky-distiller.git" $sibling
+
+          Set-Location "$work\rust"
+          cargo check -p sextant-hull --bin sextant-browser --locked
