@@ -354,7 +354,7 @@ fn plan_prompt(intent: &str, context: &[sextant_wake::WakeEntry]) -> String {
          Return JSON only, with this exact shape:\n\
          {{\"actions\":[{{\"action\":\"navigate\",\"url\":\"https://example.com\"}},{{\"action\":\"distill\"}},{{\"action\":\"analyze\",\"message\":\"short summary\"}}]}}\n\
          Allowed action values: navigate, distill, perceive, perceive_multimodal, request_consent, analyze, open_tab, switch_tab, close_tab.\n\
-         Include request_consent for destructive, purchasing, signing, or account-changing actions.\n\
+         Include request_consent for destructive, purchasing, signing, or account-changing actions, and for any navigation to a checkout, payment, billing, money-transfer, or account-deletion endpoint.\n\
          Prefer direct navigation when the intent clearly names a site or URL.\n\
          Wake context:\n{}\n\
          User intent: {}",
@@ -427,10 +427,68 @@ fn intent_needs_consent(intent: &str) -> bool {
     .any(|needle| lowered.contains(needle))
 }
 
+/// True if a planned navigation target is inherently sensitive — a checkout,
+/// payment, billing, money-movement, account-deletion, or signing endpoint —
+/// judged from the URL host/path/query alone. This is the action-class half of
+/// the consent floor: keyword matching on the user's phrasing misses plans
+/// whose intent reads innocuously ("finalize my order") but whose actions land
+/// on a side-effecting endpoint. We bias toward asking — a few extra gates on
+/// order/billing pages are acceptable in a sovereign browser; a missed gate on
+/// a real purchase is not.
+fn navigation_is_sensitive(url: &Url) -> bool {
+    let host = url.host_str().unwrap_or("").to_ascii_lowercase();
+    let path = url.path().to_ascii_lowercase();
+    let query = url.query().unwrap_or("").to_ascii_lowercase();
+    let haystack = format!("{host}{path}?{query}");
+    const SENSITIVE_MARKERS: [&str; 17] = [
+        "checkout",
+        "place-order",
+        "placeorder",
+        "payment",
+        "billing",
+        "purchase",
+        "/transfer",
+        "withdraw",
+        "/wire",
+        "send-money",
+        "sendmoney",
+        "delete-account",
+        "deleteaccount",
+        "close-account",
+        "closeaccount",
+        "docusign",
+        "/esign",
+    ];
+    SENSITIVE_MARKERS
+        .iter()
+        .any(|marker| haystack.contains(marker))
+}
+
+/// True if a single planned action is inherently sensitive regardless of how the
+/// intent was phrased. Today only navigation-class actions carry a target we can
+/// classify; other action variants are never sensitive on their own.
+fn action_needs_consent(action: &PilotAction) -> bool {
+    match action {
+        PilotAction::Navigate(url) | PilotAction::OpenTab(url) => navigation_is_sensitive(url),
+        _ => false,
+    }
+}
+
+/// The consent floor: a plan must be gated when the intent reads as sensitive OR
+/// when any concrete action in it is sensitive. Combining both signals means a
+/// reworded intent can no longer slip a side-effecting plan past the gate.
+fn plan_needs_consent(intent: &str, plan: &[PilotAction]) -> bool {
+    intent_needs_consent(intent) || plan.iter().any(action_needs_consent)
+}
+
 fn fallback_plan(intent: &str) -> Vec<PilotAction> {
     let mut actions = Vec::new();
 
-    if intent_needs_consent(intent) {
+    let target_url = first_url_in_text(intent).unwrap_or_else(|| search_url(intent));
+
+    // Gate on either signal: a sensitive-sounding intent, or a benign-sounding
+    // one that nonetheless resolves to a sensitive navigation target.
+    if intent_needs_consent(intent) || navigation_is_sensitive(&target_url) {
         actions.push(PilotAction::Analyze(
             "Deterministic policy triggered consent gating for a sensitive action.".to_string(),
         ));
@@ -440,7 +498,6 @@ fn fallback_plan(intent: &str) -> Vec<PilotAction> {
         return actions;
     }
 
-    let target_url = first_url_in_text(intent).unwrap_or_else(|| search_url(intent));
     actions.push(PilotAction::Navigate(target_url.clone()));
     actions.push(PilotAction::Distill);
     actions.push(PilotAction::Analyze(format!(
@@ -515,11 +572,12 @@ fn parse_model_plan(intent: &str, response: &str) -> Result<Vec<PilotAction>, St
     }
 
     // Deterministic consent floor: a model-authored plan must not run a
-    // sensitive intent without a Captain's Key gate, even when the model omits
-    // request_consent. Inject the gate before any side-effecting action so it is
-    // enforced in code rather than left to the model's cooperation.
+    // sensitive intent OR a sensitive action without a Captain's Key gate, even
+    // when the model omits request_consent. Inject the gate before any
+    // side-effecting action so it is enforced in code rather than left to the
+    // model's cooperation.
     if !plan.is_empty()
-        && intent_needs_consent(intent)
+        && plan_needs_consent(intent, &plan)
         && !plan
             .iter()
             .any(|action| matches!(action, PilotAction::RequestConsent(_)))
@@ -765,6 +823,56 @@ mod tests {
                 .iter()
                 .any(|action| matches!(action, PilotAction::RequestConsent(_))),
             "safe intent must not be consent-gated, got {:?}",
+            plan
+        );
+    }
+
+    #[test]
+    fn model_plan_with_checkout_navigation_is_gated_despite_innocuous_intent() {
+        // Phrasing carries no consent keyword, but the plan navigates to a
+        // checkout endpoint: the action-class floor must gate it and keep the
+        // navigation so consent resumes into the real action.
+        let intent = "finalize my order";
+        let model_json =
+            r#"{"actions":[{"action":"navigate","url":"https://shop.example/checkout"}]}"#;
+        let plan = parse_model_plan(intent, model_json).expect("plan parses");
+        assert!(
+            matches!(plan.first(), Some(PilotAction::RequestConsent(_))),
+            "checkout navigation must be consent-gated regardless of phrasing, got {:?}",
+            plan
+        );
+        assert!(
+            plan.iter()
+                .any(|action| matches!(action, PilotAction::Navigate(_))),
+            "the gated navigation must be preserved after consent, got {:?}",
+            plan
+        );
+    }
+
+    #[test]
+    fn model_plan_with_benign_navigation_is_not_gated() {
+        // An ordinary article URL is not an action-class trigger.
+        let intent = "read the latest article";
+        let model_json = r#"{"actions":[{"action":"navigate","url":"https://news.example/articles/today"},{"action":"distill"}]}"#;
+        let plan = parse_model_plan(intent, model_json).expect("plan parses");
+        assert!(
+            !plan
+                .iter()
+                .any(|action| matches!(action, PilotAction::RequestConsent(_))),
+            "benign navigation must not be consent-gated, got {:?}",
+            plan
+        );
+    }
+
+    #[test]
+    fn fallback_plan_gates_sensitive_navigation_target() {
+        // No consent keyword in the intent, but the resolved URL is a payment
+        // endpoint, so the fallback planner must gate it too.
+        let plan = fallback_plan("https://store.example/payment/confirm");
+        assert!(
+            plan.iter()
+                .any(|action| matches!(action, PilotAction::RequestConsent(_))),
+            "sensitive fallback target must be consent-gated, got {:?}",
             plan
         );
     }
