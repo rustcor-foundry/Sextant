@@ -3122,22 +3122,29 @@ pub(crate) fn draw_char(
     color: u32,
     scale: u32,
 ) {
+    // Write each lit glyph bit's scale×scale block straight into the buffer
+    // instead of calling fill_rect per bit. The clamped span is identical to
+    // fill_rect's ([x0,max_x) × [y0,max_y)); we just hoist the per-row y-range
+    // and skip the function call — text is the hottest thing the renderer does.
     let glyph = glyph(ch);
-    for (row, bits) in glyph.iter().enumerate() {
-        for col in 0..5 {
-            if bits & (1 << (4 - col)) != 0 {
-                fill_rect(
-                    buffer,
-                    width,
-                    height,
-                    Rect {
-                        x: x + col * scale,
-                        y: y + row as u32 * scale,
-                        w: scale,
-                        h: scale,
-                    },
-                    color,
-                );
+    let stride = width as usize;
+    for (row, &bits) in glyph.iter().enumerate() {
+        if bits == 0 {
+            continue;
+        }
+        let py = y + row as u32 * scale;
+        let y_start = py.min(height);
+        let y_end = py.saturating_add(scale).min(height);
+        for col in 0..5u32 {
+            if bits & (1 << (4 - col)) == 0 {
+                continue;
+            }
+            let px = x + col * scale;
+            let x_start = px.min(width) as usize;
+            let x_end = px.saturating_add(scale).min(width) as usize;
+            for yy in y_start..y_end {
+                let base = yy as usize * stride;
+                buffer[base + x_start..base + x_end].fill(color);
             }
         }
     }
@@ -3154,30 +3161,35 @@ pub(crate) fn draw_char_clipped(
     color: u32,
     scale: u32,
 ) {
+    // Same inline fill as draw_char, keeping the existing clip semantics: only
+    // the block's top-left pixel is tested against `clip` (the scale×scale block
+    // itself is clamped to the buffer, not to clip — unchanged behavior).
     let glyph = glyph(ch);
-    for (row, bits) in glyph.iter().enumerate() {
+    let stride = width as usize;
+    for (row, &bits) in glyph.iter().enumerate() {
+        if bits == 0 {
+            continue;
+        }
         let pixel_y = y + row as i32 * scale as i32;
         if pixel_y < clip.y as i32 || pixel_y >= (clip.y + clip.h) as i32 {
             continue;
         }
-        for col in 0..5 {
+        let py = pixel_y as u32;
+        let y_start = py.min(height);
+        let y_end = py.saturating_add(scale).min(height);
+        for col in 0..5u32 {
+            if bits & (1 << (4 - col)) == 0 {
+                continue;
+            }
             let pixel_x = x + col * scale;
             if pixel_x < clip.x || pixel_x >= clip.x.saturating_add(clip.w) {
                 continue;
             }
-            if bits & (1 << (4 - col)) != 0 {
-                fill_rect(
-                    buffer,
-                    width,
-                    height,
-                    Rect {
-                        x: pixel_x,
-                        y: pixel_y as u32,
-                        w: scale,
-                        h: scale,
-                    },
-                    color,
-                );
+            let x_start = pixel_x.min(width) as usize;
+            let x_end = pixel_x.saturating_add(scale).min(width) as usize;
+            for yy in y_start..y_end {
+                let base = yy as usize * stride;
+                buffer[base + x_start..base + x_end].fill(color);
             }
         }
     }

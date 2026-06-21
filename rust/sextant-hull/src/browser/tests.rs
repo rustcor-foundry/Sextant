@@ -2157,3 +2157,57 @@ fn perception_summary_classifies_interactive_pages() {
     assert!(page_perception_summary(&page).contains("interactive form page"));
     assert_eq!(semantic_counts(&page).inputs, 1);
 }
+
+#[test]
+fn draw_char_writes_exact_glyph_bitmap() {
+    // The optimized draw_char must paint precisely the 5x7 glyph bitmap: lit
+    // bits -> foreground, every other pixel untouched. Verified at scale 1 and
+    // scale 2 (each lit bit becomes a scale x scale block).
+    const BG: u32 = 0x0000_0000;
+    const FG: u32 = 0x00ff_ffff;
+
+    for ch in ['A', 'Z', '0', '8', 'M', '/', '.', ' '] {
+        let glyph = glyph(ch);
+
+        // scale 1 into an 8x8 buffer at the origin.
+        let mut buf = vec![BG; 8 * 8];
+        draw_char(&mut buf, 8, 8, 0, 0, ch, FG, 1);
+        for row in 0..7usize {
+            for col in 0..5u32 {
+                let lit = glyph[row] & (1 << (4 - col)) != 0;
+                let got = buf[row * 8 + col as usize];
+                assert_eq!(
+                    got,
+                    if lit { FG } else { BG },
+                    "scale1 {ch:?} row {row} col {col} (lit={lit})"
+                );
+            }
+        }
+        // No stray pixels outside the 5-wide glyph (column 5..8 stays bg).
+        for row in 0..7usize {
+            for col in 5..8usize {
+                assert_eq!(buf[row * 8 + col], BG, "scale1 {ch:?} stray at col {col}");
+            }
+        }
+
+        // scale 2 into a 16x16 buffer: each lit bit -> a 2x2 block.
+        let mut buf2 = vec![BG; 16 * 16];
+        draw_char(&mut buf2, 16, 16, 0, 0, ch, FG, 2);
+        for row in 0..7usize {
+            for col in 0..5u32 {
+                let lit = glyph[row] & (1 << (4 - col)) != 0;
+                for dy in 0..2u32 {
+                    for dx in 0..2u32 {
+                        let y = row as u32 * 2 + dy;
+                        let x = col * 2 + dx;
+                        assert_eq!(
+                            buf2[(y * 16 + x) as usize],
+                            if lit { FG } else { BG },
+                            "scale2 {ch:?} row {row} col {col} block ({dx},{dy})"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
