@@ -18,6 +18,7 @@ use uuid::Uuid;
 use winit::dpi::PhysicalSize;
 use winit::event::{ElementState, Event, MouseButton, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoopBuilder};
+use winit::keyboard::Key;
 use winit::window::WindowBuilder;
 
 /// Wakes the winit loop for tray/menu activity (the tray runs its own hidden
@@ -1630,10 +1631,25 @@ fn run_visible_app(
                 WindowEvent::ModifiersChanged(modifiers) => {
                     app.modifiers = modifiers.state();
                 }
-                WindowEvent::KeyboardInput { event, .. } => {
-                    app.handle_key(event);
-                    app.update_title(&window);
-                    window.request_redraw();
+                WindowEvent::KeyboardInput { event: key_event, .. } => {
+                    // Ctrl+Q is a guaranteed quit from the visible window. The
+                    // tray's native context menu can be unreliable on Windows
+                    // Server / RDP (a background SetForegroundWindow is
+                    // restricted there), so always offer a keyboard exit.
+                    let quit_chord = key_event.state == ElementState::Pressed
+                        && app.modifiers.control_key()
+                        && matches!(
+                            &key_event.logical_key,
+                            Key::Character(c) if c.eq_ignore_ascii_case("q")
+                        );
+                    if quit_chord {
+                        app.cleanup_incognito_storage();
+                        elwt.exit();
+                    } else {
+                        app.handle_key(key_event);
+                        app.update_title(&window);
+                        window.request_redraw();
+                    }
                 }
                 WindowEvent::MouseInput {
                     state,
@@ -1765,10 +1781,21 @@ fn run_visible_app(
                 }
             }
             Event::UserEvent(SextantEvent::TrayIcon(tray_event)) => {
-                if matches!(
+                // Left-click (or double-click) restores the window; right-click
+                // is left to the native context menu on platforms that support
+                // it. Quit is the menu's "Quit Sextant" or Ctrl+Q in the window.
+                let restore = matches!(
                     tray_event,
-                    TrayIconEvent::Click { .. } | TrayIconEvent::DoubleClick { .. }
-                ) {
+                    TrayIconEvent::Click {
+                        button: tray_icon::MouseButton::Left,
+                        button_state: tray_icon::MouseButtonState::Up,
+                        ..
+                    } | TrayIconEvent::DoubleClick {
+                        button: tray_icon::MouseButton::Left,
+                        ..
+                    }
+                );
+                if restore {
                     window.set_visible(true);
                     window.focus_window();
                     window.request_redraw();
