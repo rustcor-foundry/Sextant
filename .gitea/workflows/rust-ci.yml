@@ -12,20 +12,33 @@ jobs:
   # clippy preinstalled). Whole workspace WITHOUT default features so it never
   # pulls the heavy Servo git dependency. One run step (no Node-based
   # actions/checkout): manual git checkout, then fmt / check / test / clippy.
+  #
+  # sextant-engine path-depends on ../../../wsky-distiller/distill (a sibling
+  # repo, rustcor/wsky-distiller), so we clone that next to the workspace first
+  # or cargo metadata can't resolve the workspace. WSKY_TOKEN is a Gitea Actions
+  # secret with read access to rustcor/wsky-distiller (the auto github.token is
+  # scoped to this repo only).
   fast-linux:
     runs-on: lx-ws02
     steps:
       - name: Checkout + fmt + check + test + clippy
         env:
           TOKEN: ${{ github.token }}
+          WSKY_TOKEN: ${{ secrets.WSKY_TOKEN }}
         run: |
           set -euo pipefail
           export PATH="$HOME/.cargo/bin:$PATH"
+
           WORK="${RUNNER_TEMP:-/tmp}/sextant-${GITHUB_SHA}"
           rm -rf "$WORK"
           git clone --no-tags "https://${TOKEN}@gitea.w-sky.net/${GITHUB_REPOSITORY}.git" "$WORK"
           git -C "$WORK" fetch --no-tags origin "$GITHUB_SHA" || true
           git -C "$WORK" checkout --quiet "$GITHUB_SHA"
+
+          DISTILLER="${RUNNER_TEMP:-/tmp}/wsky-distiller"
+          rm -rf "$DISTILLER"
+          git clone --depth 1 --no-tags "https://${WSKY_TOKEN}@gitea.w-sky.net/rustcor/wsky-distiller.git" "$DISTILLER"
+
           cd "$WORK/rust"
           cargo fmt --all --check
           cargo check --workspace --no-default-features --locked
