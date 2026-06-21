@@ -1572,6 +1572,19 @@ fn run_visible_app(
     // instant reopen; the tray menu's Quit is the only full exit. Tray and menu
     // events are forwarded onto the winit loop via the user-event proxy so a
     // click wakes the loop even while idle (ControlFlow::Wait).
+    //
+    // Register the handlers BEFORE building the tray: tray-icon/muda stash the
+    // handler in a OnceCell, and the first event sent (which can fire as soon as
+    // the icon exists) initializes that cell. Setting the handler afterwards
+    // would be a silent no-op and every click would be dropped.
+    let tray_proxy = event_loop.create_proxy();
+    let menu_proxy = event_loop.create_proxy();
+    TrayIconEvent::set_event_handler(Some(move |event| {
+        let _ = tray_proxy.send_event(SextantEvent::TrayIcon(event));
+    }));
+    MenuEvent::set_event_handler(Some(move |event| {
+        let _ = menu_proxy.send_event(SextantEvent::TrayMenu(event));
+    }));
     let tray_menu = Menu::new();
     let show_item = MenuItem::new("Show Sextant", true, None);
     let quit_item = MenuItem::new("Quit Sextant", true, None);
@@ -1591,14 +1604,6 @@ fn run_visible_app(
                     .build()
                     .ok()
             });
-    let tray_proxy = event_loop.create_proxy();
-    let menu_proxy = event_loop.create_proxy();
-    TrayIconEvent::set_event_handler(Some(move |event| {
-        let _ = tray_proxy.send_event(SextantEvent::TrayIcon(event));
-    }));
-    MenuEvent::set_event_handler(Some(move |event| {
-        let _ = menu_proxy.send_event(SextantEvent::TrayMenu(event));
-    }));
 
     let event_loop_result = event_loop
         .run(move |event, elwt| match event {
