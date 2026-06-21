@@ -58,73 +58,12 @@ use windows_sys::Win32::{
 #[cfg(feature = "servo-backend")]
 mod direct_servo;
 
-const BG: u32 = 0x0010161d;
-/// Background under the egui chrome strip (matches the panel frame fill); only
-/// visible in sub-pixel gaps since egui paints its own panel background.
-#[cfg(all(target_os = "windows", feature = "servo-backend"))]
-const CHROME_BG: u32 = 0x000b131a;
-#[cfg(any(feature = "xilem-shell", feature = "servo-backend"))]
-const APPLIANCE_CERT_TRUST_FILE: &str = "appliance-cert-trust.json";
-const GUARD_CERT_SECTION_Y: u32 = 250;
-#[cfg(any(feature = "xilem-shell", feature = "servo-backend"))]
-const GUARD_CERT_ROW_H: u32 = 42;
-const PANEL: u32 = 0x0019232c;
-const PANEL_ALT: u32 = 0x00202b35;
-const PANEL_DARK: u32 = 0x000b1016;
-const PANEL_HEADER: u32 = 0x00131d26;
-const PANEL_SOFT: u32 = 0x00162028;
-const FIELD: u32 = 0x000d1319;
-const FIELD_FOCUS: u32 = 0x00172229;
-const BUTTON_HOVER: u32 = 0x004a7488;
-const BUTTON_BRIGHT: u32 = 0x000ec7e8;
-const BUTTON_ACTIVE: u32 = 0x002fbf71;
-const BUTTON_DISABLED: u32 = 0x00212a32;
-const TEXT: u32 = 0x00dce7ef;
-const TEXT_DIM: u32 = 0x0093a4b0;
-const TEXT_SOFT: u32 = 0x00b8c6d2;
-const TEXT_PLACEHOLDER: u32 = 0x006f7f8a;
-const STATUS_OK: u32 = 0x002fbf71;
-const STATUS_WARN: u32 = 0x00d9a441;
-const STATUS_ERROR: u32 = 0x00e0524a;
-// In-progress accent for pilot/runtime status (Xilem dashboard salvage). Reuses
-// the cyan button accent so the bridge stays on its existing palette.
-const STATUS_INFO: u32 = BUTTON_BRIGHT;
-const BORDER: u32 = 0x00313d48;
-const BORDER_SOFT: u32 = 0x0024333d;
-const RAIL_WIDTH: u32 = 320;
-const STATUS_BAR_H: u32 = 30;
-const CHROME_H: u32 = 54;
-const STRIP_H: u32 = 48;
-const TAB_H: u32 = 46;
-const PAGE_TAB_H: u32 = 34;
-const PAGE_TAB_PAGER_W: u32 = 26;
-const MAX_VISIBLE_PAGE_TABS: usize = 6;
-const LOAD_BAR_H: u32 = 5;
-const METRIC_Y: u32 = CHROME_H + STRIP_H + TAB_H + PAGE_TAB_H + 12;
-const METRIC_H: u32 = 76;
-const GLYPH_W: u32 = 5;
-const GLYPH_GAP: u32 = 2;
-const FRAME_REFRESH_IDLE: Duration = Duration::from_millis(1500);
-const FRAME_REFRESH_DIRTY: Duration = Duration::from_millis(250);
-const FRAME_REFRESH_INTERACTION: Duration = Duration::from_millis(48);
-const FRAME_WARMUP_BUDGET: u8 = 6;
-const FRAME_INTERACTION_WARMUP_BUDGET: u8 = 2;
-const VIEWPORT_MOUSE_MOVE_MIN_INTERVAL: Duration = Duration::from_millis(33);
-const VIEWPORT_MOUSE_MOVE_MIN_DISTANCE_PX: f32 = 2.0;
-const VIEWPORT_TEXT_INPUT_DEBOUNCE: Duration = Duration::ZERO;
-const VIEWPORT_INPUT_CAPTURE_SETTLE: Duration = Duration::from_millis(16);
-const WINDOW_INPUT_SMOKE_FRAME_SETTLE: Duration = Duration::from_millis(64);
-const OBSERVATION_WARMUP_IDLE_DELAY: Duration = Duration::from_millis(150);
-const PERF_HISTORY_LIMIT: usize = 24;
-const OPERATOR_DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
-const WINDOW_SMOKE_DEFAULT_TIMEOUT: Duration = Duration::from_secs(15);
-const DIRECT_INCOGNITO_CLEANUP_ARG: &str = "--cleanup-direct-incognito";
-const HOSTED_DIRECT_CHROME_H: u32 = 72;
-const HOSTED_DIRECT_LOG_DIR: &str = "hosted-direct-logs";
-const HOSTED_DIRECT_SUMMARY_REFRESH: Duration = Duration::from_millis(750);
-const HOSTED_DIRECT_DEBUG_TELEMETRY: bool = false;
-const HOSTED_DIRECT_LOG_HEAD_BYTES: u64 = 64 * 1024;
-const HOSTED_DIRECT_LOG_TAIL_BYTES: u64 = 256 * 1024;
+// Palette, layout, and timing constants live in the theme submodule (first cut
+// of the browser.rs split). Glob-imported so existing unqualified references
+// (BG, PANEL, CHROME_H, ...) keep resolving unchanged.
+#[path = "browser/theme.rs"]
+mod theme;
+use theme::*;
 
 #[derive(Clone, Copy, Debug)]
 struct Rect {
