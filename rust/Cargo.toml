@@ -2,6 +2,7 @@
 members = [
     "sextant-vault",
     "sextant-hull",
+    "sextant-browser",
     "sextant-engine",
     "sextant-wake",
     "sextant-pilot",

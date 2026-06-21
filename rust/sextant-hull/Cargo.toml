@@ -45,25 +45,18 @@ servo-backend = [
     "dep:winit30",
 ]
 
+# sextant-hull is now also a library (src/lib.rs): the browser shell. The
+# core-loop bin (sextant-browser) and its lite alias live in the sibling
+# sextant-browser crate, which depends on this lib.
 [[bin]]
 name = "sextant-hull"
 path = "src/main.rs"
 required-features = ["xilem-shell"]
 
 [[bin]]
-name = "sextant-browser"
-path = "src/browser.rs"
-
-[[bin]]
 name = "sextant-servo-direct"
 path = "src/servo_direct.rs"
 required-features = ["servo-backend"]
-
-# Compatibility alias for older scripts while the native browser lane finishes
-# moving off the old "lite" name.
-[[bin]]
-name = "sextant-hull-lite"
-path = "src/lite.rs"
 
 [dependencies]
 xilem = { version = "0.1", optional = true }

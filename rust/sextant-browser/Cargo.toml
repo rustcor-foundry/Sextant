@@ -1,0 +1,30 @@
+[package]
+name = "sextant-browser"
+version = "0.1.0"
+edition = "2021"
+
+# The sextant-browser core loop: `main`, the visible/direct-servo run loops, and
+# the operator-mode watchdog. The browser shell itself is the `sextant-hull`
+# library crate; this crate only drives it. Features forward to the shell.
+[features]
+default = ["xilem-shell", "servo-backend"]
+xilem-shell = ["sextant-hull/xilem-shell"]
+servo-backend = ["sextant-hull/servo-backend"]
+
+[dependencies]
+sextant-hull = { path = "../sextant-hull", default-features = false }
+softbuffer = "0.4"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+url = "2.5"
+uuid = { version = "1.3", features = ["v4", "serde"] }
+winit = "0.29"
+
+[[bin]]
+name = "sextant-browser"
+path = "src/main.rs"
+
+# Compatibility alias kept for older scripts (same binary as sextant-browser).
+[[bin]]
+name = "sextant-hull-lite"
+path = "src/lite.rs"

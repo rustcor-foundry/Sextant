@@ -9483,6 +9483,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "sextant-browser"
+version = "0.1.0"
+dependencies = [
+ "sextant-hull",
+ "softbuffer",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "uuid",
+ "winit 0.29.15",
+]
+
+[[package]]
 name = "sextant-engine"
 version = "0.1.0"
 dependencies = [

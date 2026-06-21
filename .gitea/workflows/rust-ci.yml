@@ -84,4 +84,4 @@ jobs:
           git -C $sibling checkout --quiet c12146d891642b96314715d1223ea59bc95bd524
 
           Set-Location "$work\rust"
-          cargo check -p sextant-hull --bin sextant-browser --locked
+          cargo check -p sextant-browser --bin sextant-browser --locked
