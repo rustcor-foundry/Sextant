@@ -2993,13 +2993,16 @@ pub(crate) fn truncate(value: &str, max_chars: usize) -> String {
 }
 
 pub(crate) fn fill_rect(buffer: &mut [u32], width: u32, height: u32, rect: Rect, color: u32) {
-    let max_x = rect.x.saturating_add(rect.w).min(width);
+    // Clamp the span once (x0 <= max_x always holds) and fill each row with a
+    // slice `fill` so the compiler can emit a memset instead of a per-pixel
+    // store — this is the software-render hot path (panels, backgrounds, and
+    // every glyph blit go through here).
+    let x0 = rect.x.min(width) as usize;
+    let max_x = rect.x.saturating_add(rect.w).min(width) as usize;
     let max_y = rect.y.saturating_add(rect.h).min(height);
     for y in rect.y.min(height)..max_y {
         let row = y as usize * width as usize;
-        for x in rect.x.min(width)..max_x {
-            buffer[row + x as usize] = color;
-        }
+        buffer[row + x0..row + max_x].fill(color);
     }
 }
 
