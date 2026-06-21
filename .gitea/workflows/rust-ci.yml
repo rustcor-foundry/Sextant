@@ -40,7 +40,9 @@ jobs:
           git clone --depth 1 --no-tags "https://${WSKY_TOKEN}@gitea.w-sky.net/rustcor/wsky-distiller.git" "$DISTILLER"
 
           cd "$WORK/rust"
-          cargo fmt --all --check
+          # fmt only the Sextant members; --all would also format the external
+          # distill path dep (wsky-distiller), which we shouldn't gate on here.
+          cargo fmt --check
           cargo check --workspace --no-default-features --locked
           cargo test --workspace --no-default-features --locked
           cargo clippy --workspace --no-default-features
