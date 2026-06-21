@@ -11,12 +11,75 @@ use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
+use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
+use tray_icon::{TrayIconBuilder, TrayIconEvent};
 use url::Url;
 use uuid::Uuid;
 use winit::dpi::PhysicalSize;
 use winit::event::{ElementState, Event, MouseButton, WindowEvent};
-use winit::event_loop::{ControlFlow, EventLoop};
+use winit::event_loop::{ControlFlow, EventLoopBuilder};
 use winit::window::WindowBuilder;
+
+/// Wakes the winit loop for tray/menu activity (the tray runs its own hidden
+/// message window, so we forward its events through an `EventLoopProxy`).
+#[derive(Debug)]
+enum SextantEvent {
+    TrayMenu(MenuEvent),
+    TrayIcon(TrayIconEvent),
+}
+
+// ---- single-instance lifecycle -------------------------------------------
+// A named mutex makes the visible browser single-instance; a second launch
+// focuses the already-running window (restoring it from the tray) and exits.
+
+#[cfg(windows)]
+fn claim_single_instance() -> bool {
+    use windows_sys::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
+    use windows_sys::Win32::System::Threading::CreateMutexW;
+    let name: Vec<u16> = "Local\\SextantBrowserSingleInstance"
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    // SAFETY: name is a valid NUL-terminated UTF-16 string; the handle is
+    // intentionally left open so the mutex is held for the whole process.
+    unsafe {
+        let handle = CreateMutexW(std::ptr::null(), 1, name.as_ptr());
+        if handle.is_null() {
+            return true; // cannot enforce — allow the launch
+        }
+        if GetLastError() == ERROR_ALREADY_EXISTS {
+            focus_existing_window();
+            return false;
+        }
+    }
+    true
+}
+
+#[cfg(windows)]
+fn focus_existing_window() {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        FindWindowW, SetForegroundWindow, ShowWindow, SW_RESTORE, SW_SHOW,
+    };
+    let title: Vec<u16> = "Sextant Browser"
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    // SAFETY: FindWindowW with a NUL-terminated title; the returned HWND is
+    // only passed back to Win32 show/focus calls.
+    unsafe {
+        let hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
+        if !hwnd.is_null() {
+            ShowWindow(hwnd, SW_RESTORE);
+            ShowWindow(hwnd, SW_SHOW);
+            SetForegroundWindow(hwnd);
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn claim_single_instance() -> bool {
+    true
+}
 
 fn main() {
     tracing_subscriber::fmt()
@@ -1340,8 +1403,16 @@ fn run_visible_app(
     user_render_path: UserRenderPath,
     pre_size_visible_navigation: bool,
 ) -> Result<(), String> {
-    let event_loop =
-        EventLoop::new().map_err(|error| format!("event loop initialization failed: {error}"))?;
+    // Single-instance: only one interactive Sextant window at a time. A second
+    // launch focuses the running one (restoring it from the tray) and exits.
+    // Smoke runs are exempt so operator/CI checks can overlap.
+    if window_smoke.is_none() && !claim_single_instance() {
+        return Ok(());
+    }
+
+    let event_loop = EventLoopBuilder::<SextantEvent>::with_user_event()
+        .build()
+        .map_err(|error| format!("event loop initialization failed: {error}"))?;
     let window = Arc::new(
         WindowBuilder::new()
             .with_title("Sextant Browser")
@@ -1497,12 +1568,50 @@ fn run_visible_app(
     let mut smoke_input_done = false;
     let mut visible_first_draw_seen = false;
 
+    // System tray: close-to-tray keeps the (in-process) Servo engine warm for
+    // instant reopen; the tray menu's Quit is the only full exit. Tray and menu
+    // events are forwarded onto the winit loop via the user-event proxy so a
+    // click wakes the loop even while idle (ControlFlow::Wait).
+    let tray_menu = Menu::new();
+    let show_item = MenuItem::new("Show Sextant", true, None);
+    let quit_item = MenuItem::new("Quit Sextant", true, None);
+    let _ = tray_menu.append(&show_item);
+    let _ = tray_menu.append(&PredefinedMenuItem::separator());
+    let _ = tray_menu.append(&quit_item);
+    let show_id = show_item.id().clone();
+    let quit_id = quit_item.id().clone();
+    let tray =
+        tray_icon::Icon::from_rgba(WINDOW_ICON_RGBA.to_vec(), WINDOW_ICON_DIM, WINDOW_ICON_DIM)
+            .ok()
+            .and_then(|icon| {
+                TrayIconBuilder::new()
+                    .with_tooltip("Sextant Browser")
+                    .with_icon(icon)
+                    .with_menu(Box::new(tray_menu))
+                    .build()
+                    .ok()
+            });
+    let tray_proxy = event_loop.create_proxy();
+    let menu_proxy = event_loop.create_proxy();
+    TrayIconEvent::set_event_handler(Some(move |event| {
+        let _ = tray_proxy.send_event(SextantEvent::TrayIcon(event));
+    }));
+    MenuEvent::set_event_handler(Some(move |event| {
+        let _ = menu_proxy.send_event(SextantEvent::TrayMenu(event));
+    }));
+
     let event_loop_result = event_loop
         .run(move |event, elwt| match event {
             Event::WindowEvent { event, .. } => match event {
                 WindowEvent::CloseRequested => {
-                    app.cleanup_incognito_storage();
-                    elwt.exit();
+                    if tray.is_some() {
+                        // Close minimizes to the tray; Servo stays warm. Full
+                        // exit is the tray menu's "Quit Sextant".
+                        window.set_visible(false);
+                    } else {
+                        app.cleanup_incognito_storage();
+                        elwt.exit();
+                    }
                 }
                 WindowEvent::Resized(size) => {
                     app.layout(size);
@@ -1640,6 +1749,26 @@ fn run_visible_app(
                 }
                 _ => {}
             },
+            Event::UserEvent(SextantEvent::TrayMenu(menu_event)) => {
+                if menu_event.id == quit_id {
+                    app.cleanup_incognito_storage();
+                    elwt.exit();
+                } else if menu_event.id == show_id {
+                    window.set_visible(true);
+                    window.focus_window();
+                    window.request_redraw();
+                }
+            }
+            Event::UserEvent(SextantEvent::TrayIcon(tray_event)) => {
+                if matches!(
+                    tray_event,
+                    TrayIconEvent::Click { .. } | TrayIconEvent::DoubleClick { .. }
+                ) {
+                    window.set_visible(true);
+                    window.focus_window();
+                    window.request_redraw();
+                }
+            }
             Event::AboutToWait => {
                 if !visible_first_draw_seen
                     && (!pending_start_inputs.is_empty()

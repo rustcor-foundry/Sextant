@@ -8,10 +8,13 @@
 
 use super::*;
 
+/// Raw 64x64 RGBA bytes for the Sextant mark — shared source for the window
+/// icon and the system-tray icon (the bin builds a `tray_icon::Icon` from it).
+pub const WINDOW_ICON_RGBA: &[u8] = include_bytes!("../../assets/icons/sextant-64.rgba");
+pub const WINDOW_ICON_DIM: u32 = 64;
+
 pub fn sextant_window_icon() -> Option<Icon> {
-    let size = 64u32;
-    let rgba = include_bytes!("../../assets/icons/sextant-64.rgba");
-    Icon::from_rgba(rgba.to_vec(), size, size).ok()
+    Icon::from_rgba(WINDOW_ICON_RGBA.to_vec(), WINDOW_ICON_DIM, WINDOW_ICON_DIM).ok()
 }
 
 pub fn start_visible_input(app: &mut BrowserApp, input: &str) -> Result<bool, String> {
