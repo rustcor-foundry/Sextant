@@ -4,7 +4,7 @@
 use super::*;
 
 impl BrowserApp {
-    pub(crate) fn run_showcase_visible(&mut self) {
+    pub fn run_showcase_visible(&mut self) {
         if !self.proof_workflow_allowed() {
             self.block_mode_control_work("launch showcase");
             return;
@@ -43,7 +43,7 @@ impl BrowserApp {
         }
     }
 
-    pub(crate) fn run_real_browsing_visible(&mut self) {
+    pub fn run_real_browsing_visible(&mut self) {
         if !self.proof_workflow_allowed() {
             self.block_mode_control_work("real browsing smoke");
             return;
@@ -82,7 +82,7 @@ impl BrowserApp {
         }
     }
 
-    pub(crate) fn run_shell_interaction_visible(&mut self) {
+    pub fn run_shell_interaction_visible(&mut self) {
         if !self.proof_workflow_allowed() {
             self.block_mode_control_work("shell interaction smoke");
             return;
@@ -116,7 +116,7 @@ impl BrowserApp {
         }
     }
 
-    pub(crate) fn navigate_input(&mut self) {
+    pub fn navigate_input(&mut self) {
         let raw = self.address_input.trim().to_string();
         if raw.is_empty() {
             self.last_status = "Enter a URL, search phrase, or intent first.".to_string();
@@ -148,14 +148,14 @@ impl BrowserApp {
 
     /// Live agent-intent entry (interactive address/intent bar): plans with the
     /// local model brain.
-    pub(crate) fn run_native_intent(&mut self, raw: &str) {
+    pub fn run_native_intent(&mut self, raw: &str) {
         self.dispatch_native_intent(raw, true);
     }
 
     /// Deterministic, synchronous intent entry for smokes, the MCP `--intent-run`
     /// operator mode, and tests: plans with the built-in heuristic so behavior is
     /// reproducible and does not depend on a running model server.
-    pub(crate) fn run_native_intent_sync(&mut self, raw: &str) {
+    pub fn run_native_intent_sync(&mut self, raw: &str) {
         self.dispatch_native_intent(raw, false);
     }
 
@@ -163,13 +163,13 @@ impl BrowserApp {
     /// address field, show the browser view, and plan it through the local model
     /// brain (same path as the interactive intent bar).
     #[cfg(feature = "xilem-shell")]
-    pub(crate) fn run_preset_intent(&mut self, intent: &str) {
+    pub fn run_preset_intent(&mut self, intent: &str) {
         self.address_input = intent.to_string();
         self.main_view = MainView::Browser;
         self.run_native_intent(intent);
     }
 
-    pub(crate) fn dispatch_native_intent(&mut self, raw: &str, use_brain: bool) {
+    pub fn dispatch_native_intent(&mut self, raw: &str, use_brain: bool) {
         let Some(intent) = native_intent_body(raw) else {
             self.last_status = "That input did not resolve to a native intent.".to_string();
             self.last_ok = false;
@@ -302,7 +302,7 @@ impl BrowserApp {
     }
 
     #[cfg(feature = "xilem-shell")]
-    pub(crate) fn run_pilot_action_intent(&mut self, intent: &str) {
+    pub fn run_pilot_action_intent(&mut self, intent: &str) {
         // Dispatch the intent to the local model brain off-thread; the resulting
         // plan is picked up by `collect_pending_pilot_plan` and executed then. If
         // the brain is unreachable we fall back to the built-in heuristic planner
@@ -342,7 +342,7 @@ impl BrowserApp {
     /// unreachable or returns an error. This is the legacy `run_pilot_action_intent`
     /// behavior, preserved so the agent degrades gracefully instead of failing hard.
     #[cfg(feature = "xilem-shell")]
-    pub(crate) fn plan_and_execute_heuristic(&mut self, intent: &str) {
+    pub fn plan_and_execute_heuristic(&mut self, intent: &str) {
         match pilot_action_plan(intent) {
             Ok(actions) => self.execute_planned_actions(intent, actions, "builtin-heuristic", 0),
             Err(error) => {
@@ -362,7 +362,7 @@ impl BrowserApp {
     /// Execute a resolved action plan (from either the brain or the heuristic) and
     /// capture a structured `PilotRunArtifact` of the run for the shell/dashboard.
     #[cfg(feature = "xilem-shell")]
-    pub(crate) fn execute_planned_actions(
+    pub fn execute_planned_actions(
         &mut self,
         intent: &str,
         actions: Vec<PilotAction>,
@@ -394,7 +394,7 @@ impl BrowserApp {
 
     /// Whether a local-model plan is currently in flight. Always defined so the
     /// event-loop control-flow chain compiles without the `xilem-shell` feature.
-    pub(crate) fn pilot_plan_pending(&self) -> bool {
+    pub fn pilot_plan_pending(&self) -> bool {
         #[cfg(feature = "xilem-shell")]
         {
             self.pending_pilot_plan.is_some()
@@ -407,7 +407,7 @@ impl BrowserApp {
 
     /// Per-frame poll of the brain lane (mirrors `collect_pending_distillation`).
     #[cfg(feature = "xilem-shell")]
-    pub(crate) fn collect_pending_pilot_plan(&mut self) -> Option<Duration> {
+    pub fn collect_pending_pilot_plan(&mut self) -> Option<Duration> {
         let pending = self.pending_pilot_plan.as_ref()?;
         match pending.result_rx.try_recv() {
             Ok(result) => {
@@ -454,7 +454,7 @@ impl BrowserApp {
     }
 
     #[cfg(feature = "xilem-shell")]
-    pub(crate) fn execute_pilot_actions(
+    pub fn execute_pilot_actions(
         &mut self,
         intent: &str,
         actions: Vec<PilotAction>,
@@ -564,7 +564,7 @@ impl BrowserApp {
     }
 
     #[cfg(feature = "xilem-shell")]
-    pub(crate) fn finish_successful_pilot_intent(&mut self, intent: &str, analysis: Vec<String>) {
+    pub fn finish_successful_pilot_intent(&mut self, intent: &str, analysis: Vec<String>) {
         self.pilot_status = "PILOT COMPLETE".to_string();
         self.pilot_result = analysis
             .last()
@@ -576,7 +576,7 @@ impl BrowserApp {
     }
 
     #[cfg(feature = "xilem-shell")]
-    pub(crate) fn finish_failed_pilot_intent(&mut self, intent: &str) {
+    pub fn finish_failed_pilot_intent(&mut self, intent: &str) {
         self.pilot_status = "FAILED".to_string();
         self.pilot_result = self.last_status.clone();
         let _ = self.record_log(
@@ -585,7 +585,7 @@ impl BrowserApp {
         );
     }
 
-    pub(crate) fn authorize_pilot_consent(&mut self) {
+    pub fn authorize_pilot_consent(&mut self) {
         let Some(pending) = self.pending_consent.clone() else {
             self.last_status = "No Pilot consent request is pending.".to_string();
             self.last_ok = false;
@@ -659,7 +659,7 @@ impl BrowserApp {
         }
     }
 
-    pub(crate) fn deny_pilot_consent(&mut self) {
+    pub fn deny_pilot_consent(&mut self) {
         let Some(pending) = self.pending_consent.take() else {
             self.last_status = "No Pilot consent request is pending.".to_string();
             self.last_ok = false;
@@ -681,7 +681,7 @@ impl BrowserApp {
         self.refresh_logs();
     }
 
-    pub(crate) fn sign_pending_consent(&self, pending: &PendingConsent) -> Result<String, String> {
+    pub fn sign_pending_consent(&self, pending: &PendingConsent) -> Result<String, String> {
         #[cfg(feature = "xilem-shell")]
         {
             self.consent_vault.sign_consent(&pending.payload())

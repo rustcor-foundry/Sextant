@@ -4,7 +4,7 @@
 use super::*;
 
 impl BrowserApp {
-    pub(crate) fn fill_selector_current_page(
+    pub fn fill_selector_current_page(
         &mut self,
         selector: &str,
         value: &str,
@@ -19,7 +19,7 @@ impl BrowserApp {
         Ok(result)
     }
 
-    pub(crate) fn click_selector_current_page(
+    pub fn click_selector_current_page(
         &mut self,
         selector: &str,
     ) -> Result<sextant_engine::BrowserInteractionResult, String> {
@@ -36,7 +36,7 @@ impl BrowserApp {
         Ok(result)
     }
 
-    pub(crate) fn submit_selector_current_page(
+    pub fn submit_selector_current_page(
         &mut self,
         selector: &str,
     ) -> Result<sextant_engine::BrowserInteractionResult, String> {
@@ -53,7 +53,7 @@ impl BrowserApp {
         Ok(result)
     }
 
-    pub(crate) fn new_tab(&mut self) {
+    pub fn new_tab(&mut self) {
         self.clear_viewport_input_lane();
         let id = self.engine.open_tab();
         self.show_page_tab(id);
@@ -67,7 +67,7 @@ impl BrowserApp {
         let _ = self.record_log("new tab", LogStatus::Success);
     }
 
-    pub(crate) fn close_tab(&mut self) {
+    pub fn close_tab(&mut self) {
         self.clear_viewport_input_lane();
         let Some(tab) = self.active_tab().cloned() else {
             self.last_status = "No active tab to close.".to_string();
@@ -101,7 +101,7 @@ impl BrowserApp {
         }
     }
 
-    pub(crate) fn reload(&mut self) {
+    pub fn reload(&mut self) {
         let started = Instant::now();
         match self.engine.reload_active_tab() {
             Ok(status) => {
@@ -129,7 +129,7 @@ impl BrowserApp {
         }
     }
 
-    pub(crate) fn back(&mut self) {
+    pub fn back(&mut self) {
         let started = Instant::now();
         match self.engine.go_back_active_tab() {
             Ok(status) => {
@@ -157,7 +157,7 @@ impl BrowserApp {
         }
     }
 
-    pub(crate) fn forward(&mut self) {
+    pub fn forward(&mut self) {
         let started = Instant::now();
         match self.engine.go_forward_active_tab() {
             Ok(status) => {

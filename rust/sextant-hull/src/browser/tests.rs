@@ -1,7 +1,7 @@
 //! Unit tests for the sextant-browser shell, split out of browser.rs to keep
 //! the implementation file navigable. Attached via `#[cfg(test)] #[path] mod
 //! tests;`; `use super::*` gives the tests the crate root's items (the moved
-//! impl-partition methods are pub(crate), so they remain reachable here).
+//! impl-partition methods are pub, so they remain reachable here).
 
 use super::*;
 

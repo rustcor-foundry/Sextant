@@ -8,13 +8,13 @@
 
 use super::*;
 
-pub(crate) fn sextant_window_icon() -> Option<Icon> {
+pub fn sextant_window_icon() -> Option<Icon> {
     let size = 64u32;
     let rgba = include_bytes!("../../assets/icons/sextant-64.rgba");
     Icon::from_rgba(rgba.to_vec(), size, size).ok()
 }
 
-pub(crate) fn start_visible_input(app: &mut BrowserApp, input: &str) -> Result<bool, String> {
+pub fn start_visible_input(app: &mut BrowserApp, input: &str) -> Result<bool, String> {
     app.address_input = input.to_string();
     if native_intent_body(input).is_some() {
         app.run_native_intent_sync(input);
@@ -32,7 +32,7 @@ pub(crate) fn start_visible_input(app: &mut BrowserApp, input: &str) -> Result<b
     Ok(app.pending_navigation.is_some())
 }
 
-pub(crate) fn run_operator_smoke() -> Result<Vec<String>, String> {
+pub fn run_operator_smoke() -> Result<Vec<String>, String> {
     let mut report = Vec::new();
     report.push("starting native-browser operator bridge smoke".to_string());
 
@@ -146,7 +146,7 @@ pub(crate) fn run_operator_smoke() -> Result<Vec<String>, String> {
     Ok(report)
 }
 
-pub(crate) fn run_showcase_script() -> Result<Vec<String>, String> {
+pub fn run_showcase_script() -> Result<Vec<String>, String> {
     let mut report = Vec::new();
     report.push("starting Sextant launch showcase run".to_string());
 
@@ -158,7 +158,7 @@ pub(crate) fn run_showcase_script() -> Result<Vec<String>, String> {
     Ok(report)
 }
 
-pub(crate) fn run_real_browsing_smoke() -> Result<Vec<String>, String> {
+pub fn run_real_browsing_smoke() -> Result<Vec<String>, String> {
     let mut report = Vec::new();
     report.push("starting real browsing smoke suite".to_string());
 
@@ -172,7 +172,7 @@ pub(crate) fn run_real_browsing_smoke() -> Result<Vec<String>, String> {
     Ok(report)
 }
 
-pub(crate) fn run_shell_interaction_workflow(app: &mut BrowserApp) -> Result<Vec<String>, String> {
+pub fn run_shell_interaction_workflow(app: &mut BrowserApp) -> Result<Vec<String>, String> {
     let mut report = Vec::new();
     report.push("starting visible shell interaction smoke".to_string());
 
@@ -332,7 +332,7 @@ pub(crate) fn run_shell_interaction_workflow(app: &mut BrowserApp) -> Result<Vec
     Ok(report)
 }
 
-pub(crate) fn run_real_browsing_workflow(app: &mut BrowserApp) -> Result<Vec<String>, String> {
+pub fn run_real_browsing_workflow(app: &mut BrowserApp) -> Result<Vec<String>, String> {
     let mut report = Vec::new();
     navigate_distill_expect(
         app,
@@ -480,7 +480,7 @@ pub(crate) fn run_real_browsing_workflow(app: &mut BrowserApp) -> Result<Vec<Str
     Ok(report)
 }
 
-pub(crate) fn navigate_distill_expect(
+pub fn navigate_distill_expect(
     app: &mut BrowserApp,
     target: &str,
     expect: &str,
@@ -515,7 +515,7 @@ pub(crate) fn navigate_distill_expect(
     Ok(())
 }
 
-pub(crate) fn ensure_app_ok(app: &BrowserApp, label: &str) -> Result<(), String> {
+pub fn ensure_app_ok(app: &BrowserApp, label: &str) -> Result<(), String> {
     if app.last_ok {
         Ok(())
     } else {
@@ -523,11 +523,7 @@ pub(crate) fn ensure_app_ok(app: &BrowserApp, label: &str) -> Result<(), String>
     }
 }
 
-pub(crate) fn click_action(
-    app: &mut BrowserApp,
-    action: Action,
-    label: &str,
-) -> Result<(), String> {
+pub fn click_action(app: &mut BrowserApp, action: Action, label: &str) -> Result<(), String> {
     let rect = app
         .buttons
         .iter()
@@ -537,11 +533,7 @@ pub(crate) fn click_action(
     click_rect(app, rect, label)
 }
 
-pub(crate) fn click_page_tab(
-    app: &mut BrowserApp,
-    tab_id: Uuid,
-    label: &str,
-) -> Result<(), String> {
+pub fn click_page_tab(app: &mut BrowserApp, tab_id: Uuid, label: &str) -> Result<(), String> {
     let rect = app
         .page_tab_rects
         .iter()
@@ -551,7 +543,7 @@ pub(crate) fn click_page_tab(
     click_rect(app, rect, label)
 }
 
-pub(crate) fn click_rect(app: &mut BrowserApp, rect: Rect, label: &str) -> Result<(), String> {
+pub fn click_rect(app: &mut BrowserApp, rect: Rect, label: &str) -> Result<(), String> {
     let (x, y) = rect_center(rect);
     app.click(x, y);
     if app.last_ok {
@@ -561,14 +553,14 @@ pub(crate) fn click_rect(app: &mut BrowserApp, rect: Rect, label: &str) -> Resul
     }
 }
 
-pub(crate) fn rect_center(rect: Rect) -> (f64, f64) {
+pub fn rect_center(rect: Rect) -> (f64, f64) {
     (
         rect.x as f64 + rect.w as f64 / 2.0,
         rect.y as f64 + rect.h as f64 / 2.0,
     )
 }
 
-pub(crate) fn ensure_view(app: &BrowserApp, view: MainView, label: &str) -> Result<(), String> {
+pub fn ensure_view(app: &BrowserApp, view: MainView, label: &str) -> Result<(), String> {
     if app.main_view == view {
         Ok(())
     } else {
@@ -576,7 +568,7 @@ pub(crate) fn ensure_view(app: &BrowserApp, view: MainView, label: &str) -> Resu
     }
 }
 
-pub(crate) fn ensure_active_tab(app: &BrowserApp, tab_id: Uuid, label: &str) -> Result<(), String> {
+pub fn ensure_active_tab(app: &BrowserApp, tab_id: Uuid, label: &str) -> Result<(), String> {
     match app.active_tab().map(|tab| tab.id) {
         Some(active_id) if active_id == tab_id => Ok(()),
         Some(active_id) => Err(format!(
@@ -588,7 +580,7 @@ pub(crate) fn ensure_active_tab(app: &BrowserApp, tab_id: Uuid, label: &str) -> 
     }
 }
 
-pub(crate) fn run_showcase_workflow(app: &mut BrowserApp) -> Result<Vec<String>, String> {
+pub fn run_showcase_workflow(app: &mut BrowserApp) -> Result<Vec<String>, String> {
     let mut report = Vec::new();
     let intent = "intent: open https://example.com and distill";
     app.run_native_intent_sync(intent);
@@ -726,18 +718,18 @@ pub(crate) fn run_showcase_workflow(app: &mut BrowserApp) -> Result<Vec<String>,
     Ok(report)
 }
 
-pub(crate) fn run_intent_script(intent: &str, expect: Option<&str>) -> Result<Vec<String>, String> {
+pub fn run_intent_script(intent: &str, expect: Option<&str>) -> Result<Vec<String>, String> {
     run_intent_script_inner(intent, expect, false)
 }
 
-pub(crate) fn run_authorized_intent_script(
+pub fn run_authorized_intent_script(
     intent: &str,
     expect: Option<&str>,
 ) -> Result<Vec<String>, String> {
     run_intent_script_inner(intent, expect, true)
 }
 
-pub(crate) fn run_intent_script_inner(
+pub fn run_intent_script_inner(
     intent: &str,
     expect: Option<&str>,
     authorize_consent: bool,
@@ -856,7 +848,7 @@ pub(crate) fn run_intent_script_inner(
     Ok(report)
 }
 
-pub(crate) fn run_operator_script(spec: OperatorRunSpec) -> Result<Vec<String>, String> {
+pub fn run_operator_script(spec: OperatorRunSpec) -> Result<Vec<String>, String> {
     let mut report = Vec::new();
     report.push(format!(
         "starting scripted native-browser run for {}",
@@ -993,15 +985,15 @@ pub(crate) fn run_operator_script(spec: OperatorRunSpec) -> Result<Vec<String>, 
     Ok(report)
 }
 
-pub(crate) fn run_operator_probe(target: &str) -> Result<Vec<String>, String> {
+pub fn run_operator_probe(target: &str) -> Result<Vec<String>, String> {
     run_page_probe(target, false)
 }
 
-pub(crate) fn run_perf_probe(target: &str) -> Result<Vec<String>, String> {
+pub fn run_perf_probe(target: &str) -> Result<Vec<String>, String> {
     run_page_probe(target, true)
 }
 
-pub(crate) fn run_perception_probe(target: &str) -> Result<Vec<String>, String> {
+pub fn run_perception_probe(target: &str) -> Result<Vec<String>, String> {
     let mut report = run_page_probe(target, false)?;
     let data_line = report
         .iter()
@@ -1015,7 +1007,7 @@ pub(crate) fn run_perception_probe(target: &str) -> Result<Vec<String>, String> 
     Ok(report)
 }
 
-pub(crate) fn run_guard_probe(target: &str) -> Result<Vec<String>, String> {
+pub fn run_guard_probe(target: &str) -> Result<Vec<String>, String> {
     let mut report = Vec::new();
     report.push(format!("starting browser guard probe for {}", target));
 
@@ -1049,10 +1041,7 @@ pub(crate) fn run_guard_probe(target: &str) -> Result<Vec<String>, String> {
     Ok(report)
 }
 
-pub(crate) fn run_page_probe(
-    target: &str,
-    repeat_frame_capture: bool,
-) -> Result<Vec<String>, String> {
+pub fn run_page_probe(target: &str, repeat_frame_capture: bool) -> Result<Vec<String>, String> {
     let mut report = Vec::new();
     report.push(format!("starting native-browser probe for {}", target));
 
@@ -1170,7 +1159,7 @@ pub(crate) fn run_page_probe(
     Ok(report)
 }
 
-pub(crate) fn run_perf_baseline() -> Result<Vec<String>, String> {
+pub fn run_perf_baseline() -> Result<Vec<String>, String> {
     let targets = [
         "https://example.com",
         "https://www.rust-lang.org/",
@@ -1205,14 +1194,11 @@ pub(crate) fn run_perf_baseline() -> Result<Vec<String>, String> {
     Ok(report)
 }
 
-pub(crate) fn push_perf_report(report: &mut Vec<String>, label: &str, app: &BrowserApp) {
+pub fn push_perf_report(report: &mut Vec<String>, label: &str, app: &BrowserApp) {
     report.push(format!("perf {label}: {}", app.perf.summary()));
 }
 
-pub(crate) fn push_perception_report(
-    report: &mut Vec<String>,
-    page: &sextant_engine::DistilledPage,
-) {
+pub fn push_perception_report(report: &mut Vec<String>, page: &sextant_engine::DistilledPage) {
     let counts = semantic_counts(page);
     report.push(format!(
         "perception summary: {}",
@@ -1273,7 +1259,7 @@ pub(crate) fn push_perception_report(
     }
 }
 
-pub(crate) fn push_eval_probe_report(report: &mut Vec<String>, app: &mut BrowserApp, label: &str) {
+pub fn push_eval_probe_report(report: &mut Vec<String>, app: &mut BrowserApp, label: &str) {
     let Some(tab_id) = app.active_tab().map(|tab| tab.id) else {
         return;
     };
@@ -1294,7 +1280,7 @@ pub(crate) fn push_eval_probe_report(report: &mut Vec<String>, app: &mut Browser
     }
 }
 
-pub(crate) fn distill_operator_page(
+pub fn distill_operator_page(
     app: &mut BrowserApp,
 ) -> Result<sextant_engine::DistilledPage, String> {
     app.distill_active();
@@ -1306,7 +1292,7 @@ pub(crate) fn distill_operator_page(
         .ok_or_else(|| "operator distill did not attach distilled page data".to_string())
 }
 
-pub(crate) fn operator_page_search_text(page: &sextant_engine::DistilledPage) -> String {
+pub fn operator_page_search_text(page: &sextant_engine::DistilledPage) -> String {
     let mut values = vec![
         page.title.clone(),
         page.url.to_string(),
@@ -1327,7 +1313,7 @@ pub(crate) fn operator_page_search_text(page: &sextant_engine::DistilledPage) ->
     values.join("\n")
 }
 
-pub(crate) fn parse_operator_run(args: &[String]) -> Result<Option<OperatorRunSpec>, String> {
+pub fn parse_operator_run(args: &[String]) -> Result<Option<OperatorRunSpec>, String> {
     let Some(index) = args.iter().position(|arg| arg == "--operator-run") else {
         return Ok(None);
     };
@@ -1396,11 +1382,11 @@ pub(crate) fn parse_operator_run(args: &[String]) -> Result<Option<OperatorRunSp
     Ok(Some(OperatorRunSpec { target, steps }))
 }
 
-pub(crate) fn parse_operator_timeout(args: &[String]) -> Result<Duration, String> {
+pub fn parse_operator_timeout(args: &[String]) -> Result<Duration, String> {
     parse_duration_arg(args, "--operator-timeout", OPERATOR_DEFAULT_TIMEOUT)
 }
 
-pub(crate) fn parse_window_smoke(args: &[String]) -> Result<Option<WindowSmokeSpec>, String> {
+pub fn parse_window_smoke(args: &[String]) -> Result<Option<WindowSmokeSpec>, String> {
     let Some(index) = args.iter().position(|arg| arg == "--window-smoke") else {
         return Ok(None);
     };
@@ -1458,7 +1444,7 @@ pub(crate) fn parse_window_smoke(args: &[String]) -> Result<Option<WindowSmokeSp
 }
 
 #[cfg(any(feature = "xilem-shell", feature = "servo-backend", test))]
-pub(crate) fn is_local_appliance_target(target: &Url) -> bool {
+pub fn is_local_appliance_target(target: &Url) -> bool {
     let Some(host) = target.host_str() else {
         return false;
     };
@@ -1477,7 +1463,7 @@ pub(crate) fn is_local_appliance_target(target: &Url) -> bool {
     }
 }
 
-pub(crate) fn input_latency_fixture_url() -> String {
+pub fn input_latency_fixture_url() -> String {
     let html = "<!doctype html><meta charset='utf-8'><title>Sextant Input Smoke</title>\
 <body style='margin:0;background:#10161d;color:white;font:20px sans-serif;display:grid;place-items:center;height:100vh'>\
 <input id='q' autofocus style='font:24px sans-serif;width:70vw;padding:18px' value=''></body>";
@@ -1485,14 +1471,14 @@ pub(crate) fn input_latency_fixture_url() -> String {
     format!("data:text/html,{}", encoded)
 }
 
-pub(crate) fn parse_browser_mode_arg(args: &[String]) -> Result<BrowserMode, String> {
+pub fn parse_browser_mode_arg(args: &[String]) -> Result<BrowserMode, String> {
     let Some(value) = operator_arg_value(args, "--browser-mode") else {
         return Ok(BrowserMode::Assisted);
     };
     parse_browser_mode(&value)
 }
 
-pub(crate) fn parse_user_render_path_arg(args: &[String]) -> Result<UserRenderPath, String> {
+pub fn parse_user_render_path_arg(args: &[String]) -> Result<UserRenderPath, String> {
     let Some(value) = operator_arg_value(args, "--render-path")
         .or_else(|| operator_arg_value(args, "--user-render-path"))
     else {
@@ -1501,7 +1487,7 @@ pub(crate) fn parse_user_render_path_arg(args: &[String]) -> Result<UserRenderPa
     parse_user_render_path(&value)
 }
 
-pub(crate) fn parse_browser_mode(value: &str) -> Result<BrowserMode, String> {
+pub fn parse_browser_mode(value: &str) -> Result<BrowserMode, String> {
     match value.trim().to_ascii_lowercase().as_str() {
         "agent" => Ok(BrowserMode::Agent),
         "assist" | "assisted" => Ok(BrowserMode::Assisted),
@@ -1515,7 +1501,7 @@ pub(crate) fn parse_browser_mode(value: &str) -> Result<BrowserMode, String> {
     }
 }
 
-pub(crate) fn parse_user_render_path(value: &str) -> Result<UserRenderPath, String> {
+pub fn parse_user_render_path(value: &str) -> Result<UserRenderPath, String> {
     match value.trim().to_ascii_lowercase().as_str() {
         "bridge" | "frame-bridge" | "frame_bridge" | "render-bridge" | "render_bridge" => {
             Ok(UserRenderPath::FrameBridge)
@@ -1530,7 +1516,7 @@ pub(crate) fn parse_user_render_path(value: &str) -> Result<UserRenderPath, Stri
     }
 }
 
-pub(crate) fn parse_duration_arg(
+pub fn parse_duration_arg(
     args: &[String],
     flag: &str,
     default: Duration,
@@ -1547,25 +1533,25 @@ pub(crate) fn parse_duration_arg(
     Ok(Duration::from_secs(seconds))
 }
 
-pub(crate) fn operator_arg_value(args: &[String], flag: &str) -> Option<String> {
+pub fn operator_arg_value(args: &[String], flag: &str) -> Option<String> {
     args.windows(2)
         .find(|pair| pair[0] == flag)
         .map(|pair| pair[1].clone())
 }
 
-pub(crate) fn parse_isize_flag(args: &[String], flag: &str) -> Option<isize> {
+pub fn parse_isize_flag(args: &[String], flag: &str) -> Option<isize> {
     operator_arg_value(args, flag).and_then(|value| value.parse::<isize>().ok())
 }
 
-pub(crate) fn parse_i32_flag(args: &[String], flag: &str) -> Option<i32> {
+pub fn parse_i32_flag(args: &[String], flag: &str) -> Option<i32> {
     operator_arg_value(args, flag).and_then(|value| value.parse::<i32>().ok())
 }
 
-pub(crate) fn parse_u32_flag(args: &[String], flag: &str) -> Option<u32> {
+pub fn parse_u32_flag(args: &[String], flag: &str) -> Option<u32> {
     operator_arg_value(args, flag).and_then(|value| value.parse::<u32>().ok())
 }
 
-pub(crate) fn parse_navigation_target(input: &str) -> Result<Url, String> {
+pub fn parse_navigation_target(input: &str) -> Result<Url, String> {
     if let Ok(url) = Url::parse(input) {
         return Ok(url);
     }
@@ -1578,7 +1564,7 @@ pub(crate) fn parse_navigation_target(input: &str) -> Result<Url, String> {
         .map_err(|error| format!("Search URL parse failed: {}", error))
 }
 
-pub(crate) fn native_intent_body(input: &str) -> Option<String> {
+pub fn native_intent_body(input: &str) -> Option<String> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
         return None;
@@ -1617,7 +1603,7 @@ pub(crate) fn native_intent_body(input: &str) -> Option<String> {
     }
 }
 
-pub(crate) fn intent_needs_consent(intent: &str) -> bool {
+pub fn intent_needs_consent(intent: &str) -> bool {
     let lower = intent.to_ascii_lowercase();
     [
         "buy",
@@ -1636,7 +1622,7 @@ pub(crate) fn intent_needs_consent(intent: &str) -> bool {
     .any(|term| lower.contains(term))
 }
 
-pub(crate) fn plan_native_intent(intent: &str) -> Result<NativeIntentPlan, String> {
+pub fn plan_native_intent(intent: &str) -> Result<NativeIntentPlan, String> {
     let target_input = intent_navigation_text(intent);
     let target = parse_navigation_target(&target_input)?;
     let should_distill = intent_should_distill(intent);
@@ -1665,7 +1651,7 @@ pub(crate) fn plan_native_intent(intent: &str) -> Result<NativeIntentPlan, Strin
 }
 
 #[cfg(feature = "xilem-shell")]
-pub(crate) fn pilot_action_plan(intent: &str) -> Result<Vec<PilotAction>, String> {
+pub fn pilot_action_plan(intent: &str) -> Result<Vec<PilotAction>, String> {
     if intent_needs_consent(intent) {
         let plan = plan_native_intent(intent)?;
         return Ok(vec![
@@ -1709,7 +1695,7 @@ pub(crate) fn pilot_action_plan(intent: &str) -> Result<Vec<PilotAction>, String
 }
 
 #[cfg(feature = "xilem-shell")]
-pub(crate) fn pilot_action_step_label(action: &PilotAction) -> String {
+pub fn pilot_action_step_label(action: &PilotAction) -> String {
     match action {
         PilotAction::Navigate(url) => format!("Pilot navigate: {}", short_url(url)),
         PilotAction::Distill => "Pilot distill active page into Wake".to_string(),
@@ -1730,7 +1716,7 @@ pub(crate) fn pilot_action_step_label(action: &PilotAction) -> String {
     }
 }
 
-pub(crate) fn intent_should_distill(intent: &str) -> bool {
+pub fn intent_should_distill(intent: &str) -> bool {
     let lower = intent.to_ascii_lowercase();
     [
         "research",
@@ -1745,7 +1731,7 @@ pub(crate) fn intent_should_distill(intent: &str) -> bool {
     .any(|term| lower.contains(term))
 }
 
-pub(crate) fn intent_navigation_text(intent: &str) -> String {
+pub fn intent_navigation_text(intent: &str) -> String {
     if let Some(candidate) = first_navigation_candidate(intent) {
         return candidate;
     }
@@ -1774,7 +1760,7 @@ pub(crate) fn intent_navigation_text(intent: &str) -> String {
     strip_memory_suffixes(&text)
 }
 
-pub(crate) fn first_navigation_candidate(input: &str) -> Option<String> {
+pub fn first_navigation_candidate(input: &str) -> Option<String> {
     for token in input.split_whitespace() {
         let candidate = token.trim_matches(|c: char| {
             matches!(
@@ -1804,7 +1790,7 @@ pub(crate) fn first_navigation_candidate(input: &str) -> Option<String> {
     None
 }
 
-pub(crate) fn strip_memory_suffixes(input: &str) -> String {
+pub fn strip_memory_suffixes(input: &str) -> String {
     let mut text = input.trim().to_string();
     loop {
         let lower = text.to_ascii_lowercase();

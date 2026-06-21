@@ -31,13 +31,13 @@ enum PersistenceCommand {
     Shutdown,
 }
 
-pub(crate) struct PersistenceLane {
+pub struct PersistenceLane {
     command_tx: mpsc::Sender<PersistenceCommand>,
     worker: Option<thread::JoinHandle<()>>,
 }
 
 impl PersistenceLane {
-    pub(crate) fn new(data_dir: &Path) -> Result<Self, String> {
+    pub fn new(data_dir: &Path) -> Result<Self, String> {
         std::fs::create_dir_all(data_dir).map_err(|error| error.to_string())?;
         let wake_path = data_dir.join("wake.db");
         let log_path = data_dir.join("captains-log.db");
@@ -213,7 +213,7 @@ impl PersistenceLane {
         })
     }
 
-    pub(crate) fn record_distilled_page(
+    pub fn record_distilled_page(
         &self,
         persona_id: String,
         page: DistilledPage,
@@ -229,7 +229,7 @@ impl PersistenceLane {
         Ok(result_rx)
     }
 
-    pub(crate) fn search_wake(
+    pub fn search_wake(
         &self,
         persona_id: String,
         query: String,
@@ -245,7 +245,7 @@ impl PersistenceLane {
         Ok(result_rx)
     }
 
-    pub(crate) fn record_log(
+    pub fn record_log(
         &self,
         entry: LogEntry,
     ) -> Result<mpsc::Receiver<Result<PersistenceLogResult, String>>, String> {
@@ -256,7 +256,7 @@ impl PersistenceLane {
         Ok(result_rx)
     }
 
-    pub(crate) fn refresh_logs(
+    pub fn refresh_logs(
         &self,
         persona_id: String,
         limit: usize,
@@ -297,7 +297,7 @@ enum PilotBrainCommand {
 }
 
 #[cfg(feature = "xilem-shell")]
-pub(crate) struct PilotBrainLane {
+pub struct PilotBrainLane {
     endpoint: String,
     model: String,
     command_tx: mpsc::Sender<PilotBrainCommand>,
@@ -306,7 +306,7 @@ pub(crate) struct PilotBrainLane {
 
 #[cfg(feature = "xilem-shell")]
 impl PilotBrainLane {
-    pub(crate) fn new(config: &AiLocalConfig) -> Self {
+    pub fn new(config: &AiLocalConfig) -> Self {
         let backend = config.backend_enum();
         let endpoint = config.endpoint.clone();
         let model = config.model.clone();
@@ -373,11 +373,11 @@ impl PilotBrainLane {
         }
     }
 
-    pub(crate) fn describe(&self) -> String {
+    pub fn describe(&self) -> String {
         format!("{} @ {}", self.model, self.endpoint)
     }
 
-    pub(crate) fn reason(
+    pub fn reason(
         &self,
         intent: String,
         context: Vec<WakeEntry>,

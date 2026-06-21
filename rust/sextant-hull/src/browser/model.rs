@@ -1,28 +1,28 @@
 //! Shell data model — the geometry, enum, perf, pending-async, persistence
 //! result, AI-config, and pilot-record types (plus their small impls) that the
 //! BrowserApp and its behavior modules pass around. Split out of browser.rs;
-//! fields/methods are pub(crate) and the crate root re-exports the module
+//! fields/methods are pub and the crate root re-exports the module
 //! (`use model::*`) so every sibling resolves these via its own `use super::*`.
 
 use super::*;
 
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct Rect {
-    pub(crate) x: u32,
-    pub(crate) y: u32,
-    pub(crate) w: u32,
-    pub(crate) h: u32,
+pub struct Rect {
+    pub x: u32,
+    pub y: u32,
+    pub w: u32,
+    pub h: u32,
 }
 
 impl Rect {
-    pub(crate) fn contains(self, x: f64, y: f64) -> bool {
+    pub fn contains(self, x: f64, y: f64) -> bool {
         x >= self.x as f64
             && y >= self.y as f64
             && x < (self.x + self.w) as f64
             && y < (self.y + self.h) as f64
     }
 
-    pub(crate) fn intersects(self, other: Rect) -> bool {
+    pub fn intersects(self, other: Rect) -> bool {
         self.x < other.x.saturating_add(other.w)
             && self.x.saturating_add(self.w) > other.x
             && self.y < other.y.saturating_add(other.h)
@@ -31,7 +31,7 @@ impl Rect {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Action {
+pub enum Action {
     Navigate,
     RunShowcase,
     NewTab,
@@ -45,14 +45,14 @@ pub(crate) enum Action {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum FocusTarget {
+pub enum FocusTarget {
     Address,
     Wake,
     Browser,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum BrowserShortcut {
+pub enum BrowserShortcut {
     FocusAddress,
     NewTab,
     CloseTab,
@@ -62,7 +62,7 @@ pub(crate) enum BrowserShortcut {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum BrowserMode {
+pub enum BrowserMode {
     Agent,
     Assisted,
     Observe,
@@ -71,20 +71,20 @@ pub(crate) enum BrowserMode {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum UserRenderPath {
+pub enum UserRenderPath {
     FrameBridge,
     DirectServo,
 }
 
 impl UserRenderPath {
-    pub(crate) fn label(self) -> &'static str {
+    pub fn label(self) -> &'static str {
         match self {
             UserRenderPath::FrameBridge => "BRIDGE",
             UserRenderPath::DirectServo => "DIRECT",
         }
     }
 
-    pub(crate) fn status(self) -> &'static str {
+    pub fn status(self) -> &'static str {
         match self {
             UserRenderPath::FrameBridge => {
                 "temporary frame-capture render bridge feeding Softbuffer"
@@ -95,25 +95,25 @@ impl UserRenderPath {
         }
     }
 
-    pub(crate) fn integrated(self) -> bool {
+    pub fn integrated(self) -> bool {
         matches!(self, UserRenderPath::FrameBridge)
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct BrowserCapabilities {
-    pub(crate) ai_control: bool,
-    pub(crate) ai_observe_dom: bool,
-    pub(crate) ai_observe_frame: bool,
-    pub(crate) read_wake: bool,
-    pub(crate) write_wake: bool,
-    pub(crate) write_log_content: bool,
-    pub(crate) expose_mcp_tools: bool,
-    pub(crate) direct_render_required: bool,
+pub struct BrowserCapabilities {
+    pub ai_control: bool,
+    pub ai_observe_dom: bool,
+    pub ai_observe_frame: bool,
+    pub read_wake: bool,
+    pub write_wake: bool,
+    pub write_log_content: bool,
+    pub expose_mcp_tools: bool,
+    pub direct_render_required: bool,
 }
 
 impl BrowserMode {
-    pub(crate) const ALL: [BrowserMode; 5] = [
+    pub const ALL: [BrowserMode; 5] = [
         BrowserMode::Agent,
         BrowserMode::Assisted,
         BrowserMode::Observe,
@@ -121,7 +121,7 @@ impl BrowserMode {
         BrowserMode::Incognito,
     ];
 
-    pub(crate) fn label(self) -> &'static str {
+    pub fn label(self) -> &'static str {
         match self {
             BrowserMode::Agent => "AGENT",
             BrowserMode::Assisted => "ASSIST",
@@ -131,7 +131,7 @@ impl BrowserMode {
         }
     }
 
-    pub(crate) fn status(self) -> &'static str {
+    pub fn status(self) -> &'static str {
         match self {
             BrowserMode::Agent => "Agent Mode: AI can observe, control, persist, and expose tools.",
             BrowserMode::Assisted => {
@@ -145,7 +145,7 @@ impl BrowserMode {
         }
     }
 
-    pub(crate) fn capabilities(self) -> BrowserCapabilities {
+    pub fn capabilities(self) -> BrowserCapabilities {
         match self {
             BrowserMode::Agent => BrowserCapabilities {
                 ai_control: true,
@@ -200,7 +200,7 @@ impl BrowserMode {
         }
     }
 
-    pub(crate) fn cli_arg(self) -> &'static str {
+    pub fn cli_arg(self) -> &'static str {
         match self {
             BrowserMode::Agent => "agent",
             BrowserMode::Assisted => "assisted",
@@ -212,7 +212,7 @@ impl BrowserMode {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum MainView {
+pub enum MainView {
     Browser,
     Wake,
     Log,
@@ -225,93 +225,93 @@ pub(crate) enum MainView {
 }
 
 #[derive(Default)]
-pub(crate) struct ValidationState {
-    pub(crate) navigation_seen: bool,
-    pub(crate) browser_focus_seen: bool,
-    pub(crate) browser_input_seen: bool,
-    pub(crate) frame_seen: bool,
-    pub(crate) distill_seen: bool,
-    pub(crate) wake_seen: bool,
-    pub(crate) log_seen: bool,
-    pub(crate) tab_control_seen: bool,
-    pub(crate) error_seen: bool,
+pub struct ValidationState {
+    pub navigation_seen: bool,
+    pub browser_focus_seen: bool,
+    pub browser_input_seen: bool,
+    pub frame_seen: bool,
+    pub distill_seen: bool,
+    pub wake_seen: bool,
+    pub log_seen: bool,
+    pub tab_control_seen: bool,
+    pub error_seen: bool,
 }
 
 #[derive(Clone, Copy)]
-pub(crate) enum ValidationStatus {
+pub enum ValidationStatus {
     Pass,
     Waiting,
     Attention,
 }
 
-pub(crate) struct ValidationRow {
-    pub(crate) label: &'static str,
-    pub(crate) status: ValidationStatus,
-    pub(crate) detail: String,
+pub struct ValidationRow {
+    pub label: &'static str,
+    pub status: ValidationStatus,
+    pub detail: String,
 }
 
-pub(crate) enum OperatorStep {
+pub enum OperatorStep {
     Fill { selector: String, value: String },
     Click { selector: String },
     Submit { selector: String },
     Expect { text: String },
 }
 
-pub(crate) struct OperatorRunSpec {
-    pub(crate) target: String,
-    pub(crate) steps: Vec<OperatorStep>,
+pub struct OperatorRunSpec {
+    pub target: String,
+    pub steps: Vec<OperatorStep>,
 }
 
-pub(crate) struct WindowSmokeSpec {
-    pub(crate) target: Option<String>,
-    pub(crate) timeout: Duration,
-    pub(crate) user_distill: bool,
-    pub(crate) input_latency: bool,
-    pub(crate) first_interaction_smoke: bool,
-    pub(crate) verified_input_smoke: bool,
-    pub(crate) search_submit_smoke: bool,
-    pub(crate) live_search_smoke: bool,
-    pub(crate) live_form_smoke: bool,
-    pub(crate) live_link_smoke: bool,
-    pub(crate) load_smoke: bool,
-    pub(crate) resize_smoke: bool,
-    pub(crate) allow_insecure_local_tls: bool,
-}
-
-#[derive(Clone)]
-pub(crate) struct NativeIntentPlan {
-    pub(crate) intent: String,
-    pub(crate) target: Url,
-    pub(crate) should_distill: bool,
-    pub(crate) steps: Vec<String>,
-}
-
-pub(crate) struct ButtonRegion {
-    pub(crate) rect: Rect,
-    pub(crate) label: &'static str,
-    pub(crate) action: Action,
-}
-
-pub(crate) struct PageTabRegion {
-    pub(crate) rect: Rect,
-    pub(crate) tab_id: Uuid,
-}
-
-pub(crate) struct ModeRegion {
-    pub(crate) rect: Rect,
-    pub(crate) mode: BrowserMode,
+pub struct WindowSmokeSpec {
+    pub target: Option<String>,
+    pub timeout: Duration,
+    pub user_distill: bool,
+    pub input_latency: bool,
+    pub first_interaction_smoke: bool,
+    pub verified_input_smoke: bool,
+    pub search_submit_smoke: bool,
+    pub live_search_smoke: bool,
+    pub live_form_smoke: bool,
+    pub live_link_smoke: bool,
+    pub load_smoke: bool,
+    pub resize_smoke: bool,
+    pub allow_insecure_local_tls: bool,
 }
 
 #[derive(Clone)]
-pub(crate) struct PendingConsent {
-    pub(crate) intent: String,
-    pub(crate) message: String,
+pub struct NativeIntentPlan {
+    pub intent: String,
+    pub target: Url,
+    pub should_distill: bool,
+    pub steps: Vec<String>,
+}
+
+pub struct ButtonRegion {
+    pub rect: Rect,
+    pub label: &'static str,
+    pub action: Action,
+}
+
+pub struct PageTabRegion {
+    pub rect: Rect,
+    pub tab_id: Uuid,
+}
+
+pub struct ModeRegion {
+    pub rect: Rect,
+    pub mode: BrowserMode,
+}
+
+#[derive(Clone)]
+pub struct PendingConsent {
+    pub intent: String,
+    pub message: String,
     #[cfg(feature = "xilem-shell")]
-    pub(crate) remaining_actions: Vec<PilotAction>,
+    pub remaining_actions: Vec<PilotAction>,
 }
 
 impl PendingConsent {
-    pub(crate) fn payload(&self) -> String {
+    pub fn payload(&self) -> String {
         #[cfg(feature = "xilem-shell")]
         {
             let mut payload = format!("intent={}; message={}", self.intent, self.message);
@@ -334,16 +334,16 @@ impl PendingConsent {
 }
 
 #[derive(Clone, Default)]
-pub(crate) struct BrowserPerf {
-    pub(crate) navigation: Option<Duration>,
-    pub(crate) distill: Option<Duration>,
-    pub(crate) wake: Option<Duration>,
-    pub(crate) resize: Option<Duration>,
-    pub(crate) frame: Option<Duration>,
+pub struct BrowserPerf {
+    pub navigation: Option<Duration>,
+    pub distill: Option<Duration>,
+    pub wake: Option<Duration>,
+    pub resize: Option<Duration>,
+    pub frame: Option<Duration>,
 }
 
 impl BrowserPerf {
-    pub(crate) fn summary(&self) -> String {
+    pub fn summary(&self) -> String {
         format!(
             "nav {} | distill {} | wake {} | resize {} | frame {}",
             fmt_duration(self.navigation),
@@ -356,76 +356,76 @@ impl BrowserPerf {
 }
 
 #[derive(Clone)]
-pub(crate) struct PerfEvent {
-    pub(crate) phase: &'static str,
-    pub(crate) label: String,
-    pub(crate) duration: Duration,
+pub struct PerfEvent {
+    pub phase: &'static str,
+    pub label: String,
+    pub duration: Duration,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum FrameCapturePurpose {
+pub enum FrameCapturePurpose {
     RenderBridge,
     AiObservation,
 }
 
 impl FrameCapturePurpose {
-    pub(crate) fn queue_label(self) -> &'static str {
+    pub fn queue_label(self) -> &'static str {
         match self {
             FrameCapturePurpose::RenderBridge => "capture queue render bridge",
             FrameCapturePurpose::AiObservation => "capture queue ai observation",
         }
     }
 
-    pub(crate) fn capture_label(self) -> &'static str {
+    pub fn capture_label(self) -> &'static str {
         match self {
             FrameCapturePurpose::RenderBridge => "capture render bridge",
             FrameCapturePurpose::AiObservation => "capture ai observation",
         }
     }
 
-    pub(crate) fn capture_failed_label(self) -> &'static str {
+    pub fn capture_failed_label(self) -> &'static str {
         match self {
             FrameCapturePurpose::RenderBridge => "render bridge capture failed",
             FrameCapturePurpose::AiObservation => "ai observation capture failed",
         }
     }
 
-    pub(crate) fn capture_start_failed_label(self) -> &'static str {
+    pub fn capture_start_failed_label(self) -> &'static str {
         match self {
             FrameCapturePurpose::RenderBridge => "render bridge start failed",
             FrameCapturePurpose::AiObservation => "ai observation start failed",
         }
     }
 
-    pub(crate) fn capture_dropped_label(self) -> &'static str {
+    pub fn capture_dropped_label(self) -> &'static str {
         match self {
             FrameCapturePurpose::RenderBridge => "render bridge capture dropped",
             FrameCapturePurpose::AiObservation => "ai observation capture dropped",
         }
     }
 
-    pub(crate) fn resize_label(self) -> &'static str {
+    pub fn resize_label(self) -> &'static str {
         match self {
             FrameCapturePurpose::RenderBridge => "viewport render bridge",
             FrameCapturePurpose::AiObservation => "viewport ai observation",
         }
     }
 
-    pub(crate) fn resize_failed_label(self) -> &'static str {
+    pub fn resize_failed_label(self) -> &'static str {
         match self {
             FrameCapturePurpose::RenderBridge => "viewport render bridge failed",
             FrameCapturePurpose::AiObservation => "viewport ai observation failed",
         }
     }
 
-    pub(crate) fn resize_async_label(self) -> &'static str {
+    pub fn resize_async_label(self) -> &'static str {
         match self {
             FrameCapturePurpose::RenderBridge => "viewport render bridge async",
             FrameCapturePurpose::AiObservation => "viewport ai observation async",
         }
     }
 
-    pub(crate) fn resize_async_missing_label(self) -> &'static str {
+    pub fn resize_async_missing_label(self) -> &'static str {
         match self {
             FrameCapturePurpose::RenderBridge => "viewport render bridge async missing",
             FrameCapturePurpose::AiObservation => "viewport ai observation async missing",
@@ -433,37 +433,37 @@ impl FrameCapturePurpose {
     }
 }
 
-pub(crate) struct PendingFrameCapture {
-    pub(crate) tab_id: Uuid,
-    pub(crate) result_rx: mpsc::Receiver<Result<AsyncFrameCapture, String>>,
-    pub(crate) started: Instant,
-    pub(crate) viewport_size: (u32, u32),
-    pub(crate) requested_resize: bool,
-    pub(crate) purpose: FrameCapturePurpose,
+pub struct PendingFrameCapture {
+    pub tab_id: Uuid,
+    pub result_rx: mpsc::Receiver<Result<AsyncFrameCapture, String>>,
+    pub started: Instant,
+    pub viewport_size: (u32, u32),
+    pub requested_resize: bool,
+    pub purpose: FrameCapturePurpose,
 }
 
-pub(crate) struct PendingNavigation {
-    pub(crate) url: Url,
-    pub(crate) kind: PendingNavigationKind,
-    pub(crate) result_rx: mpsc::Receiver<Result<AsyncNavigationResult, String>>,
-    pub(crate) started: Instant,
-    pub(crate) viewport_size: Option<(u32, u32)>,
+pub struct PendingNavigation {
+    pub url: Url,
+    pub kind: PendingNavigationKind,
+    pub result_rx: mpsc::Receiver<Result<AsyncNavigationResult, String>>,
+    pub started: Instant,
+    pub viewport_size: Option<(u32, u32)>,
 }
 
-pub(crate) struct PendingObservationWarmup {
-    pub(crate) tab_id: Uuid,
-    pub(crate) result_rx: mpsc::Receiver<Result<BrowserEvalProbe, String>>,
-    pub(crate) started: Instant,
+pub struct PendingObservationWarmup {
+    pub tab_id: Uuid,
+    pub result_rx: mpsc::Receiver<Result<BrowserEvalProbe, String>>,
+    pub started: Instant,
 }
 
-pub(crate) struct ScheduledObservationWarmup {
-    pub(crate) tab_id: Uuid,
-    pub(crate) due: Instant,
+pub struct ScheduledObservationWarmup {
+    pub tab_id: Uuid,
+    pub due: Instant,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[allow(dead_code)]
-pub(crate) enum PendingNavigationKind {
+pub enum PendingNavigationKind {
     Open,
     Reload,
     Back,
@@ -471,7 +471,7 @@ pub(crate) enum PendingNavigationKind {
 }
 
 impl PendingNavigationKind {
-    pub(crate) fn pending_status(self, url: &Url) -> String {
+    pub fn pending_status(self, url: &Url) -> String {
         match self {
             PendingNavigationKind::Open => format!("Opening {} with Servo...", short_url(url)),
             PendingNavigationKind::Reload => "Reloading active tab with Servo...".to_string(),
@@ -480,12 +480,7 @@ impl PendingNavigationKind {
         }
     }
 
-    pub(crate) fn success_status(
-        self,
-        final_url: &Url,
-        backend_name: &str,
-        elapsed: Duration,
-    ) -> String {
+    pub fn success_status(self, final_url: &Url, backend_name: &str, elapsed: Duration) -> String {
         match self {
             PendingNavigationKind::Open => format!(
                 "{} {} with {} in {}. Frame capture queued.",
@@ -512,7 +507,7 @@ impl PendingNavigationKind {
         }
     }
 
-    pub(crate) fn failure_status(self, error: &str) -> String {
+    pub fn failure_status(self, error: &str) -> String {
         match self {
             PendingNavigationKind::Open => format!("Open failed: {}", error),
             PendingNavigationKind::Reload => format!("Reload failed: {}", error),
@@ -521,7 +516,7 @@ impl PendingNavigationKind {
         }
     }
 
-    pub(crate) fn perf_label(self) -> &'static str {
+    pub fn perf_label(self) -> &'static str {
         match self {
             PendingNavigationKind::Open => "open async",
             PendingNavigationKind::Reload => "reload async",
@@ -530,7 +525,7 @@ impl PendingNavigationKind {
         }
     }
 
-    pub(crate) fn failure_perf_label(self) -> &'static str {
+    pub fn failure_perf_label(self) -> &'static str {
         match self {
             PendingNavigationKind::Open => "open async failed",
             PendingNavigationKind::Reload => "reload async failed",
@@ -539,7 +534,7 @@ impl PendingNavigationKind {
         }
     }
 
-    pub(crate) fn dropped_perf_label(self) -> &'static str {
+    pub fn dropped_perf_label(self) -> &'static str {
         match self {
             PendingNavigationKind::Open => "open worker dropped",
             PendingNavigationKind::Reload => "reload worker dropped",
@@ -548,7 +543,7 @@ impl PendingNavigationKind {
         }
     }
 
-    pub(crate) fn phase_label(self) -> &'static str {
+    pub fn phase_label(self) -> &'static str {
         match self {
             PendingNavigationKind::Open => "open",
             PendingNavigationKind::Reload => "reload",
@@ -557,7 +552,7 @@ impl PendingNavigationKind {
         }
     }
 
-    pub(crate) fn log_intent(self, url: &Url) -> String {
+    pub fn log_intent(self, url: &Url) -> String {
         match self {
             PendingNavigationKind::Open => format!("navigate {}", url),
             PendingNavigationKind::Reload => "reload".to_string(),
@@ -567,35 +562,35 @@ impl PendingNavigationKind {
     }
 }
 
-pub(crate) struct PendingDistillation {
-    pub(crate) result_rx: mpsc::Receiver<Result<AsyncDistillResult, String>>,
-    pub(crate) started: Instant,
+pub struct PendingDistillation {
+    pub result_rx: mpsc::Receiver<Result<AsyncDistillResult, String>>,
+    pub started: Instant,
 }
 
-pub(crate) struct PendingPersistence {
-    pub(crate) result_rx: mpsc::Receiver<Result<PersistenceDistillResult, String>>,
-    pub(crate) started: Instant,
-    pub(crate) page_title: String,
+pub struct PendingPersistence {
+    pub result_rx: mpsc::Receiver<Result<PersistenceDistillResult, String>>,
+    pub started: Instant,
+    pub page_title: String,
 }
 
-pub(crate) struct PendingWakeSearch {
-    pub(crate) result_rx: mpsc::Receiver<Result<PersistenceWakeSearchResult, String>>,
-    pub(crate) started: Instant,
-    pub(crate) query: String,
+pub struct PendingWakeSearch {
+    pub result_rx: mpsc::Receiver<Result<PersistenceWakeSearchResult, String>>,
+    pub started: Instant,
+    pub query: String,
 }
 
-pub(crate) struct PendingLogWrite {
-    pub(crate) result_rx: mpsc::Receiver<Result<PersistenceLogResult, String>>,
-    pub(crate) started: Instant,
-    pub(crate) intent: String,
+pub struct PendingLogWrite {
+    pub result_rx: mpsc::Receiver<Result<PersistenceLogResult, String>>,
+    pub started: Instant,
+    pub intent: String,
 }
 
-pub(crate) struct PendingLogRefresh {
-    pub(crate) result_rx: mpsc::Receiver<Result<PersistenceLogResult, String>>,
-    pub(crate) started: Instant,
+pub struct PendingLogRefresh {
+    pub result_rx: mpsc::Receiver<Result<PersistenceLogResult, String>>,
+    pub started: Instant,
 }
 
-pub(crate) enum ViewportInputEvent {
+pub enum ViewportInputEvent {
     MouseMove {
         x: f32,
         y: f32,
@@ -619,18 +614,18 @@ pub(crate) enum ViewportInputEvent {
     },
 }
 
-pub(crate) struct PersistenceDistillResult {
-    pub(crate) wake_results: Vec<WakeEntry>,
-    pub(crate) recent_logs: Vec<LogEntry>,
+pub struct PersistenceDistillResult {
+    pub wake_results: Vec<WakeEntry>,
+    pub recent_logs: Vec<LogEntry>,
 }
 
-pub(crate) struct PersistenceWakeSearchResult {
-    pub(crate) wake_results: Vec<WakeEntry>,
-    pub(crate) recent_logs: Vec<LogEntry>,
+pub struct PersistenceWakeSearchResult {
+    pub wake_results: Vec<WakeEntry>,
+    pub recent_logs: Vec<LogEntry>,
 }
 
-pub(crate) struct PersistenceLogResult {
-    pub(crate) recent_logs: Vec<LogEntry>,
+pub struct PersistenceLogResult {
+    pub recent_logs: Vec<LogEntry>,
 }
 
 /// User-configurable local AI backend selection, persisted to
@@ -638,17 +633,17 @@ pub(crate) struct PersistenceLogResult {
 /// order on load: file -> env overrides -> built-in defaults.
 #[cfg(feature = "xilem-shell")]
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub(crate) struct AiLocalConfig {
-    pub(crate) backend: String,
-    pub(crate) endpoint: String,
-    pub(crate) model: String,
+pub struct AiLocalConfig {
+    pub backend: String,
+    pub endpoint: String,
+    pub model: String,
 }
 
 #[cfg(feature = "xilem-shell")]
 impl AiLocalConfig {
-    pub(crate) const BACKENDS: [&'static str; 3] = ["llamacpp", "ollama", "vllm"];
+    pub const BACKENDS: [&'static str; 3] = ["llamacpp", "ollama", "vllm"];
 
-    pub(crate) fn default_for(backend: &str) -> Self {
+    pub fn default_for(backend: &str) -> Self {
         let (endpoint, model) = match backend {
             "ollama" => ("http://127.0.0.1:11434", "qwen2.5:3b"),
             "vllm" => ("http://127.0.0.1:8000", "qwen2.5-coder-32b"),
@@ -662,11 +657,11 @@ impl AiLocalConfig {
         }
     }
 
-    pub(crate) fn config_path(profile_dir: &Path) -> PathBuf {
+    pub fn config_path(profile_dir: &Path) -> PathBuf {
         profile_dir.join("ai-provider.json")
     }
 
-    pub(crate) fn load(profile_dir: &Path) -> Self {
+    pub fn load(profile_dir: &Path) -> Self {
         let mut config = std::fs::read_to_string(Self::config_path(profile_dir))
             .ok()
             .and_then(|raw| serde_json::from_str::<AiLocalConfig>(&raw).ok())
@@ -686,12 +681,12 @@ impl AiLocalConfig {
         config
     }
 
-    pub(crate) fn save(&self, profile_dir: &Path) -> Result<(), String> {
+    pub fn save(&self, profile_dir: &Path) -> Result<(), String> {
         let json = serde_json::to_string_pretty(self).map_err(|error| error.to_string())?;
         std::fs::write(Self::config_path(profile_dir), json).map_err(|error| error.to_string())
     }
 
-    pub(crate) fn normalize(&mut self) {
+    pub fn normalize(&mut self) {
         self.backend = self.backend.trim().to_lowercase();
         if !Self::BACKENDS.contains(&self.backend.as_str()) {
             self.backend = "llamacpp".to_string();
@@ -700,7 +695,7 @@ impl AiLocalConfig {
         self.model = self.model.trim().to_string();
     }
 
-    pub(crate) fn backend_enum(&self) -> InferenceBackend {
+    pub fn backend_enum(&self) -> InferenceBackend {
         match self.backend.as_str() {
             "ollama" => InferenceBackend::Ollama,
             "vllm" => InferenceBackend::VLLM,
@@ -708,7 +703,7 @@ impl AiLocalConfig {
         }
     }
 
-    pub(crate) fn backend_label(backend: &str) -> &'static str {
+    pub fn backend_label(backend: &str) -> &'static str {
         match backend {
             "ollama" => "Ollama",
             "vllm" => "vLLM",
@@ -718,7 +713,7 @@ impl AiLocalConfig {
 }
 
 #[cfg(feature = "xilem-shell")]
-pub(crate) fn env_override(name: &str) -> Option<String> {
+pub fn env_override(name: &str) -> Option<String> {
     std::env::var(name)
         .ok()
         .map(|value| value.trim().to_string())
@@ -726,10 +721,10 @@ pub(crate) fn env_override(name: &str) -> Option<String> {
 }
 
 #[cfg(feature = "xilem-shell")]
-pub(crate) struct PendingPilotPlan {
-    pub(crate) intent: String,
-    pub(crate) result_rx: mpsc::Receiver<Result<Vec<PilotAction>, String>>,
-    pub(crate) started: Instant,
+pub struct PendingPilotPlan {
+    pub intent: String,
+    pub result_rx: mpsc::Receiver<Result<Vec<PilotAction>, String>>,
+    pub started: Instant,
 }
 
 /// Structured record of one pilot run: intent -> typed plan -> analysis -> status.
@@ -737,24 +732,24 @@ pub(crate) struct PendingPilotPlan {
 /// dashboard (or MCP) can consume the same stream without a rewrite.
 #[cfg(feature = "xilem-shell")]
 #[derive(Clone, Debug, serde::Serialize)]
-pub(crate) struct PilotStepRecord {
-    pub(crate) kind: String,
-    pub(crate) detail: String,
+pub struct PilotStepRecord {
+    pub kind: String,
+    pub detail: String,
 }
 
 #[cfg(feature = "xilem-shell")]
 #[derive(Clone, Debug, serde::Serialize)]
-pub(crate) struct PilotRunArtifact {
-    pub(crate) intent: String,
-    pub(crate) planner: String,
-    pub(crate) plan: Vec<PilotStepRecord>,
-    pub(crate) analysis: Vec<String>,
-    pub(crate) status: String,
-    pub(crate) reason_ms: u128,
+pub struct PilotRunArtifact {
+    pub intent: String,
+    pub planner: String,
+    pub plan: Vec<PilotStepRecord>,
+    pub analysis: Vec<String>,
+    pub status: String,
+    pub reason_ms: u128,
 }
 
 #[cfg(feature = "xilem-shell")]
-pub(crate) fn pilot_action_record(action: &PilotAction) -> PilotStepRecord {
+pub fn pilot_action_record(action: &PilotAction) -> PilotStepRecord {
     let (kind, detail) = match action {
         PilotAction::Navigate(url) => ("navigate", short_url(url)),
         PilotAction::OpenTab(url) => ("open_tab", short_url(url)),
@@ -773,22 +768,22 @@ pub(crate) fn pilot_action_record(action: &PilotAction) -> PilotStepRecord {
 }
 
 #[derive(Clone, Copy, Default)]
-pub(crate) struct DrawStats {
-    pub(crate) total: Duration,
-    pub(crate) frame_blit: Option<Duration>,
-    pub(crate) present: Duration,
+pub struct DrawStats {
+    pub total: Duration,
+    pub frame_blit: Option<Duration>,
+    pub present: Duration,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct GuardDecision {
-    pub(crate) action: &'static str,
-    pub(crate) reason: String,
-    pub(crate) allowed: bool,
-    pub(crate) network_allowed: bool,
+pub struct GuardDecision {
+    pub action: &'static str,
+    pub reason: String,
+    pub allowed: bool,
+    pub network_allowed: bool,
 }
 
 impl GuardDecision {
-    pub(crate) fn summary(&self) -> String {
+    pub fn summary(&self) -> String {
         let network = if self.network_allowed {
             "network allowed"
         } else {

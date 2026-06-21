@@ -4,15 +4,15 @@
 use super::*;
 
 impl BrowserApp {
-    pub(crate) fn refresh_frame(&mut self) {
+    pub fn refresh_frame(&mut self) {
         self.refresh_frame_for(FrameCapturePurpose::AiObservation);
     }
 
-    pub(crate) fn refresh_render_bridge_frame(&mut self) {
+    pub fn refresh_render_bridge_frame(&mut self) {
         self.refresh_frame_for(FrameCapturePurpose::RenderBridge);
     }
 
-    pub(crate) fn refresh_render_bridge_frame_after_visible_tab_change(&mut self) {
+    pub fn refresh_render_bridge_frame_after_visible_tab_change(&mut self) {
         if self.defer_user_navigation {
             self.drop_pending_frame_capture_for_tab_change();
             self.start_frame_capture_for(FrameCapturePurpose::RenderBridge);
@@ -21,18 +21,18 @@ impl BrowserApp {
         }
     }
 
-    pub(crate) fn drop_pending_frame_capture_for_tab_change(&mut self) -> bool {
+    pub fn drop_pending_frame_capture_for_tab_change(&mut self) -> bool {
         self.pending_frame_capture.take().is_some()
     }
 
-    pub(crate) fn frame_capture_allowed(&self, purpose: FrameCapturePurpose) -> bool {
+    pub fn frame_capture_allowed(&self, purpose: FrameCapturePurpose) -> bool {
         match purpose {
             FrameCapturePurpose::RenderBridge => true,
             FrameCapturePurpose::AiObservation => self.capabilities().ai_observe_frame,
         }
     }
 
-    pub(crate) fn block_frame_capture(&mut self, purpose: FrameCapturePurpose) {
+    pub fn block_frame_capture(&mut self, purpose: FrameCapturePurpose) {
         self.last_status = match purpose {
             FrameCapturePurpose::RenderBridge => {
                 "Servo render bridge frame capture is unavailable.".to_string()
@@ -46,7 +46,7 @@ impl BrowserApp {
         self.validation.error_seen = true;
     }
 
-    pub(crate) fn refresh_frame_for(&mut self, purpose: FrameCapturePurpose) {
+    pub fn refresh_frame_for(&mut self, purpose: FrameCapturePurpose) {
         if !self.frame_capture_allowed(purpose) {
             self.block_frame_capture(purpose);
             return;
@@ -107,7 +107,7 @@ impl BrowserApp {
         }
     }
 
-    pub(crate) fn maybe_refresh_frame(&mut self) -> bool {
+    pub fn maybe_refresh_frame(&mut self) -> bool {
         if self.collect_pending_frame_capture() {
             return true;
         }
@@ -146,12 +146,12 @@ impl BrowserApp {
         false
     }
 
-    pub(crate) fn viewport_input_capture_delay(&self) -> Option<Duration> {
+    pub fn viewport_input_capture_delay(&self) -> Option<Duration> {
         let elapsed = self.last_viewport_input_flush?.elapsed();
         Some(VIEWPORT_INPUT_CAPTURE_SETTLE.saturating_sub(elapsed))
     }
 
-    pub(crate) fn start_frame_capture_for(&mut self, purpose: FrameCapturePurpose) -> bool {
+    pub fn start_frame_capture_for(&mut self, purpose: FrameCapturePurpose) -> bool {
         if self.pending_frame_capture.is_some() {
             return false;
         }
@@ -206,7 +206,7 @@ impl BrowserApp {
         }
     }
 
-    pub(crate) fn collect_pending_frame_capture(&mut self) -> bool {
+    pub fn collect_pending_frame_capture(&mut self) -> bool {
         let Some(pending) = self.pending_frame_capture.as_ref() else {
             return false;
         };
@@ -298,12 +298,12 @@ impl BrowserApp {
         }
     }
 
-    pub(crate) fn begin_frame_warmup(&mut self) {
+    pub fn begin_frame_warmup(&mut self) {
         self.frame_refresh_budget = FRAME_WARMUP_BUDGET;
         self.frame_dirty = true;
     }
 
-    pub(crate) fn begin_interaction_frame_warmup(&mut self) {
+    pub fn begin_interaction_frame_warmup(&mut self) {
         self.frame_refresh_budget = self
             .frame_refresh_budget
             .max(FRAME_INTERACTION_WARMUP_BUDGET);
@@ -311,11 +311,11 @@ impl BrowserApp {
         self.frame_dirty = true;
     }
 
-    pub(crate) fn record_log(&mut self, intent: &str, status: LogStatus) -> Result<(), String> {
+    pub fn record_log(&mut self, intent: &str, status: LogStatus) -> Result<(), String> {
         self.record_log_with_consent(intent, status, None)
     }
 
-    pub(crate) fn record_log_with_consent(
+    pub fn record_log_with_consent(
         &mut self,
         intent: &str,
         status: LogStatus,

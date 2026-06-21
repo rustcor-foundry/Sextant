@@ -2,27 +2,27 @@
 //! rects and prev/next paging. Split out of the browser.rs god-impl as a
 //! separate `impl BrowserApp` block; `use super::*` brings the struct, its
 //! fields (reachable here as a descendant module), and the theme constants.
-//! Methods are pub(crate) so the rest of the crate can call them unchanged.
+//! Methods are pub so the rest of the crate can call them unchanged.
 
 use super::*;
 
 impl BrowserApp {
-    pub(crate) fn page_tab_visible_count(&self) -> usize {
+    pub fn page_tab_visible_count(&self) -> usize {
         self.engine.get_tabs().len().min(MAX_VISIBLE_PAGE_TABS)
     }
 
-    pub(crate) fn max_page_tab_window_start(&self) -> usize {
+    pub fn max_page_tab_window_start(&self) -> usize {
         let tabs_len = self.engine.get_tabs().len();
         tabs_len.saturating_sub(tabs_len.min(MAX_VISIBLE_PAGE_TABS))
     }
 
-    pub(crate) fn clamp_page_tab_window(&mut self) {
+    pub fn clamp_page_tab_window(&mut self) {
         self.page_tab_window_start = self
             .page_tab_window_start
             .min(self.max_page_tab_window_start());
     }
 
-    pub(crate) fn show_page_tab(&mut self, tab_id: Uuid) {
+    pub fn show_page_tab(&mut self, tab_id: Uuid) {
         let tabs = self.engine.get_tabs();
         let visible_count = tabs.len().min(MAX_VISIBLE_PAGE_TABS);
         if visible_count == 0 {
@@ -41,19 +41,19 @@ impl BrowserApp {
         self.clamp_page_tab_window();
     }
 
-    pub(crate) fn page_tab_overflowing(&self) -> bool {
+    pub fn page_tab_overflowing(&self) -> bool {
         self.engine.get_tabs().len() > self.page_tab_visible_count()
     }
 
-    pub(crate) fn can_page_tabs_previous(&self) -> bool {
+    pub fn can_page_tabs_previous(&self) -> bool {
         self.page_tab_overflowing() && self.page_tab_window_start > 0
     }
 
-    pub(crate) fn can_page_tabs_next(&self) -> bool {
+    pub fn can_page_tabs_next(&self) -> bool {
         self.page_tab_overflowing() && self.page_tab_window_start < self.max_page_tab_window_start()
     }
 
-    pub(crate) fn compute_page_tab_pager_rects(&self, main_right: u32) -> (Rect, Rect) {
+    pub fn compute_page_tab_pager_rects(&self, main_right: u32) -> (Rect, Rect) {
         let top = CHROME_H + STRIP_H + TAB_H + 3;
         (
             Rect {
@@ -71,7 +71,7 @@ impl BrowserApp {
         )
     }
 
-    pub(crate) fn compute_page_tab_rects(&self, main_right: u32) -> Vec<PageTabRegion> {
+    pub fn compute_page_tab_rects(&self, main_right: u32) -> Vec<PageTabRegion> {
         let tabs = self.engine.get_tabs();
         if tabs.is_empty() {
             return Vec::new();
@@ -114,7 +114,7 @@ impl BrowserApp {
             .collect()
     }
 
-    pub(crate) fn page_tabs_previous(&mut self) {
+    pub fn page_tabs_previous(&mut self) {
         if !self.can_page_tabs_previous() {
             return;
         }
@@ -125,7 +125,7 @@ impl BrowserApp {
         self.validation.tab_control_seen = true;
     }
 
-    pub(crate) fn page_tabs_next(&mut self) {
+    pub fn page_tabs_next(&mut self) {
         if !self.can_page_tabs_next() {
             return;
         }
@@ -137,7 +137,7 @@ impl BrowserApp {
         self.validation.tab_control_seen = true;
     }
 
-    pub(crate) fn page_tab_window_status(&self) -> String {
+    pub fn page_tab_window_status(&self) -> String {
         let total = self.engine.get_tabs().len();
         if total == 0 {
             return "No tabs open.".to_string();

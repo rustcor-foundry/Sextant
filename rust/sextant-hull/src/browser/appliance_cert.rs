@@ -5,7 +5,7 @@ use super::*;
 
 impl BrowserApp {
     #[cfg(any(feature = "xilem-shell", feature = "servo-backend"))]
-    pub(crate) fn refresh_appliance_cert_trust(&mut self) {
+    pub fn refresh_appliance_cert_trust(&mut self) {
         match ApplianceCertTrustStore::load(&self.profile_data_dir) {
             Ok(store) => {
                 self.appliance_cert_entries = store.entries;
@@ -37,7 +37,7 @@ impl BrowserApp {
     }
 
     #[cfg(not(any(feature = "xilem-shell", feature = "servo-backend")))]
-    pub(crate) fn refresh_appliance_cert_trust(&mut self) {
+    pub fn refresh_appliance_cert_trust(&mut self) {
         self.appliance_cert_status =
             "Local appliance trust storage is unavailable in this build.".to_string();
         self.last_status = self.appliance_cert_status.clone();
@@ -45,7 +45,7 @@ impl BrowserApp {
     }
 
     #[cfg(any(feature = "xilem-shell", feature = "servo-backend"))]
-    pub(crate) fn forget_selected_appliance_cert(&mut self) {
+    pub fn forget_selected_appliance_cert(&mut self) {
         let Some(selected) = self.selected_appliance_cert else {
             self.last_status = "Select a trusted appliance before forgetting it.".to_string();
             self.last_ok = false;
@@ -94,7 +94,7 @@ impl BrowserApp {
     }
 
     #[cfg(not(any(feature = "xilem-shell", feature = "servo-backend")))]
-    pub(crate) fn forget_selected_appliance_cert(&mut self) {
+    pub fn forget_selected_appliance_cert(&mut self) {
         self.appliance_cert_status =
             "Local appliance trust storage is unavailable in this build.".to_string();
         self.last_status = self.appliance_cert_status.clone();

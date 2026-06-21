@@ -4,7 +4,7 @@
 use super::*;
 
 impl BrowserApp {
-    pub(crate) fn navigate_to(&mut self, url: Url) {
+    pub fn navigate_to(&mut self, url: Url) {
         let started = Instant::now();
         let guard = match self.check_navigation_guard(&url, "navigate") {
             Ok(guard) => guard,
@@ -55,7 +55,7 @@ impl BrowserApp {
         }
     }
 
-    pub(crate) fn start_visible_navigation(&mut self, url: Url) -> bool {
+    pub fn start_visible_navigation(&mut self, url: Url) -> bool {
         if self.pending_navigation.is_some() {
             self.last_status = "Navigation is already in progress.".to_string();
             self.last_ok = false;
@@ -128,7 +128,7 @@ impl BrowserApp {
         }
     }
 
-    pub(crate) fn start_visible_navigation_control(&mut self, kind: PendingNavigationKind) -> bool {
+    pub fn start_visible_navigation_control(&mut self, kind: PendingNavigationKind) -> bool {
         if self.pending_navigation.is_some() {
             self.last_status = "Navigation is already in progress.".to_string();
             self.last_ok = false;
@@ -181,7 +181,7 @@ impl BrowserApp {
         }
     }
 
-    pub(crate) fn collect_pending_navigation(&mut self) -> Option<Duration> {
+    pub fn collect_pending_navigation(&mut self) -> Option<Duration> {
         let pending = self.pending_navigation.as_ref()?;
         match pending.result_rx.try_recv() {
             Ok(result) => {
@@ -269,7 +269,7 @@ impl BrowserApp {
         }
     }
 
-    pub(crate) fn schedule_observation_warmup_if_allowed(&mut self) -> bool {
+    pub fn schedule_observation_warmup_if_allowed(&mut self) -> bool {
         if !self.observation_warmup_enabled
             || !self.capabilities().ai_observe_dom
             || self.scheduled_observation_warmup.is_some()
@@ -287,7 +287,7 @@ impl BrowserApp {
         true
     }
 
-    pub(crate) fn maybe_start_scheduled_observation_warmup(&mut self) -> bool {
+    pub fn maybe_start_scheduled_observation_warmup(&mut self) -> bool {
         let Some(scheduled) = self.scheduled_observation_warmup.as_ref() else {
             return false;
         };
@@ -306,7 +306,7 @@ impl BrowserApp {
         self.start_observation_warmup_for(tab_id)
     }
 
-    pub(crate) fn observation_warmup_has_foreground_work(&self) -> bool {
+    pub fn observation_warmup_has_foreground_work(&self) -> bool {
         self.pending_user_navigation.is_some()
             || self.pending_user_action.is_some()
             || self.pending_navigation.is_some()
@@ -320,13 +320,13 @@ impl BrowserApp {
             || !self.pending_browser_text.is_empty()
     }
 
-    pub(crate) fn scheduled_observation_warmup_due(&self) -> Option<Instant> {
+    pub fn scheduled_observation_warmup_due(&self) -> Option<Instant> {
         self.scheduled_observation_warmup
             .as_ref()
             .map(|scheduled| scheduled.due)
     }
 
-    pub(crate) fn start_observation_warmup_for(&mut self, tab_id: Uuid) -> bool {
+    pub fn start_observation_warmup_for(&mut self, tab_id: Uuid) -> bool {
         if !self.observation_warmup_enabled
             || !self.capabilities().ai_observe_dom
             || self.pending_observation_warmup.is_some()
@@ -358,7 +358,7 @@ impl BrowserApp {
         }
     }
 
-    pub(crate) fn collect_pending_observation_warmup(&mut self) -> Option<Duration> {
+    pub fn collect_pending_observation_warmup(&mut self) -> Option<Duration> {
         let pending = self.pending_observation_warmup.as_ref()?;
         match pending.result_rx.try_recv() {
             Ok(result) => {
@@ -410,7 +410,7 @@ impl BrowserApp {
         }
     }
 
-    pub(crate) fn apply_initial_navigation_frame(
+    pub fn apply_initial_navigation_frame(
         &mut self,
         initial_frame: Option<Result<AsyncFrameCapture, String>>,
     ) -> bool {
@@ -471,7 +471,7 @@ impl BrowserApp {
         }
     }
 
-    pub(crate) fn record_navigation_timings(
+    pub fn record_navigation_timings(
         &mut self,
         timings: &AsyncNavigationTimings,
         kind: PendingNavigationKind,

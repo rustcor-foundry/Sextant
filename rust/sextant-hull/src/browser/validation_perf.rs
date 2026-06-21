@@ -4,7 +4,7 @@
 use super::*;
 
 impl BrowserApp {
-    pub(crate) fn validation_rows(&self) -> Vec<ValidationRow> {
+    pub fn validation_rows(&self) -> Vec<ValidationRow> {
         let active_url = self
             .active_tab()
             .and_then(|tab| tab.url.as_ref())
@@ -147,14 +147,14 @@ impl BrowserApp {
         ]
     }
 
-    pub(crate) fn validation_pass_count(&self) -> usize {
+    pub fn validation_pass_count(&self) -> usize {
         self.validation_rows()
             .iter()
             .filter(|row| matches!(row.status, ValidationStatus::Pass))
             .count()
     }
 
-    pub(crate) fn record_perf(&mut self, phase: &'static str, duration: Duration, label: &str) {
+    pub fn record_perf(&mut self, phase: &'static str, duration: Duration, label: &str) {
         match phase {
             "navigation" => self.perf.navigation = Some(duration),
             "distill" => self.perf.distill = Some(duration),
@@ -174,24 +174,24 @@ impl BrowserApp {
         }
     }
 
-    pub(crate) fn slowest_perf_event(&self) -> Option<&PerfEvent> {
+    pub fn slowest_perf_event(&self) -> Option<&PerfEvent> {
         self.perf_events
             .iter()
             .max_by_key(|event| event.duration.as_millis())
     }
 
-    pub(crate) fn slowest_perf_events(&self, limit: usize) -> Vec<&PerfEvent> {
+    pub fn slowest_perf_events(&self, limit: usize) -> Vec<&PerfEvent> {
         let mut events = self.perf_events.iter().collect::<Vec<_>>();
         events.sort_by(|left, right| right.duration.cmp(&left.duration));
         events.truncate(limit);
         events
     }
 
-    pub(crate) fn active_tab(&self) -> Option<&Tab> {
+    pub fn active_tab(&self) -> Option<&Tab> {
         self.engine.get_active_tab()
     }
 
-    pub(crate) fn action_enabled(&self, action: Action) -> bool {
+    pub fn action_enabled(&self, action: Action) -> bool {
         match action {
             Action::Navigate => !self.address_input.trim().is_empty(),
             Action::RunShowcase => self.proof_workflow_allowed(),
@@ -216,7 +216,7 @@ impl BrowserApp {
         }
     }
 
-    pub(crate) fn disabled_reason(&self, action: Action) -> String {
+    pub fn disabled_reason(&self, action: Action) -> String {
         match action {
             Action::Navigate => "Enter an address, search phrase, or intent first.".to_string(),
             Action::RunShowcase => {
@@ -255,7 +255,7 @@ impl BrowserApp {
         }
     }
 
-    pub(crate) fn sync_address_to_active_tab(&mut self) {
+    pub fn sync_address_to_active_tab(&mut self) {
         if let Some(url) = self.active_tab().and_then(|tab| tab.url.clone()) {
             self.address_input = url.to_string();
         } else {
@@ -263,7 +263,7 @@ impl BrowserApp {
         }
     }
 
-    pub(crate) fn refresh_logs(&mut self) {
+    pub fn refresh_logs(&mut self) {
         if !self.capabilities().write_log_content {
             self.recent_logs.clear();
             self.pending_log_refresh = None;

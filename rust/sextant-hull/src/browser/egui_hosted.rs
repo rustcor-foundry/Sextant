@@ -14,7 +14,7 @@ use super::*;
 /// Servo child window below the chrome. The softbuffer `run_hosted_direct_app`
 /// above is retained for the `--hosted-direct-smoke` proofs.
 #[cfg(all(target_os = "windows", feature = "servo-backend"))]
-pub(crate) fn run_hosted_direct_app_egui(
+pub fn run_hosted_direct_app_egui(
     startup_input: Option<String>,
     browser_mode: BrowserMode,
     certificate_path: Option<PathBuf>,

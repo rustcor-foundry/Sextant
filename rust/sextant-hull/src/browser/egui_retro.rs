@@ -12,7 +12,7 @@ use super::*;
 /// anti-aliased monospace everywhere. This is the "high-resolution retro" proof:
 /// same terminal feel as the softbuffer bridge shell, rendered AA + HiDPI.
 #[cfg(all(target_os = "windows", feature = "servo-backend"))]
-pub(crate) fn apply_retro_egui_theme(ctx: &egui::Context) {
+pub fn apply_retro_egui_theme(ctx: &egui::Context) {
     use egui::{Color32, FontFamily::Monospace, FontId, Rounding, Stroke, TextStyle, Visuals};
 
     let bg = Color32::from_rgb(0x10, 0x16, 0x1d);
@@ -192,7 +192,7 @@ fn draw_retro_egui_proof(ctx: &egui::Context, intent: &mut String, zoom: &mut f3
 /// the production egui+softbuffer chrome path (`init_chrome_backend` /
 /// `ChromeBackend::render`) so it renders the same way on this GPU-less host.
 #[cfg(all(target_os = "windows", feature = "servo-backend"))]
-pub(crate) fn run_retro_egui_proof() -> Result<(), String> {
+pub fn run_retro_egui_proof() -> Result<(), String> {
     let event_loop =
         EventLoop::new().map_err(|error| format!("event loop initialization failed: {error}"))?;
     let window = Arc::new(

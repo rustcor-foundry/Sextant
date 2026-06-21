@@ -2,13 +2,13 @@
 //! the top bar / controls / tab strip / AI rail / status bar, and the
 //! low-level rasterization primitives (fill/stroke rect, clipped text, glyph
 //! blitting). Free functions split out of browser.rs; `use super::*` supplies
-//! BrowserApp (its methods are pub(crate)), the data types, and theme colors.
+//! BrowserApp (its methods are pub), the data types, and theme colors.
 //! Re-exported from the crate root (`use draw::*`) so the run loops and other
 //! modules call these unchanged.
 
 use super::*;
 
-pub(crate) fn draw(
+pub fn draw(
     window: &Window,
     surface: &mut Surface<Arc<Window>, Arc<Window>>,
     surface_size: &mut PhysicalSize<u32>,
@@ -82,7 +82,7 @@ pub(crate) fn draw(
     })
 }
 
-pub(crate) fn draw_top_bar(buffer: &mut [u32], width: u32, height: u32, app: &BrowserApp) {
+pub fn draw_top_bar(buffer: &mut [u32], width: u32, height: u32, app: &BrowserApp) {
     let rail_x = right_rail_x(width);
     fill_rect(
         buffer,
@@ -170,7 +170,7 @@ pub(crate) fn draw_top_bar(buffer: &mut [u32], width: u32, height: u32, app: &Br
     );
 }
 
-pub(crate) fn draw_controls(buffer: &mut [u32], width: u32, height: u32, app: &BrowserApp) {
+pub fn draw_controls(buffer: &mut [u32], width: u32, height: u32, app: &BrowserApp) {
     let rail_x = right_rail_x(width);
     fill_rect(
         buffer,
@@ -304,7 +304,7 @@ pub(crate) fn draw_controls(buffer: &mut [u32], width: u32, height: u32, app: &B
     );
 }
 
-pub(crate) fn draw_page_tab_strip(buffer: &mut [u32], width: u32, height: u32, app: &BrowserApp) {
+pub fn draw_page_tab_strip(buffer: &mut [u32], width: u32, height: u32, app: &BrowserApp) {
     let rail_x = right_rail_x(width);
     let strip = Rect {
         x: 0,
@@ -371,7 +371,7 @@ pub(crate) fn draw_page_tab_strip(buffer: &mut [u32], width: u32, height: u32, a
     }
 }
 
-pub(crate) fn draw_page_load_bar(buffer: &mut [u32], width: u32, height: u32, app: &BrowserApp) {
+pub fn draw_page_load_bar(buffer: &mut [u32], width: u32, height: u32, app: &BrowserApp) {
     let track = page_load_bar_rect(width);
     if track.w == 0 || track.h == 0 {
         return;
@@ -403,7 +403,7 @@ pub(crate) fn draw_page_load_bar(buffer: &mut [u32], width: u32, height: u32, ap
     }
 }
 
-pub(crate) fn page_load_bar_rect(width: u32) -> Rect {
+pub fn page_load_bar_rect(width: u32) -> Rect {
     let rail_x = right_rail_x(width);
     Rect {
         x: 24,
@@ -413,7 +413,7 @@ pub(crate) fn page_load_bar_rect(width: u32) -> Rect {
     }
 }
 
-pub(crate) fn page_load_bar_active_rect(app: &BrowserApp, track: Rect) -> Option<Rect> {
+pub fn page_load_bar_active_rect(app: &BrowserApp, track: Rect) -> Option<Rect> {
     let pending = app.pending_navigation.as_ref()?;
     if track.w == 0 {
         return None;
@@ -442,7 +442,7 @@ pub(crate) fn page_load_bar_active_rect(app: &BrowserApp, track: Rect) -> Option
     })
 }
 
-pub(crate) fn page_tab_range_label_rect(app: &BrowserApp) -> Option<(Rect, String)> {
+pub fn page_tab_range_label_rect(app: &BrowserApp) -> Option<(Rect, String)> {
     let tabs_len = app.engine.get_tabs().len();
     if tabs_len <= app.page_tab_rects.len() || app.page_tab_rects.is_empty() {
         return None;
@@ -476,7 +476,7 @@ pub(crate) fn page_tab_range_label_rect(app: &BrowserApp) -> Option<(Rect, Strin
     Some((rect, label))
 }
 
-pub(crate) fn draw_page_tab_pager(
+pub fn draw_page_tab_pager(
     buffer: &mut [u32],
     width: u32,
     height: u32,
@@ -510,7 +510,7 @@ pub(crate) fn draw_page_tab_pager(
     );
 }
 
-pub(crate) fn draw_page_tab(
+pub fn draw_page_tab(
     buffer: &mut [u32],
     width: u32,
     height: u32,
@@ -561,7 +561,7 @@ pub(crate) fn draw_page_tab(
     );
 }
 
-pub(crate) fn draw_metric_cards(buffer: &mut [u32], width: u32, height: u32, app: &BrowserApp) {
+pub fn draw_metric_cards(buffer: &mut [u32], width: u32, height: u32, app: &BrowserApp) {
     let rail_x = right_rail_x(width);
     let left = 24;
     let gap = 12;
@@ -644,7 +644,7 @@ pub(crate) fn draw_metric_cards(buffer: &mut [u32], width: u32, height: u32, app
     );
 }
 
-pub(crate) fn draw_page_panel(
+pub fn draw_page_panel(
     buffer: &mut [u32],
     width: u32,
     height: u32,
@@ -836,7 +836,7 @@ pub(crate) fn draw_page_panel(
     None
 }
 
-pub(crate) fn draw_wake_panel(buffer: &mut [u32], width: u32, height: u32, app: &BrowserApp) {
+pub fn draw_wake_panel(buffer: &mut [u32], width: u32, height: u32, app: &BrowserApp) {
     let rail_x = right_rail_x(width);
     let panel = main_panel_rect(rail_x, height);
     draw_panel_surface(buffer, width, height, panel, STATUS_OK);
@@ -896,7 +896,7 @@ pub(crate) fn draw_wake_panel(buffer: &mut [u32], width: u32, height: u32, app: 
     }
 }
 
-pub(crate) fn draw_reader_page(
+pub fn draw_reader_page(
     buffer: &mut [u32],
     width: u32,
     height: u32,
@@ -1016,7 +1016,7 @@ pub(crate) fn draw_reader_page(
     }
 }
 
-pub(crate) fn draw_rendered_frame(
+pub fn draw_rendered_frame(
     buffer: &mut [u32],
     width: u32,
     height: u32,
@@ -1097,7 +1097,7 @@ pub(crate) fn draw_rendered_frame(
     started.elapsed()
 }
 
-pub(crate) fn draw_log_panel(buffer: &mut [u32], width: u32, height: u32, app: &BrowserApp) {
+pub fn draw_log_panel(buffer: &mut [u32], width: u32, height: u32, app: &BrowserApp) {
     let rail_x = right_rail_x(width);
     let panel = main_panel_rect(rail_x, height);
     draw_panel_surface(buffer, width, height, panel, BUTTON_BRIGHT);
@@ -1143,7 +1143,7 @@ pub(crate) fn draw_log_panel(buffer: &mut [u32], width: u32, height: u32, app: &
     }
 }
 
-pub(crate) fn draw_guard_panel(buffer: &mut [u32], width: u32, height: u32, app: &BrowserApp) {
+pub fn draw_guard_panel(buffer: &mut [u32], width: u32, height: u32, app: &BrowserApp) {
     let rail_x = right_rail_x(width);
     let panel = main_panel_rect(rail_x, height);
     draw_panel_surface(buffer, width, height, panel, STATUS_WARN);
@@ -1195,7 +1195,7 @@ pub(crate) fn draw_guard_panel(buffer: &mut [u32], width: u32, height: u32, app:
 }
 
 #[cfg(feature = "xilem-shell")]
-pub(crate) fn settings_backend_button_rects(panel: Rect) -> Vec<(&'static str, Rect)> {
+pub fn settings_backend_button_rects(panel: Rect) -> Vec<(&'static str, Rect)> {
     let button_w = 150;
     let gap = 14;
     let y = panel.y + 78;
@@ -1218,7 +1218,7 @@ pub(crate) fn settings_backend_button_rects(panel: Rect) -> Vec<(&'static str, R
 }
 
 #[cfg(feature = "xilem-shell")]
-pub(crate) fn draw_settings_panel(buffer: &mut [u32], width: u32, height: u32, app: &BrowserApp) {
+pub fn draw_settings_panel(buffer: &mut [u32], width: u32, height: u32, app: &BrowserApp) {
     let rail_x = right_rail_x(width);
     let panel = main_panel_rect(rail_x, height);
     draw_panel_surface(buffer, width, height, panel, STATUS_OK);
@@ -1322,7 +1322,7 @@ pub(crate) fn draw_settings_panel(buffer: &mut [u32], width: u32, height: u32, a
     );
 }
 
-pub(crate) fn guard_appliance_refresh_rect(panel: Rect) -> Rect {
+pub fn guard_appliance_refresh_rect(panel: Rect) -> Rect {
     Rect {
         x: panel.x + panel.w.saturating_sub(226),
         y: panel.y + GUARD_CERT_SECTION_Y,
@@ -1331,7 +1331,7 @@ pub(crate) fn guard_appliance_refresh_rect(panel: Rect) -> Rect {
     }
 }
 
-pub(crate) fn guard_appliance_forget_rect(panel: Rect) -> Rect {
+pub fn guard_appliance_forget_rect(panel: Rect) -> Rect {
     Rect {
         x: panel.x + panel.w.saturating_sub(118),
         y: panel.y + GUARD_CERT_SECTION_Y,
@@ -1341,7 +1341,7 @@ pub(crate) fn guard_appliance_forget_rect(panel: Rect) -> Rect {
 }
 
 #[cfg(any(feature = "xilem-shell", feature = "servo-backend"))]
-pub(crate) fn guard_appliance_row_rects(panel: Rect, count: usize) -> Vec<(usize, Rect)> {
+pub fn guard_appliance_row_rects(panel: Rect, count: usize) -> Vec<(usize, Rect)> {
     let row_start = panel.y + GUARD_CERT_SECTION_Y + 76;
     let max_rows = panel
         .y
@@ -1363,7 +1363,7 @@ pub(crate) fn guard_appliance_row_rects(panel: Rect, count: usize) -> Vec<(usize
         .collect()
 }
 
-pub(crate) fn draw_appliance_cert_settings(
+pub fn draw_appliance_cert_settings(
     buffer: &mut [u32],
     width: u32,
     height: u32,
@@ -1516,7 +1516,7 @@ pub(crate) fn draw_appliance_cert_settings(
     }
 }
 
-pub(crate) fn draw_perception_panel(buffer: &mut [u32], width: u32, height: u32, app: &BrowserApp) {
+pub fn draw_perception_panel(buffer: &mut [u32], width: u32, height: u32, app: &BrowserApp) {
     let rail_x = right_rail_x(width);
     let panel = main_panel_rect(rail_x, height);
     draw_panel_surface(buffer, width, height, panel, BUTTON_BRIGHT);
@@ -1663,7 +1663,7 @@ pub(crate) fn draw_perception_panel(buffer: &mut [u32], width: u32, height: u32,
     }
 }
 
-pub(crate) fn draw_perf_panel(buffer: &mut [u32], width: u32, height: u32, app: &BrowserApp) {
+pub fn draw_perf_panel(buffer: &mut [u32], width: u32, height: u32, app: &BrowserApp) {
     let rail_x = right_rail_x(width);
     let panel = main_panel_rect(rail_x, height);
     draw_panel_surface(buffer, width, height, panel, STATUS_WARN);
@@ -1775,7 +1775,7 @@ pub(crate) fn draw_perf_panel(buffer: &mut [u32], width: u32, height: u32, app: 
     }
 }
 
-pub(crate) fn draw_validation_panel(buffer: &mut [u32], width: u32, height: u32, app: &BrowserApp) {
+pub fn draw_validation_panel(buffer: &mut [u32], width: u32, height: u32, app: &BrowserApp) {
     let rail_x = right_rail_x(width);
     let panel = main_panel_rect(rail_x, height);
     draw_panel_surface(buffer, width, height, panel, STATUS_OK);
@@ -1920,7 +1920,7 @@ pub(crate) fn draw_validation_panel(buffer: &mut [u32], width: u32, height: u32,
     }
 }
 
-pub(crate) fn draw_field_with_placeholder(
+pub fn draw_field_with_placeholder(
     buffer: &mut [u32],
     width: u32,
     height: u32,
@@ -2005,7 +2005,7 @@ pub(crate) fn draw_field_with_placeholder(
     }
 }
 
-pub(crate) fn proof_report_title(report: &[String]) -> &'static str {
+pub fn proof_report_title(report: &[String]) -> &'static str {
     if report
         .iter()
         .any(|line| line.to_ascii_lowercase().contains("real browsing"))
@@ -2026,7 +2026,7 @@ pub(crate) fn proof_report_title(report: &[String]) -> &'static str {
 /// allows native intents; clicking runs the intent through the local model brain.
 /// Always compiled (label data) so the softbuffer reader shell builds without the
 /// `xilem-shell` feature; the click path that runs an intent stays feature-gated.
-pub(crate) const AI_RAIL_PRESETS: [(&str, &str); 2] = [
+pub const AI_RAIL_PRESETS: [(&str, &str); 2] = [
     (
         "SUMMARIZE",
         "intent: open example.com and summarize the page",
@@ -2038,7 +2038,7 @@ pub(crate) const AI_RAIL_PRESETS: [(&str, &str); 2] = [
 /// idle/complete/authorized, amber for consent/blocked, red for failed, cyan for
 /// in-progress (reasoning/navigating/distilling/perceiving/planning). Tolerates
 /// an optional leading "PILOT " prefix on the status string.
-pub(crate) fn pilot_status_color(status: &str) -> u32 {
+pub fn pilot_status_color(status: &str) -> u32 {
     match status.trim_start_matches("PILOT ").trim() {
         "IDLE" | "COMPLETE" | "CONSENT AUTHORIZED" => STATUS_OK,
         "FAILED" => STATUS_ERROR,
@@ -2047,7 +2047,7 @@ pub(crate) fn pilot_status_color(status: &str) -> u32 {
     }
 }
 
-pub(crate) fn draw_ai_rail(buffer: &mut [u32], width: u32, height: u32, app: &BrowserApp) {
+pub fn draw_ai_rail(buffer: &mut [u32], width: u32, height: u32, app: &BrowserApp) {
     let rail_x = right_rail_x(width);
     fill_rect(
         buffer,
@@ -2321,7 +2321,7 @@ pub(crate) fn draw_ai_rail(buffer: &mut [u32], width: u32, height: u32, app: &Br
     );
 }
 
-pub(crate) fn draw_status_bar(buffer: &mut [u32], width: u32, height: u32, app: &BrowserApp) {
+pub fn draw_status_bar(buffer: &mut [u32], width: u32, height: u32, app: &BrowserApp) {
     let y = height.saturating_sub(STATUS_BAR_H);
     fill_rect(
         buffer,
@@ -2396,13 +2396,7 @@ pub(crate) fn draw_status_bar(buffer: &mut [u32], width: u32, height: u32, app: 
     );
 }
 
-pub(crate) fn draw_panel_surface(
-    buffer: &mut [u32],
-    width: u32,
-    height: u32,
-    rect: Rect,
-    accent: u32,
-) {
+pub fn draw_panel_surface(buffer: &mut [u32], width: u32, height: u32, rect: Rect, accent: u32) {
     fill_rect(buffer, width, height, rect, PANEL_ALT);
     stroke_rect(buffer, width, height, rect, BORDER);
     fill_rect(
@@ -2431,14 +2425,7 @@ pub(crate) fn draw_panel_surface(
     );
 }
 
-pub(crate) fn draw_status_dot(
-    buffer: &mut [u32],
-    width: u32,
-    height: u32,
-    x: u32,
-    y: u32,
-    color: u32,
-) {
+pub fn draw_status_dot(buffer: &mut [u32], width: u32, height: u32, x: u32, y: u32, color: u32) {
     fill_rect(buffer, width, height, Rect { x, y, w: 7, h: 7 }, color);
     stroke_rect(
         buffer,
@@ -2454,7 +2441,7 @@ pub(crate) fn draw_status_dot(
     );
 }
 
-pub(crate) fn draw_status_chip(
+pub fn draw_status_chip(
     buffer: &mut [u32],
     width: u32,
     height: u32,
@@ -2491,7 +2478,7 @@ pub(crate) fn draw_status_chip(
     );
 }
 
-pub(crate) fn draw_text_centered(
+pub fn draw_text_centered(
     buffer: &mut [u32],
     width: u32,
     height: u32,
@@ -2510,7 +2497,7 @@ pub(crate) fn draw_text_centered(
     draw_text(buffer, width, height, x, y, &visible, color, scale);
 }
 
-pub(crate) fn draw_metric_card(
+pub fn draw_metric_card(
     buffer: &mut [u32],
     width: u32,
     height: u32,
@@ -2578,7 +2565,7 @@ pub(crate) fn draw_metric_card(
     );
 }
 
-pub(crate) fn draw_pill(
+pub fn draw_pill(
     buffer: &mut [u32],
     width: u32,
     height: u32,
@@ -2625,7 +2612,7 @@ pub(crate) fn draw_pill(
     );
 }
 
-pub(crate) fn draw_chat_bubble(
+pub fn draw_chat_bubble(
     buffer: &mut [u32],
     width: u32,
     height: u32,
@@ -2675,7 +2662,7 @@ pub(crate) fn draw_chat_bubble(
     }
 }
 
-pub(crate) fn draw_button(
+pub fn draw_button(
     buffer: &mut [u32],
     width: u32,
     height: u32,
@@ -2729,7 +2716,7 @@ pub(crate) fn draw_button(
     );
 }
 
-pub(crate) fn right_rail_x(width: u32) -> u32 {
+pub fn right_rail_x(width: u32) -> u32 {
     let min_main_width = 420;
     if width >= min_main_width + RAIL_WIDTH {
         width.saturating_sub(RAIL_WIDTH)
@@ -2738,7 +2725,7 @@ pub(crate) fn right_rail_x(width: u32) -> u32 {
     }
 }
 
-pub(crate) fn main_panel_rect(rail_x: u32, height: u32) -> Rect {
+pub fn main_panel_rect(rail_x: u32, height: u32) -> Rect {
     let top = METRIC_Y + METRIC_H + 14;
     let bottom_limit = height.saturating_sub(STATUS_BAR_H + 12);
     Rect {
@@ -2749,7 +2736,7 @@ pub(crate) fn main_panel_rect(rail_x: u32, height: u32) -> Rect {
     }
 }
 
-pub(crate) fn browser_viewport_rect(panel: Rect) -> Rect {
+pub fn browser_viewport_rect(panel: Rect) -> Rect {
     let header_h = panel.h.min(126);
     let bottom_pad = if panel.h > header_h { 16 } else { 0 };
     Rect {
@@ -2760,16 +2747,16 @@ pub(crate) fn browser_viewport_rect(panel: Rect) -> Rect {
     }
 }
 
-pub(crate) struct SemanticCounts {
-    pub(crate) headings: usize,
-    pub(crate) links: usize,
-    pub(crate) buttons: usize,
-    pub(crate) inputs: usize,
-    pub(crate) images: usize,
-    pub(crate) text: usize,
+pub struct SemanticCounts {
+    pub headings: usize,
+    pub links: usize,
+    pub buttons: usize,
+    pub inputs: usize,
+    pub images: usize,
+    pub text: usize,
 }
 
-pub(crate) fn semantic_counts(page: &sextant_engine::DistilledPage) -> SemanticCounts {
+pub fn semantic_counts(page: &sextant_engine::DistilledPage) -> SemanticCounts {
     let mut counts = SemanticCounts {
         headings: 0,
         links: 0,
@@ -2791,7 +2778,7 @@ pub(crate) fn semantic_counts(page: &sextant_engine::DistilledPage) -> SemanticC
     counts
 }
 
-pub(crate) fn page_perception_summary(page: &sextant_engine::DistilledPage) -> String {
+pub fn page_perception_summary(page: &sextant_engine::DistilledPage) -> String {
     let counts = semantic_counts(page);
     let kind = if counts.inputs > 0 {
         "interactive form page"
@@ -2816,7 +2803,7 @@ pub(crate) fn page_perception_summary(page: &sextant_engine::DistilledPage) -> S
     )
 }
 
-pub(crate) fn key_semantic_nodes(
+pub fn key_semantic_nodes(
     page: &sextant_engine::DistilledPage,
 ) -> Vec<&sextant_engine::SemanticNode> {
     let mut nodes = page
@@ -2835,7 +2822,7 @@ pub(crate) fn key_semantic_nodes(
     nodes
 }
 
-pub(crate) fn semantic_node_type_label(node_type: &NodeType) -> &'static str {
+pub fn semantic_node_type_label(node_type: &NodeType) -> &'static str {
     match node_type {
         NodeType::Heading => "HEAD",
         NodeType::Link => "LINK",
@@ -2846,7 +2833,7 @@ pub(crate) fn semantic_node_type_label(node_type: &NodeType) -> &'static str {
     }
 }
 
-pub(crate) fn guard_report_lines(
+pub fn guard_report_lines(
     app: &BrowserApp,
     target_url: Option<&Url>,
     _page: Option<&sextant_engine::DistilledPage>,
@@ -2911,7 +2898,7 @@ pub(crate) fn guard_report_lines(
 }
 
 #[cfg(feature = "xilem-shell")]
-pub(crate) fn firewall_action_label(action: &FirewallAction) -> &'static str {
+pub fn firewall_action_label(action: &FirewallAction) -> &'static str {
     match action {
         FirewallAction::Allow => "ALLOW",
         FirewallAction::Block => "BLOCK",
@@ -2920,7 +2907,7 @@ pub(crate) fn firewall_action_label(action: &FirewallAction) -> &'static str {
     }
 }
 
-pub(crate) fn distillation_label(page: &sextant_engine::DistilledPage) -> String {
+pub fn distillation_label(page: &sextant_engine::DistilledPage) -> String {
     page.metadata
         .get("distillation_backend")
         .or_else(|| page.metadata.get("source"))
@@ -2929,7 +2916,7 @@ pub(crate) fn distillation_label(page: &sextant_engine::DistilledPage) -> String
         .unwrap_or_else(|| "unknown".to_string())
 }
 
-pub(crate) fn status_label(status: &LogStatus) -> &'static str {
+pub fn status_label(status: &LogStatus) -> &'static str {
     match status {
         LogStatus::Success => "OK",
         LogStatus::Failure(_) => "FAIL",
@@ -2938,7 +2925,7 @@ pub(crate) fn status_label(status: &LogStatus) -> &'static str {
     }
 }
 
-pub(crate) fn validation_status_label(status: ValidationStatus) -> &'static str {
+pub fn validation_status_label(status: ValidationStatus) -> &'static str {
     match status {
         ValidationStatus::Pass => "PASS",
         ValidationStatus::Waiting => "WAIT",
@@ -2946,7 +2933,7 @@ pub(crate) fn validation_status_label(status: ValidationStatus) -> &'static str 
     }
 }
 
-pub(crate) fn validation_status_color(status: ValidationStatus) -> u32 {
+pub fn validation_status_color(status: ValidationStatus) -> u32 {
     match status {
         ValidationStatus::Pass => STATUS_OK,
         ValidationStatus::Waiting => TEXT_DIM,
@@ -2954,7 +2941,7 @@ pub(crate) fn validation_status_color(status: ValidationStatus) -> u32 {
     }
 }
 
-pub(crate) fn wrap_text(value: &str, max_chars: usize) -> Vec<String> {
+pub fn wrap_text(value: &str, max_chars: usize) -> Vec<String> {
     let max_chars = max_chars.max(12);
     let mut lines = Vec::new();
     let mut current = String::new();
@@ -2974,7 +2961,7 @@ pub(crate) fn wrap_text(value: &str, max_chars: usize) -> Vec<String> {
     lines
 }
 
-pub(crate) fn truncate(value: &str, max_chars: usize) -> String {
+pub fn truncate(value: &str, max_chars: usize) -> String {
     if max_chars == 0 {
         return String::new();
     }
@@ -2992,7 +2979,7 @@ pub(crate) fn truncate(value: &str, max_chars: usize) -> String {
     out
 }
 
-pub(crate) fn fill_rect(buffer: &mut [u32], width: u32, height: u32, rect: Rect, color: u32) {
+pub fn fill_rect(buffer: &mut [u32], width: u32, height: u32, rect: Rect, color: u32) {
     // Clamp the span once (x0 <= max_x always holds) and fill each row with a
     // slice `fill` so the compiler can emit a memset instead of a per-pixel
     // store — this is the software-render hot path (panels, backgrounds, and
@@ -3006,7 +2993,7 @@ pub(crate) fn fill_rect(buffer: &mut [u32], width: u32, height: u32, rect: Rect,
     }
 }
 
-pub(crate) fn stroke_rect(buffer: &mut [u32], width: u32, height: u32, rect: Rect, color: u32) {
+pub fn stroke_rect(buffer: &mut [u32], width: u32, height: u32, rect: Rect, color: u32) {
     fill_rect(
         buffer,
         width,
@@ -3057,7 +3044,7 @@ pub(crate) fn stroke_rect(buffer: &mut [u32], width: u32, height: u32, rect: Rec
     );
 }
 
-pub(crate) fn draw_text(
+pub fn draw_text(
     buffer: &mut [u32],
     width: u32,
     height: u32,
@@ -3078,7 +3065,7 @@ pub(crate) fn draw_text(
     }
 }
 
-pub(crate) fn draw_text_clipped(
+pub fn draw_text_clipped(
     buffer: &mut [u32],
     width: u32,
     height: u32,
@@ -3099,7 +3086,7 @@ pub(crate) fn draw_text_clipped(
     }
 }
 
-pub(crate) fn text_width(text: &str, scale: u32) -> u32 {
+pub fn text_width(text: &str, scale: u32) -> u32 {
     let chars = text.chars().count() as u32;
     if chars == 0 {
         0
@@ -3108,11 +3095,11 @@ pub(crate) fn text_width(text: &str, scale: u32) -> u32 {
     }
 }
 
-pub(crate) fn char_advance(scale: u32) -> u32 {
+pub fn char_advance(scale: u32) -> u32 {
     (GLYPH_W + GLYPH_GAP) * scale.max(1)
 }
 
-pub(crate) fn draw_char(
+pub fn draw_char(
     buffer: &mut [u32],
     width: u32,
     height: u32,
@@ -3150,7 +3137,7 @@ pub(crate) fn draw_char(
     }
 }
 
-pub(crate) fn draw_char_clipped(
+pub fn draw_char_clipped(
     buffer: &mut [u32],
     width: u32,
     height: u32,
@@ -3195,7 +3182,7 @@ pub(crate) fn draw_char_clipped(
     }
 }
 
-pub(crate) fn glyph(ch: char) -> [u8; 7] {
+pub fn glyph(ch: char) -> [u8; 7] {
     match ch.to_ascii_uppercase() {
         'A' => [0x0e, 0x11, 0x11, 0x1f, 0x11, 0x11, 0x11],
         'B' => [0x1e, 0x11, 0x11, 0x1e, 0x11, 0x11, 0x1e],

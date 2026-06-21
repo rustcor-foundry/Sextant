@@ -3,7 +3,7 @@
 use super::*;
 
 impl BrowserApp {
-    pub(crate) fn guard_decision(&self, url: &Url) -> GuardDecision {
+    pub fn guard_decision(&self, url: &Url) -> GuardDecision {
         #[cfg(feature = "xilem-shell")]
         {
             let airgap = SextantAirGap::new();
@@ -43,7 +43,7 @@ impl BrowserApp {
         }
     }
 
-    pub(crate) fn check_navigation_guard(
+    pub fn check_navigation_guard(
         &mut self,
         url: &Url,
         activity: &str,
@@ -68,7 +68,7 @@ impl BrowserApp {
         Err(message)
     }
 
-    pub(crate) fn check_interaction_guard(
+    pub fn check_interaction_guard(
         &mut self,
         result: &sextant_engine::BrowserInteractionResult,
         activity: &str,

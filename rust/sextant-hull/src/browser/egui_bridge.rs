@@ -952,7 +952,7 @@ fn egui_bridge_has_pending_async(app: &BrowserApp) -> bool {
     feature = "servo-backend",
     feature = "xilem-shell"
 ))]
-pub(crate) fn run_visible_app_egui(browser_mode: BrowserMode) -> Result<(), String> {
+pub fn run_visible_app_egui(browser_mode: BrowserMode) -> Result<(), String> {
     let event_loop =
         EventLoop::new().map_err(|error| format!("event loop initialization failed: {error}"))?;
     let window = Arc::new(

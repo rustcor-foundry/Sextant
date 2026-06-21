@@ -4,7 +4,7 @@
 use super::*;
 
 impl BrowserApp {
-    pub(crate) fn click(&mut self, x: f64, y: f64) {
+    pub fn click(&mut self, x: f64, y: f64) {
         if self.address_rect.contains(x, y) {
             self.focus = FocusTarget::Address;
             return;
@@ -125,7 +125,7 @@ impl BrowserApp {
         self.run_action(action);
     }
 
-    pub(crate) fn handle_guard_panel_click(&mut self, x: f64, y: f64) -> bool {
+    pub fn handle_guard_panel_click(&mut self, x: f64, y: f64) -> bool {
         let panel = main_panel_rect(
             right_rail_x(self.window_size.width.max(1)),
             self.window_size.height.max(1),
@@ -158,7 +158,7 @@ impl BrowserApp {
     }
 
     #[cfg(feature = "xilem-shell")]
-    pub(crate) fn handle_settings_panel_click(&mut self, x: f64, y: f64) -> bool {
+    pub fn handle_settings_panel_click(&mut self, x: f64, y: f64) -> bool {
         let panel = main_panel_rect(
             right_rail_x(self.window_size.width.max(1)),
             self.window_size.height.max(1),
@@ -175,7 +175,7 @@ impl BrowserApp {
     /// Switch the local AI backend, persist it, and rebuild the brain lane so the
     /// next intent plans through the newly selected server.
     #[cfg(feature = "xilem-shell")]
-    pub(crate) fn apply_ai_backend(&mut self, backend: &str) {
+    pub fn apply_ai_backend(&mut self, backend: &str) {
         if self.pending_pilot_plan.is_some() {
             // Rebuilding the lane joins its worker thread, which would block on an
             // in-flight model call. Make the user finish the current intent first.
@@ -218,7 +218,7 @@ impl BrowserApp {
         }
     }
 
-    pub(crate) fn wake_input_hit_rect(&self) -> Rect {
+    pub fn wake_input_hit_rect(&self) -> Rect {
         Rect {
             x: self.wake_rect.x,
             y: self.wake_rect.y.saturating_sub(24),
@@ -227,7 +227,7 @@ impl BrowserApp {
         }
     }
 
-    pub(crate) fn switch_to_page_tab(&mut self, tab_id: Uuid) {
+    pub fn switch_to_page_tab(&mut self, tab_id: Uuid) {
         self.flush_pending_browser_text();
         self.flush_viewport_input_lane();
         self.clear_viewport_input_lane();
@@ -256,7 +256,7 @@ impl BrowserApp {
         }
     }
 
-    pub(crate) fn handle_key(&mut self, event: KeyEvent) {
+    pub fn handle_key(&mut self, event: KeyEvent) {
         if event.state == ElementState::Pressed && self.handle_shortcut(&event.logical_key) {
             return;
         }
@@ -297,7 +297,7 @@ impl BrowserApp {
         }
     }
 
-    pub(crate) fn handle_shortcut(&mut self, key: &Key) -> bool {
+    pub fn handle_shortcut(&mut self, key: &Key) -> bool {
         let Some(shortcut) = browser_shortcut_for_key(self.modifiers, key) else {
             return false;
         };
@@ -317,7 +317,7 @@ impl BrowserApp {
         true
     }
 
-    pub(crate) fn run_shortcut_action(&mut self, action: Action) {
+    pub fn run_shortcut_action(&mut self, action: Action) {
         if self.action_enabled(action) {
             self.run_action(action);
         } else {
@@ -327,7 +327,7 @@ impl BrowserApp {
         }
     }
 
-    pub(crate) fn handle_mouse_input(&mut self, x: f64, y: f64, state: ElementState) -> bool {
+    pub fn handle_mouse_input(&mut self, x: f64, y: f64, state: ElementState) -> bool {
         if self.main_view != MainView::Browser || !self.browser_viewport_rect.contains(x, y) {
             return false;
         }
@@ -352,7 +352,7 @@ impl BrowserApp {
         true
     }
 
-    pub(crate) fn handle_mouse_move(&mut self, x: f64, y: f64) {
+    pub fn handle_mouse_move(&mut self, x: f64, y: f64) {
         if self.focus != FocusTarget::Browser || !self.browser_viewport_rect.contains(x, y) {
             return;
         }
@@ -361,7 +361,7 @@ impl BrowserApp {
         }
     }
 
-    pub(crate) fn should_forward_browser_mouse_move(&self, local_x: f32, local_y: f32) -> bool {
+    pub fn should_forward_browser_mouse_move(&self, local_x: f32, local_y: f32) -> bool {
         let Some(last_forward) = self.last_viewport_mouse_move_forward else {
             return true;
         };
@@ -375,12 +375,7 @@ impl BrowserApp {
             || (local_y - last_y).abs() >= VIEWPORT_MOUSE_MOVE_MIN_DISTANCE_PX
     }
 
-    pub(crate) fn forward_browser_mouse_move(
-        &mut self,
-        local_x: f32,
-        local_y: f32,
-        force: bool,
-    ) -> bool {
+    pub fn forward_browser_mouse_move(&mut self, local_x: f32, local_y: f32, force: bool) -> bool {
         if !force && !self.should_forward_browser_mouse_move(local_x, local_y) {
             return false;
         }
@@ -395,7 +390,7 @@ impl BrowserApp {
         true
     }
 
-    pub(crate) fn forward_browser_key(&mut self, event: &KeyEvent) {
+    pub fn forward_browser_key(&mut self, event: &KeyEvent) {
         let pressed = event.state == ElementState::Pressed;
         match &event.logical_key {
             Key::Character(value) if value.chars().all(|c| !c.is_control()) => {
@@ -422,7 +417,7 @@ impl BrowserApp {
         }
     }
 
-    pub(crate) fn queue_browser_text(&mut self, value: &str) {
+    pub fn queue_browser_text(&mut self, value: &str) {
         let Some(active_tab_id) = self.active_tab().map(|tab| tab.id) else {
             return;
         };
@@ -435,7 +430,7 @@ impl BrowserApp {
         self.validation.browser_input_seen = true;
     }
 
-    pub(crate) fn pending_browser_text_due(&self) -> Option<Instant> {
+    pub fn pending_browser_text_due(&self) -> Option<Instant> {
         if self.pending_browser_text.is_empty() {
             return None;
         }
@@ -443,7 +438,7 @@ impl BrowserApp {
             .map(|last_input| last_input + VIEWPORT_TEXT_INPUT_DEBOUNCE)
     }
 
-    pub(crate) fn flush_pending_browser_text_if_due(&mut self) -> bool {
+    pub fn flush_pending_browser_text_if_due(&mut self) -> bool {
         let Some(due) = self.pending_browser_text_due() else {
             return false;
         };
@@ -453,7 +448,7 @@ impl BrowserApp {
         self.flush_pending_browser_text()
     }
 
-    pub(crate) fn flush_pending_browser_text(&mut self) -> bool {
+    pub fn flush_pending_browser_text(&mut self) -> bool {
         if self.pending_browser_text.is_empty() {
             return false;
         }
@@ -473,7 +468,7 @@ impl BrowserApp {
         true
     }
 
-    pub(crate) fn queue_viewport_input(&mut self, event: ViewportInputEvent) -> bool {
+    pub fn queue_viewport_input(&mut self, event: ViewportInputEvent) -> bool {
         let Some(active_tab_id) = self.active_tab().map(|tab| tab.id) else {
             return false;
         };
@@ -546,12 +541,12 @@ impl BrowserApp {
         true
     }
 
-    pub(crate) fn clear_viewport_input_lane(&mut self) {
+    pub fn clear_viewport_input_lane(&mut self) {
         self.pending_viewport_input.clear();
         self.pending_viewport_input_tab = None;
     }
 
-    pub(crate) fn flush_viewport_input_lane(&mut self) -> bool {
+    pub fn flush_viewport_input_lane(&mut self) -> bool {
         let active_tab_id = self.active_tab().map(|tab| tab.id);
         if self.pending_viewport_input_tab != active_tab_id {
             self.clear_viewport_input_lane();
@@ -593,7 +588,7 @@ impl BrowserApp {
         flushed
     }
 
-    pub(crate) fn browser_point(&self, x: f64, y: f64) -> Option<(f32, f32)> {
+    pub fn browser_point(&self, x: f64, y: f64) -> Option<(f32, f32)> {
         if !self.browser_viewport_rect.contains(x, y) {
             return None;
         }
@@ -603,13 +598,7 @@ impl BrowserApp {
         ))
     }
 
-    pub(crate) fn scroll_at(
-        &mut self,
-        x: f64,
-        y: f64,
-        delta: &MouseScrollDelta,
-        size: PhysicalSize<u32>,
-    ) {
+    pub fn scroll_at(&mut self, x: f64, y: f64, delta: &MouseScrollDelta, size: PhysicalSize<u32>) {
         let rail_x = right_rail_x(size.width.max(1));
         let tab_strip = Rect {
             x: 0,
@@ -656,7 +645,7 @@ impl BrowserApp {
         self.page_scroll = (self.page_scroll - delta_y as i32).clamp(0, 4000);
     }
 
-    pub(crate) fn focused_text_mut(&mut self) -> &mut String {
+    pub fn focused_text_mut(&mut self) -> &mut String {
         match self.focus {
             FocusTarget::Address => &mut self.address_input,
             FocusTarget::Wake => &mut self.wake_query,
@@ -664,7 +653,7 @@ impl BrowserApp {
         }
     }
 
-    pub(crate) fn run_action(&mut self, action: Action) {
+    pub fn run_action(&mut self, action: Action) {
         if self.defer_user_navigation && is_deferred_user_navigation_action(action) {
             self.pending_user_action = Some(action);
             self.last_status = deferred_user_navigation_status(action).to_string();

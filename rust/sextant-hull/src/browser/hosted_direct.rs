@@ -7,7 +7,7 @@
 
 use super::*;
 
-pub(crate) fn run_hosted_direct_app(
+pub fn run_hosted_direct_app(
     startup_input: Option<String>,
     browser_mode: BrowserMode,
     certificate_path: Option<PathBuf>,
@@ -364,19 +364,19 @@ pub(crate) fn run_hosted_direct_app(
 /// bookmarks). The embedded child is positioned below this height in physical
 /// pixels (`points * scale_factor`), so the boundary stays aligned at any DPI.
 #[cfg(all(target_os = "windows", feature = "servo-backend"))]
-pub(crate) const HOSTED_DIRECT_CHROME_POINTS: f32 = 108.0;
+pub const HOSTED_DIRECT_CHROME_POINTS: f32 = 108.0;
 
 /// A saved bookmark shown in the hosted-direct chrome bookmarks bar.
 #[cfg(all(target_os = "windows", feature = "servo-backend"))]
 #[derive(Clone, Serialize, Deserialize)]
-pub(crate) struct HostedDirectBookmark {
-    pub(crate) title: String,
-    pub(crate) url: String,
+pub struct HostedDirectBookmark {
+    pub title: String,
+    pub url: String,
 }
 
 /// An action requested from the egui chrome for the event loop to apply.
 #[cfg(all(target_os = "windows", feature = "servo-backend"))]
-pub(crate) enum HostedDirectChromeAction {
+pub enum HostedDirectChromeAction {
     Child(String),
     SelectTab(usize),
     CloseTab(usize),
@@ -384,12 +384,12 @@ pub(crate) enum HostedDirectChromeAction {
 }
 
 #[cfg(all(target_os = "windows", feature = "servo-backend"))]
-pub(crate) fn hosted_direct_bookmarks_path() -> PathBuf {
+pub fn hosted_direct_bookmarks_path() -> PathBuf {
     app_data_dir().join("browser").join("bookmarks.json")
 }
 
 #[cfg(all(target_os = "windows", feature = "servo-backend"))]
-pub(crate) fn load_hosted_direct_bookmarks() -> Vec<HostedDirectBookmark> {
+pub fn load_hosted_direct_bookmarks() -> Vec<HostedDirectBookmark> {
     std::fs::read_to_string(hosted_direct_bookmarks_path())
         .ok()
         .and_then(|contents| serde_json::from_str(&contents).ok())
@@ -397,7 +397,7 @@ pub(crate) fn load_hosted_direct_bookmarks() -> Vec<HostedDirectBookmark> {
 }
 
 #[cfg(all(target_os = "windows", feature = "servo-backend"))]
-pub(crate) fn save_hosted_direct_bookmarks(bookmarks: &[HostedDirectBookmark]) {
+pub fn save_hosted_direct_bookmarks(bookmarks: &[HostedDirectBookmark]) {
     let path = hosted_direct_bookmarks_path();
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -408,7 +408,7 @@ pub(crate) fn save_hosted_direct_bookmarks(bookmarks: &[HostedDirectBookmark]) {
 }
 
 #[cfg(all(target_os = "windows", feature = "servo-backend"))]
-pub(crate) fn truncate_label(text: &str, max: usize) -> String {
+pub fn truncate_label(text: &str, max: usize) -> String {
     let trimmed = text.trim();
     if trimmed.chars().count() <= max {
         return trimmed.to_string();
@@ -421,7 +421,7 @@ pub(crate) fn truncate_label(text: &str, max: usize) -> String {
 /// Position the embedded Servo child window just below the egui chrome, using the
 /// chrome's physical height so the boundary tracks the display scale.
 #[cfg(all(target_os = "windows", feature = "servo-backend"))]
-pub(crate) fn position_hosted_direct_child(
+pub fn position_hosted_direct_child(
     parent_hwnd: isize,
     child: &mut HostedDirectChild,
     parent_size: PhysicalSize<u32>,
@@ -453,20 +453,20 @@ pub(crate) fn position_hosted_direct_child(
 /// premultiplied sRGB `Color32` pixels so the software rasterizer can sample it.
 #[cfg(all(target_os = "windows", feature = "servo-backend"))]
 #[derive(Default)]
-pub(crate) struct ChromeTextureStore {
-    pub(crate) textures: std::collections::HashMap<egui::TextureId, ChromeTexture>,
+pub struct ChromeTextureStore {
+    pub textures: std::collections::HashMap<egui::TextureId, ChromeTexture>,
 }
 
 #[cfg(all(target_os = "windows", feature = "servo-backend"))]
-pub(crate) struct ChromeTexture {
-    pub(crate) w: usize,
-    pub(crate) h: usize,
-    pub(crate) px: Vec<egui::Color32>,
+pub struct ChromeTexture {
+    pub w: usize,
+    pub h: usize,
+    pub px: Vec<egui::Color32>,
 }
 
 #[cfg(all(target_os = "windows", feature = "servo-backend"))]
 impl ChromeTextureStore {
-    pub(crate) fn apply(&mut self, delta: &egui::TexturesDelta) {
+    pub fn apply(&mut self, delta: &egui::TexturesDelta) {
         for (id, image_delta) in &delta.set {
             let (dw, dh, src): (usize, usize, Vec<egui::Color32>) = match &image_delta.image {
                 egui::epaint::ImageData::Color(img) => {
@@ -510,13 +510,13 @@ impl ChromeTextureStore {
         }
     }
 
-    pub(crate) fn get(&self, id: egui::TextureId) -> Option<&ChromeTexture> {
+    pub fn get(&self, id: egui::TextureId) -> Option<&ChromeTexture> {
         self.textures.get(&id)
     }
 }
 
 #[cfg(all(target_os = "windows", feature = "servo-backend"))]
-pub(crate) fn chrome_sample_bilinear(tex: &ChromeTexture, u: f32, v: f32) -> (f32, f32, f32, f32) {
+pub fn chrome_sample_bilinear(tex: &ChromeTexture, u: f32, v: f32) -> (f32, f32, f32, f32) {
     if tex.w == 0 || tex.h == 0 {
         return (0.0, 0.0, 0.0, 0.0);
     }
@@ -559,7 +559,7 @@ pub(crate) fn chrome_sample_bilinear(tex: &ChromeTexture, u: f32, v: f32) -> (f3
 
 #[inline]
 #[cfg(all(target_os = "windows", feature = "servo-backend"))]
-pub(crate) fn chrome_edge(a: (f32, f32), b: (f32, f32), c: (f32, f32)) -> f32 {
+pub fn chrome_edge(a: (f32, f32), b: (f32, f32), c: (f32, f32)) -> f32 {
     (c.0 - a.0) * (b.1 - a.1) - (c.1 - a.1) * (b.0 - a.0)
 }
 
@@ -570,7 +570,7 @@ pub(crate) fn chrome_edge(a: (f32, f32), b: (f32, f32), c: (f32, f32)) -> f32 {
 /// chrome. This keeps the chrome on a pure-CPU path (no D3D/WARP device), which
 /// is essential on GPU-less hosts where wgpu's DX12+WARP rasterizer pool spins.
 #[cfg(all(target_os = "windows", feature = "servo-backend"))]
-pub(crate) fn rasterize_chrome(
+pub fn rasterize_chrome(
     prims: &[egui::ClippedPrimitive],
     store: &ChromeTextureStore,
     buffer: &mut [u32],
@@ -685,33 +685,33 @@ pub(crate) fn rasterize_chrome(
 /// adapter is present (a real GPU), where wgpu is efficient and there is no WARP
 /// rasterizer-pool idle spin.
 #[cfg(all(target_os = "windows", feature = "servo-backend"))]
-pub(crate) struct GpuChrome {
-    pub(crate) _instance: wgpu::Instance,
-    pub(crate) _adapter: wgpu::Adapter,
-    pub(crate) surface: wgpu::Surface<'static>,
-    pub(crate) device: wgpu::Device,
-    pub(crate) queue: wgpu::Queue,
-    pub(crate) config: wgpu::SurfaceConfiguration,
-    pub(crate) renderer: egui_wgpu::Renderer,
+pub struct GpuChrome {
+    pub _instance: wgpu::Instance,
+    pub _adapter: wgpu::Adapter,
+    pub surface: wgpu::Surface<'static>,
+    pub device: wgpu::Device,
+    pub queue: wgpu::Queue,
+    pub config: wgpu::SurfaceConfiguration,
+    pub renderer: egui_wgpu::Renderer,
 }
 
 /// CPU-backed chrome: egui software-rasterized into a softbuffer surface.
 /// Selected on GPU-less hosts where wgpu would fall back to the WARP software
 /// device, whose rasterizer thread pool spins even while idle.
 #[cfg(all(target_os = "windows", feature = "servo-backend"))]
-pub(crate) struct SoftwareChrome {
+pub struct SoftwareChrome {
     // Declared before `_context` so the surface is dropped first.
-    pub(crate) surface: Surface<Arc<Window>, Arc<Window>>,
-    pub(crate) _context: Context<Arc<Window>>,
-    pub(crate) textures: ChromeTextureStore,
-    pub(crate) surface_size: Option<(u32, u32)>,
+    pub surface: Surface<Arc<Window>, Arc<Window>>,
+    pub _context: Context<Arc<Window>>,
+    pub textures: ChromeTextureStore,
+    pub surface_size: Option<(u32, u32)>,
 }
 
 /// The selected chrome render backend. The web content is always rendered by the
 /// Servo child (which uses the GPU when available); this only governs the chrome
 /// strip drawn by the parent.
 #[cfg(all(target_os = "windows", feature = "servo-backend"))]
-pub(crate) enum ChromeBackend {
+pub enum ChromeBackend {
     Gpu(GpuChrome),
     Software(SoftwareChrome),
 }
@@ -722,7 +722,7 @@ pub(crate) enum ChromeBackend {
 /// keeps GPU rendering on capable machines while avoiding the WARP idle spin on
 /// GPU-less hosts (e.g. Windows Server / RDP).
 #[cfg(all(target_os = "windows", feature = "servo-backend"))]
-pub(crate) fn init_chrome_backend(window: &Arc<Window>) -> Result<ChromeBackend, String> {
+pub fn init_chrome_backend(window: &Arc<Window>) -> Result<ChromeBackend, String> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: wgpu::Backends::DX12,
         flags: wgpu::InstanceFlags::empty(),
@@ -807,7 +807,7 @@ pub(crate) fn init_chrome_backend(window: &Arc<Window>) -> Result<ChromeBackend,
 
 #[cfg(all(target_os = "windows", feature = "servo-backend"))]
 impl ChromeBackend {
-    pub(crate) fn resize(&mut self, new_size: PhysicalSize<u32>) {
+    pub fn resize(&mut self, new_size: PhysicalSize<u32>) {
         if let ChromeBackend::Gpu(gpu) = self {
             if new_size.width > 0 && new_size.height > 0 {
                 gpu.config.width = new_size.width;
@@ -818,7 +818,7 @@ impl ChromeBackend {
         // The software backend resizes its softbuffer surface lazily in `render`.
     }
 
-    pub(crate) fn render(
+    pub fn render(
         &mut self,
         egui_ctx: &egui::Context,
         shapes: Vec<egui::epaint::ClippedShape>,
@@ -945,41 +945,41 @@ impl ChromeBackend {
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct HostedDirectLogSummary {
-    pub(crate) first_present: Option<String>,
-    pub(crate) latest_load: Option<String>,
-    pub(crate) latest_swap: Option<String>,
-    pub(crate) latest_input: Option<String>,
-    pub(crate) latest_url: Option<String>,
-    pub(crate) certificate_fingerprint_sha256: Option<String>,
-    pub(crate) active_title: Option<String>,
-    pub(crate) active_tab_index: Option<usize>,
-    pub(crate) tab_count: Option<usize>,
-    pub(crate) can_go_back: bool,
-    pub(crate) can_go_forward: bool,
-    pub(crate) latest_load_complete: bool,
-    pub(crate) slow_frames: usize,
-    pub(crate) max_frame_ms: Option<f64>,
-    pub(crate) max_frame_label: Option<String>,
-    pub(crate) max_paint_ms: Option<f64>,
-    pub(crate) max_paint_label: Option<String>,
-    pub(crate) latest_resource_audit: Option<String>,
-    pub(crate) certificate_back_requested: bool,
-    pub(crate) certificate_trust_once_requested: bool,
-    pub(crate) certificate_trust_this_appliance_requested: bool,
-    pub(crate) tabs: Vec<HostedDirectTab>,
+pub struct HostedDirectLogSummary {
+    pub first_present: Option<String>,
+    pub latest_load: Option<String>,
+    pub latest_swap: Option<String>,
+    pub latest_input: Option<String>,
+    pub latest_url: Option<String>,
+    pub certificate_fingerprint_sha256: Option<String>,
+    pub active_title: Option<String>,
+    pub active_tab_index: Option<usize>,
+    pub tab_count: Option<usize>,
+    pub can_go_back: bool,
+    pub can_go_forward: bool,
+    pub latest_load_complete: bool,
+    pub slow_frames: usize,
+    pub max_frame_ms: Option<f64>,
+    pub max_frame_label: Option<String>,
+    pub max_paint_ms: Option<f64>,
+    pub max_paint_label: Option<String>,
+    pub latest_resource_audit: Option<String>,
+    pub certificate_back_requested: bool,
+    pub certificate_trust_once_requested: bool,
+    pub certificate_trust_this_appliance_requested: bool,
+    pub tabs: Vec<HostedDirectTab>,
 }
 
 /// One tab reported by the hosted-direct child for the chrome tab strip.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct HostedDirectTab {
-    pub(crate) url: String,
-    pub(crate) active: bool,
+pub struct HostedDirectTab {
+    pub url: String,
+    pub active: bool,
 }
 
 /// The site label shown on a tab: the host without a leading `www.`, or "New Tab".
 #[cfg(all(target_os = "windows", feature = "servo-backend"))]
-pub(crate) fn hosted_direct_tab_site(url: &str) -> String {
+pub fn hosted_direct_tab_site(url: &str) -> String {
     if url.is_empty() || url == "about:blank" {
         return "New Tab".to_string();
     }
@@ -996,13 +996,13 @@ pub(crate) fn hosted_direct_tab_site(url: &str) -> String {
 }
 
 #[derive(Default)]
-pub(crate) struct HostedDirectLogMonitor {
-    pub(crate) last_len: u64,
-    pub(crate) last_modified: Option<SystemTime>,
+pub struct HostedDirectLogMonitor {
+    pub last_len: u64,
+    pub last_modified: Option<SystemTime>,
 }
 
 impl HostedDirectLogMonitor {
-    pub(crate) fn refresh(&mut self, path: &Path) -> Option<HostedDirectLogSummary> {
+    pub fn refresh(&mut self, path: &Path) -> Option<HostedDirectLogSummary> {
         let metadata = std::fs::metadata(path).ok()?;
         let len = metadata.len();
         let modified = metadata.modified().ok();
@@ -1016,7 +1016,7 @@ impl HostedDirectLogMonitor {
 }
 
 impl HostedDirectLogSummary {
-    pub(crate) fn compact_perf_status(&self) -> String {
+    pub fn compact_perf_status(&self) -> String {
         let mut parts = Vec::new();
         parts.push(format!(
             "first {}",
@@ -1038,11 +1038,11 @@ impl HostedDirectLogSummary {
         parts.join(" | ")
     }
 
-    pub(crate) fn compact_audit_status(&self) -> Option<&str> {
+    pub fn compact_audit_status(&self) -> Option<&str> {
         self.latest_resource_audit.as_deref()
     }
 
-    pub(crate) fn certificate_warning_active(&self) -> bool {
+    pub fn certificate_warning_active(&self) -> bool {
         self.certificate_fingerprint_sha256.is_some()
             || self
                 .active_title
@@ -1050,7 +1050,7 @@ impl HostedDirectLogSummary {
                 .is_some_and(|title| title.eq_ignore_ascii_case("Certificate error"))
     }
 
-    pub(crate) fn compact_certificate_status(&self) -> Option<String> {
+    pub fn compact_certificate_status(&self) -> Option<String> {
         if let Some(fingerprint) = self.certificate_fingerprint_sha256.as_deref() {
             return Some(format!("cert {}", compact_fingerprint(fingerprint)));
         }
@@ -1058,7 +1058,7 @@ impl HostedDirectLogSummary {
             .then(|| "cert blocked".to_string())
     }
 
-    pub(crate) fn load_progress(&self) -> f32 {
+    pub fn load_progress(&self) -> f32 {
         if self.latest_load_complete {
             1.0
         } else if self.latest_load.is_some() {
@@ -1070,45 +1070,45 @@ impl HostedDirectLogSummary {
         }
     }
 
-    pub(crate) fn is_loading(&self) -> bool {
+    pub fn is_loading(&self) -> bool {
         !self.latest_load_complete
     }
 
-    pub(crate) fn can_switch_tabs(&self) -> bool {
+    pub fn can_switch_tabs(&self) -> bool {
         self.tab_count.unwrap_or(1) > 1
     }
 }
 
 #[derive(Clone, Copy)]
-pub(crate) struct HostedDirectChromeRects {
-    pub(crate) back: Rect,
-    pub(crate) forward: Rect,
-    pub(crate) reload: Rect,
-    pub(crate) new_tab: Rect,
-    pub(crate) previous_tab: Rect,
-    pub(crate) next_tab: Rect,
-    pub(crate) close_tab: Rect,
-    pub(crate) certificate_back: Rect,
-    pub(crate) trust_once: Rect,
-    pub(crate) trust_appliance: Rect,
-    pub(crate) address: Rect,
+pub struct HostedDirectChromeRects {
+    pub back: Rect,
+    pub forward: Rect,
+    pub reload: Rect,
+    pub new_tab: Rect,
+    pub previous_tab: Rect,
+    pub next_tab: Rect,
+    pub close_tab: Rect,
+    pub certificate_back: Rect,
+    pub trust_once: Rect,
+    pub trust_appliance: Rect,
+    pub address: Rect,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum HostedDirectCertificateTrust {
+pub enum HostedDirectCertificateTrust {
     Once,
     Remember,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum HostedDirectSmokeAction {
+pub enum HostedDirectSmokeAction {
     Back,
     TrustOnce,
     TrustThisAppliance,
 }
 
 impl HostedDirectSmokeAction {
-    pub(crate) fn parse_arg(value: Option<String>) -> Result<Option<Self>, String> {
+    pub fn parse_arg(value: Option<String>) -> Result<Option<Self>, String> {
         let Some(value) = value else {
             return Ok(None);
         };
@@ -1124,7 +1124,7 @@ impl HostedDirectSmokeAction {
         }
     }
 
-    pub(crate) fn label(self) -> &'static str {
+    pub fn label(self) -> &'static str {
         match self {
             Self::Back => "back",
             Self::TrustOnce => "once",
@@ -1132,7 +1132,7 @@ impl HostedDirectSmokeAction {
         }
     }
 
-    pub(crate) fn rect(self, rects: HostedDirectChromeRects) -> Rect {
+    pub fn rect(self, rects: HostedDirectChromeRects) -> Rect {
         match self {
             Self::Back => rects.certificate_back,
             Self::TrustOnce => rects.trust_once,
@@ -1141,19 +1141,19 @@ impl HostedDirectSmokeAction {
     }
 }
 
-pub(crate) struct HostedDirectShellState {
-    pub(crate) target: String,
-    pub(crate) address_input: String,
-    pub(crate) address_cursor: usize,
-    pub(crate) address_focused: bool,
-    pub(crate) address_replace_on_text: bool,
-    pub(crate) pending_certificate_trust: Option<HostedDirectCertificateTrust>,
-    pub(crate) cursor_position: Option<(f64, f64)>,
-    pub(crate) modifiers: ModifiersState,
+pub struct HostedDirectShellState {
+    pub target: String,
+    pub address_input: String,
+    pub address_cursor: usize,
+    pub address_focused: bool,
+    pub address_replace_on_text: bool,
+    pub pending_certificate_trust: Option<HostedDirectCertificateTrust>,
+    pub cursor_position: Option<(f64, f64)>,
+    pub modifiers: ModifiersState,
 }
 
 impl HostedDirectShellState {
-    pub(crate) fn new(target: String) -> Self {
+    pub fn new(target: String) -> Self {
         Self {
             address_input: target.clone(),
             address_cursor: target.len(),
@@ -1166,7 +1166,7 @@ impl HostedDirectShellState {
         }
     }
 
-    pub(crate) fn handle_mouse_down(
+    pub fn handle_mouse_down(
         &mut self,
         size: PhysicalSize<u32>,
         x: f64,
@@ -1257,13 +1257,11 @@ impl HostedDirectShellState {
         false
     }
 
-    pub(crate) fn take_pending_certificate_trust(
-        &mut self,
-    ) -> Option<HostedDirectCertificateTrust> {
+    pub fn take_pending_certificate_trust(&mut self) -> Option<HostedDirectCertificateTrust> {
         self.pending_certificate_trust.take()
     }
 
-    pub(crate) fn handle_keyboard(
+    pub fn handle_keyboard(
         &mut self,
         event: KeyEvent,
         child: Option<&mut HostedDirectChild>,
@@ -1395,7 +1393,7 @@ impl HostedDirectShellState {
         }
     }
 
-    pub(crate) fn push_address_text(&mut self, value: &str) {
+    pub fn push_address_text(&mut self, value: &str) {
         if self.address_replace_on_text {
             self.address_input.clear();
             self.address_cursor = 0;
@@ -1405,7 +1403,7 @@ impl HostedDirectShellState {
         self.address_cursor += value.len();
     }
 
-    pub(crate) fn handle_text_commit(&mut self, text: String) -> bool {
+    pub fn handle_text_commit(&mut self, text: String) -> bool {
         if !self.address_focused || text.is_empty() {
             return false;
         }
@@ -1416,7 +1414,7 @@ impl HostedDirectShellState {
         false
     }
 
-    pub(crate) fn address_display_text(&self, max_chars: usize) -> String {
+    pub fn address_display_text(&self, max_chars: usize) -> String {
         if !self.address_focused {
             return truncate(&self.target, max_chars);
         }
@@ -1442,7 +1440,7 @@ impl HostedDirectShellState {
     }
 }
 
-pub(crate) fn previous_char_boundary(value: &str, index: usize) -> usize {
+pub fn previous_char_boundary(value: &str, index: usize) -> usize {
     let index = index.min(value.len());
     value[..index]
         .char_indices()
@@ -1451,7 +1449,7 @@ pub(crate) fn previous_char_boundary(value: &str, index: usize) -> usize {
         .unwrap_or(0)
 }
 
-pub(crate) fn next_char_boundary(value: &str, index: usize) -> usize {
+pub fn next_char_boundary(value: &str, index: usize) -> usize {
     let index = index.min(value.len());
     if index >= value.len() {
         return value.len();
@@ -1463,17 +1461,17 @@ pub(crate) fn next_char_boundary(value: &str, index: usize) -> usize {
         .unwrap_or(value.len())
 }
 
-pub(crate) struct HostedDirectChild {
-    pub(crate) child: Child,
-    pub(crate) stdin: Option<ChildStdin>,
-    pub(crate) log_path: PathBuf,
+pub struct HostedDirectChild {
+    pub child: Child,
+    pub stdin: Option<ChildStdin>,
+    pub log_path: PathBuf,
     #[cfg(all(target_os = "windows", feature = "servo-backend"))]
-    pub(crate) window_hwnd: Option<isize>,
+    pub window_hwnd: Option<isize>,
     #[cfg(all(target_os = "windows", feature = "servo-backend"))]
-    pub(crate) last_resized_parent_size: Option<PhysicalSize<u32>>,
+    pub last_resized_parent_size: Option<PhysicalSize<u32>>,
 }
 
-pub(crate) fn spawn_hosted_direct_child(
+pub fn spawn_hosted_direct_child(
     parent_hwnd: isize,
     parent_size: PhysicalSize<u32>,
     target: &str,
@@ -1558,10 +1556,7 @@ pub(crate) fn spawn_hosted_direct_child(
     })
 }
 
-pub(crate) fn send_hosted_direct_command(
-    child: Option<&mut HostedDirectChild>,
-    command: &str,
-) -> bool {
+pub fn send_hosted_direct_command(child: Option<&mut HostedDirectChild>, command: &str) -> bool {
     let Some(child) = child else {
         return false;
     };
@@ -1576,7 +1571,7 @@ pub(crate) fn send_hosted_direct_command(
         .is_ok()
 }
 
-pub(crate) fn poll_hosted_direct_child_exit(
+pub fn poll_hosted_direct_child_exit(
     child: &mut Option<HostedDirectChild>,
 ) -> Option<(ExitStatus, PathBuf)> {
     let status = child.as_mut()?.child.try_wait().ok()??;
@@ -1584,7 +1579,7 @@ pub(crate) fn poll_hosted_direct_child_exit(
     Some((status, child.log_path))
 }
 
-pub(crate) fn hosted_direct_chrome_rects(size: PhysicalSize<u32>) -> HostedDirectChromeRects {
+pub fn hosted_direct_chrome_rects(size: PhysicalSize<u32>) -> HostedDirectChromeRects {
     let y = 44;
     let h = 20;
     let button_w = 30;
@@ -1676,7 +1671,7 @@ pub(crate) fn hosted_direct_chrome_rects(size: PhysicalSize<u32>) -> HostedDirec
     }
 }
 
-pub(crate) fn hosted_direct_child_bounds(parent_size: PhysicalSize<u32>) -> (i32, i32, u32, u32) {
+pub fn hosted_direct_child_bounds(parent_size: PhysicalSize<u32>) -> (i32, i32, u32, u32) {
     (
         0,
         HOSTED_DIRECT_CHROME_H as i32,
@@ -1689,7 +1684,7 @@ pub(crate) fn hosted_direct_child_bounds(parent_size: PhysicalSize<u32>) -> (i32
 }
 
 #[cfg(all(target_os = "windows", feature = "servo-backend"))]
-pub(crate) fn resize_hosted_direct_child(
+pub fn resize_hosted_direct_child(
     parent_hwnd: isize,
     child: &mut HostedDirectChild,
     parent_size: PhysicalSize<u32>,
@@ -1722,7 +1717,7 @@ pub(crate) fn resize_hosted_direct_child(
 }
 
 #[cfg(not(all(target_os = "windows", feature = "servo-backend")))]
-pub(crate) fn resize_hosted_direct_child(
+pub fn resize_hosted_direct_child(
     _parent_hwnd: isize,
     _child: &mut HostedDirectChild,
     _parent_size: PhysicalSize<u32>,
@@ -1731,13 +1726,13 @@ pub(crate) fn resize_hosted_direct_child(
 }
 
 #[cfg(all(target_os = "windows", feature = "servo-backend"))]
-pub(crate) struct HostedDirectChildWindowSearch {
-    pub(crate) pid: u32,
-    pub(crate) hwnd: Option<isize>,
+pub struct HostedDirectChildWindowSearch {
+    pub pid: u32,
+    pub hwnd: Option<isize>,
 }
 
 #[cfg(all(target_os = "windows", feature = "servo-backend"))]
-pub(crate) fn find_hosted_direct_child_window(parent_hwnd: isize, child_pid: u32) -> Option<isize> {
+pub fn find_hosted_direct_child_window(parent_hwnd: isize, child_pid: u32) -> Option<isize> {
     let mut search = HostedDirectChildWindowSearch {
         pid: child_pid,
         hwnd: None,
@@ -1764,7 +1759,7 @@ unsafe extern "system" fn enum_hosted_direct_child_window(hwnd: HWND, lparam: LP
     1
 }
 
-pub(crate) fn hosted_direct_child_log_path() -> Result<PathBuf, String> {
+pub fn hosted_direct_child_log_path() -> Result<PathBuf, String> {
     let dir = app_data_dir().join("browser").join(HOSTED_DIRECT_LOG_DIR);
     std::fs::create_dir_all(&dir).map_err(|error| {
         format!(
@@ -1778,7 +1773,7 @@ pub(crate) fn hosted_direct_child_log_path() -> Result<PathBuf, String> {
     )))
 }
 
-pub(crate) fn terminate_child_process(child: &mut Option<HostedDirectChild>) {
+pub fn terminate_child_process(child: &mut Option<HostedDirectChild>) {
     if let Some(mut child) = child.take() {
         let _ = child.child.kill();
         let _ = child.child.wait();
@@ -1786,7 +1781,7 @@ pub(crate) fn terminate_child_process(child: &mut Option<HostedDirectChild>) {
 }
 
 #[cfg(all(target_os = "windows", feature = "servo-backend"))]
-pub(crate) fn focus_hosted_direct_parent_window(window: &Window, parent_hwnd: isize) {
+pub fn focus_hosted_direct_parent_window(window: &Window, parent_hwnd: isize) {
     window.focus_window();
     unsafe {
         let hwnd = parent_hwnd as HWND;
@@ -1798,11 +1793,11 @@ pub(crate) fn focus_hosted_direct_parent_window(window: &Window, parent_hwnd: is
 }
 
 #[cfg(not(all(target_os = "windows", feature = "servo-backend")))]
-pub(crate) fn focus_hosted_direct_parent_window(window: &Window, _parent_hwnd: isize) {
+pub fn focus_hosted_direct_parent_window(window: &Window, _parent_hwnd: isize) {
     window.focus_window();
 }
 
-pub(crate) fn draw_hosted_direct_shell(
+pub fn draw_hosted_direct_shell(
     window: &Window,
     surface: &mut Surface<Arc<Window>, Arc<Window>>,
     surface_size: &mut PhysicalSize<u32>,
@@ -2100,7 +2095,7 @@ pub(crate) fn draw_hosted_direct_shell(
     buffer.present().map_err(|error| error.to_string())
 }
 
-pub(crate) fn draw_hosted_direct_button(
+pub fn draw_hosted_direct_button(
     buffer: &mut [u32],
     width: u32,
     height: u32,
@@ -2139,7 +2134,7 @@ pub(crate) fn draw_hosted_direct_button(
     );
 }
 
-pub(crate) fn draw_hosted_direct_progress(
+pub fn draw_hosted_direct_progress(
     buffer: &mut [u32],
     width: u32,
     height: u32,
@@ -2175,14 +2170,14 @@ pub(crate) fn draw_hosted_direct_progress(
     }
 }
 
-pub(crate) fn parse_hosted_direct_log_summary(path: &Path) -> HostedDirectLogSummary {
+pub fn parse_hosted_direct_log_summary(path: &Path) -> HostedDirectLogSummary {
     let Ok(contents) = read_hosted_direct_log_window(path) else {
         return HostedDirectLogSummary::default();
     };
     parse_hosted_direct_log_summary_text(&contents)
 }
 
-pub(crate) fn read_hosted_direct_log_window(path: &Path) -> Result<String, std::io::Error> {
+pub fn read_hosted_direct_log_window(path: &Path) -> Result<String, std::io::Error> {
     let mut file = std::fs::File::open(path)?;
     let len = file.metadata()?.len();
     let full_window = HOSTED_DIRECT_LOG_HEAD_BYTES + HOSTED_DIRECT_LOG_TAIL_BYTES;
@@ -2205,7 +2200,7 @@ pub(crate) fn read_hosted_direct_log_window(path: &Path) -> Result<String, std::
     Ok(contents)
 }
 
-pub(crate) fn parse_hosted_direct_log_summary_text(contents: &str) -> HostedDirectLogSummary {
+pub fn parse_hosted_direct_log_summary_text(contents: &str) -> HostedDirectLogSummary {
     let mut summary = HostedDirectLogSummary::default();
     for line in contents.lines() {
         if !line.contains("[window-direct]") {
@@ -2332,7 +2327,7 @@ pub(crate) fn parse_hosted_direct_log_summary_text(contents: &str) -> HostedDire
     summary
 }
 
-pub(crate) fn summarize_resource_audit(raw_audit: &str) -> Option<String> {
+pub fn summarize_resource_audit(raw_audit: &str) -> Option<String> {
     let image_count = json_u64_field(raw_audit, "imageCount");
     let broken_images = json_array_len_field(raw_audit, "brokenImages");
     let inline_svgs = json_u64_field(raw_audit, "inlineSvgCount");
@@ -2362,13 +2357,13 @@ pub(crate) fn summarize_resource_audit(raw_audit: &str) -> Option<String> {
     ))
 }
 
-pub(crate) fn format_optional_count(value: Option<u64>) -> String {
+pub fn format_optional_count(value: Option<u64>) -> String {
     value
         .map(|count| count.to_string())
         .unwrap_or_else(|| "?".to_string())
 }
 
-pub(crate) fn json_u64_field(raw: &str, field: &str) -> Option<u64> {
+pub fn json_u64_field(raw: &str, field: &str) -> Option<u64> {
     let marker = format!("\"{field}\"");
     let (_, rest) = raw.split_once(&marker)?;
     let (_, rest) = rest.split_once(':')?;
@@ -2380,7 +2375,7 @@ pub(crate) fn json_u64_field(raw: &str, field: &str) -> Option<u64> {
     digits.parse().ok()
 }
 
-pub(crate) fn json_array_len_field(raw: &str, field: &str) -> Option<u64> {
+pub fn json_array_len_field(raw: &str, field: &str) -> Option<u64> {
     let marker = format!("\"{field}\"");
     let (_, rest) = raw.split_once(&marker)?;
     let (_, rest) = rest.split_once('[')?;
@@ -2421,23 +2416,23 @@ pub(crate) fn json_array_len_field(raw: &str, field: &str) -> Option<u64> {
     None
 }
 
-pub(crate) fn extract_between<'a>(value: &'a str, start: &str, end: &str) -> Option<&'a str> {
+pub fn extract_between<'a>(value: &'a str, start: &str, end: &str) -> Option<&'a str> {
     let (_, rest) = value.split_once(start)?;
     let (between, _) = rest.split_once(end)?;
     Some(between.trim())
 }
 
-pub(crate) fn extract_after<'a>(value: &'a str, marker: &str) -> Option<&'a str> {
+pub fn extract_after<'a>(value: &'a str, marker: &str) -> Option<&'a str> {
     let (_, rest) = value.split_once(marker)?;
     Some(rest.trim())
 }
 
-pub(crate) fn extract_token_after<'a>(value: &'a str, marker: &str) -> Option<&'a str> {
+pub fn extract_token_after<'a>(value: &'a str, marker: &str) -> Option<&'a str> {
     let (_, rest) = value.split_once(marker)?;
     rest.split_whitespace().next()
 }
 
-pub(crate) fn compact_fingerprint(value: &str) -> String {
+pub fn compact_fingerprint(value: &str) -> String {
     let value = value.trim();
     if value.chars().count() <= 16 {
         return value.to_string();
@@ -2455,7 +2450,7 @@ pub(crate) fn compact_fingerprint(value: &str) -> String {
 }
 
 #[cfg(any(feature = "xilem-shell", feature = "servo-backend"))]
-pub(crate) fn appliance_cert_entry_label(entry: &ApplianceCertTrustEntry) -> String {
+pub fn appliance_cert_entry_label(entry: &ApplianceCertTrustEntry) -> String {
     if let Some(label) = entry
         .label
         .as_deref()
@@ -2469,11 +2464,7 @@ pub(crate) fn appliance_cert_entry_label(entry: &ApplianceCertTrustEntry) -> Str
         .unwrap_or_else(|| entry.origin.clone())
 }
 
-pub(crate) fn update_max_duration(
-    max_ms: &mut Option<f64>,
-    max_label: &mut Option<String>,
-    label: &str,
-) {
+pub fn update_max_duration(max_ms: &mut Option<f64>, max_label: &mut Option<String>, label: &str) {
     let Some(duration_ms) = parse_duration_label_ms(label) else {
         return;
     };
@@ -2483,7 +2474,7 @@ pub(crate) fn update_max_duration(
     }
 }
 
-pub(crate) fn parse_duration_label_ms(label: &str) -> Option<f64> {
+pub fn parse_duration_label_ms(label: &str) -> Option<f64> {
     if let Some(value) = label.strip_suffix("ms") {
         return value.parse::<f64>().ok();
     }

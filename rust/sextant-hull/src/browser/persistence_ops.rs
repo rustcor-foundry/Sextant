@@ -4,7 +4,7 @@
 use super::*;
 
 impl BrowserApp {
-    pub(crate) fn distill_active(&mut self) {
+    pub fn distill_active(&mut self) {
         let capabilities = self.capabilities();
         if !capabilities.ai_observe_dom {
             self.last_status = format!(
@@ -33,7 +33,7 @@ impl BrowserApp {
         }
     }
 
-    pub(crate) fn start_visible_distillation(&mut self) -> bool {
+    pub fn start_visible_distillation(&mut self) -> bool {
         if self.pending_distillation.is_some() {
             self.last_status = "Distillation is already in progress.".to_string();
             self.last_ok = false;
@@ -69,7 +69,7 @@ impl BrowserApp {
         }
     }
 
-    pub(crate) fn collect_pending_distillation(&mut self) -> Option<Duration> {
+    pub fn collect_pending_distillation(&mut self) -> Option<Duration> {
         let pending = self.pending_distillation.as_ref()?;
         match pending.result_rx.try_recv() {
             Ok(result) => {
@@ -124,7 +124,7 @@ impl BrowserApp {
         }
     }
 
-    pub(crate) fn start_visible_distill_persistence(
+    pub fn start_visible_distill_persistence(
         &mut self,
         page: DistilledPage,
         distill_elapsed: Duration,
@@ -177,7 +177,7 @@ impl BrowserApp {
         }
     }
 
-    pub(crate) fn collect_pending_persistence(&mut self) -> Option<Duration> {
+    pub fn collect_pending_persistence(&mut self) -> Option<Duration> {
         let pending = self.pending_persistence.as_ref()?;
         match pending.result_rx.try_recv() {
             Ok(result) => {
@@ -225,7 +225,7 @@ impl BrowserApp {
         }
     }
 
-    pub(crate) fn finish_distilled_page(&mut self, page: DistilledPage, distill_elapsed: Duration) {
+    pub fn finish_distilled_page(&mut self, page: DistilledPage, distill_elapsed: Duration) {
         let capabilities = self.capabilities();
         if !capabilities.write_wake {
             self.page_scroll = 0;
@@ -273,7 +273,7 @@ impl BrowserApp {
         }
     }
 
-    pub(crate) fn search_wake(&mut self) {
+    pub fn search_wake(&mut self) {
         if !self.capabilities().read_wake {
             self.last_status = format!("{} blocks Wake reads.", self.browser_mode.label());
             self.last_ok = false;
@@ -306,7 +306,7 @@ impl BrowserApp {
         }
     }
 
-    pub(crate) fn start_visible_wake_search(&mut self) -> bool {
+    pub fn start_visible_wake_search(&mut self) -> bool {
         if self.pending_wake_search.is_some() {
             self.last_status = "Wake search is already in progress.".to_string();
             self.last_ok = false;
@@ -352,7 +352,7 @@ impl BrowserApp {
         }
     }
 
-    pub(crate) fn collect_pending_wake_search(&mut self) -> Option<Duration> {
+    pub fn collect_pending_wake_search(&mut self) -> Option<Duration> {
         let pending = self.pending_wake_search.as_ref()?;
         match pending.result_rx.try_recv() {
             Ok(result) => {
@@ -401,7 +401,7 @@ impl BrowserApp {
         }
     }
 
-    pub(crate) fn collect_pending_log_writes(&mut self) -> bool {
+    pub fn collect_pending_log_writes(&mut self) -> bool {
         let mut changed = false;
         let mut index = 0;
         while index < self.pending_log_writes.len() {
@@ -446,7 +446,7 @@ impl BrowserApp {
         changed
     }
 
-    pub(crate) fn start_visible_log_refresh(&mut self) -> bool {
+    pub fn start_visible_log_refresh(&mut self) -> bool {
         if !self.capabilities().write_log_content {
             self.recent_logs.clear();
             self.pending_log_refresh = None;
@@ -479,7 +479,7 @@ impl BrowserApp {
         }
     }
 
-    pub(crate) fn collect_pending_log_refresh(&mut self) -> bool {
+    pub fn collect_pending_log_refresh(&mut self) -> bool {
         let Some(pending) = self.pending_log_refresh.as_ref() else {
             return false;
         };
