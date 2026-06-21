@@ -8,6 +8,7 @@ use sextant_hull::*;
 use softbuffer::{Context, Surface};
 use std::env;
 use std::path::{Path, PathBuf};
+use std::process::{Child, Command};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -80,6 +81,73 @@ fn focus_existing_window() {
 #[cfg(not(windows))]
 fn claim_single_instance() -> bool {
     true
+}
+
+// ---- hub-managed direct windows ------------------------------------------
+// The full/bridge shell is the lifecycle hub: it can open direct-render windows
+// (a separate sextant-browser process per the --render-path direct path) and
+// owns their lifetime via a kill-on-close Job Object. Processes assigned to the
+// job (and their child Servo processes) are terminated when the last handle to
+// the job closes — i.e. when the hub process exits. So direct windows survive
+// close-to-tray (hub keeps running) and die on a real quit, with no explicit
+// teardown. 0 = "no job" (assignment is skipped, windows just run untracked).
+
+#[cfg(windows)]
+fn create_managed_job() -> isize {
+    use windows_sys::Win32::System::JobObjects::{
+        CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+    // SAFETY: a freshly created, unnamed job object configured with
+    // KILL_ON_JOB_CLOSE; info is a zeroed POD struct of the matching size.
+    unsafe {
+        let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+        if job.is_null() {
+            return 0;
+        }
+        let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            &info as *const _ as *const _,
+            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        );
+        job as isize
+    }
+}
+
+#[cfg(not(windows))]
+fn create_managed_job() -> isize {
+    0
+}
+
+/// Open a direct-render window as a child process and (on Windows) tie its
+/// lifetime to the hub via `job`. `url` seeds the first navigation.
+fn spawn_direct_window(job: isize, url: Option<String>) -> Option<Child> {
+    let exe = env::current_exe().ok()?;
+    let mut command = Command::new(exe);
+    command
+        .arg("--render-path")
+        .arg("direct")
+        .arg("--browser-mode")
+        .arg("direct");
+    if let Some(url) = url {
+        command.arg(url);
+    }
+    let child = command.spawn().ok()?;
+    #[cfg(windows)]
+    if job != 0 {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
+        // SAFETY: job and the child's process handle are both valid; the child
+        // is freshly spawned and still owned here.
+        unsafe {
+            AssignProcessToJobObject(job as *mut _, child.as_raw_handle() as *mut _);
+        }
+    }
+    let _ = job;
+    Some(child)
 }
 
 fn main() {
@@ -1588,11 +1656,14 @@ fn run_visible_app(
     }));
     let tray_menu = Menu::new();
     let show_item = MenuItem::new("Show Sextant", true, None);
+    let direct_item = MenuItem::new("New Direct Window\tCtrl+Shift+D", true, None);
     let quit_item = MenuItem::new("Quit Sextant", true, None);
     let _ = tray_menu.append(&show_item);
+    let _ = tray_menu.append(&direct_item);
     let _ = tray_menu.append(&PredefinedMenuItem::separator());
     let _ = tray_menu.append(&quit_item);
     let show_id = show_item.id().clone();
+    let direct_id = direct_item.id().clone();
     let quit_id = quit_item.id().clone();
     let tray =
         tray_icon::Icon::from_rgba(WINDOW_ICON_RGBA.to_vec(), WINDOW_ICON_DIM, WINDOW_ICON_DIM)
@@ -1605,6 +1676,20 @@ fn run_visible_app(
                     .build()
                     .ok()
             });
+
+    // Hub-managed direct windows: spawned children are tied to this Job Object,
+    // so they (and their Servo children) are killed when the hub process exits.
+    let direct_job = create_managed_job();
+    let mut direct_children: Vec<Child> = Vec::new();
+    let open_direct_window = move |app: &BrowserApp, children: &mut Vec<Child>| {
+        let url = app
+            .active_tab()
+            .and_then(|tab| tab.url.as_ref())
+            .map(|url| url.to_string());
+        if let Some(child) = spawn_direct_window(direct_job, url) {
+            children.push(child);
+        }
+    };
 
     let event_loop_result = event_loop
         .run(move |event, elwt| match event {
@@ -1636,15 +1721,27 @@ fn run_visible_app(
                     // tray's native context menu can be unreliable on Windows
                     // Server / RDP (a background SetForegroundWindow is
                     // restricted there), so always offer a keyboard exit.
-                    let quit_chord = key_event.state == ElementState::Pressed
+                    let pressed = key_event.state == ElementState::Pressed;
+                    let quit_chord = pressed
                         && app.modifiers.control_key()
                         && matches!(
                             &key_event.logical_key,
                             Key::Character(c) if c.eq_ignore_ascii_case("q")
                         );
+                    // Ctrl+Shift+D opens the current page in a hub-managed direct
+                    // (fast, raw-Servo) window.
+                    let direct_chord = pressed
+                        && app.modifiers.control_key()
+                        && app.modifiers.shift_key()
+                        && matches!(
+                            &key_event.logical_key,
+                            Key::Character(c) if c.eq_ignore_ascii_case("d")
+                        );
                     if quit_chord {
                         app.cleanup_incognito_storage();
                         elwt.exit();
+                    } else if direct_chord {
+                        open_direct_window(&app, &mut direct_children);
                     } else {
                         app.handle_key(key_event);
                         app.update_title(&window);
@@ -1778,6 +1875,8 @@ fn run_visible_app(
                     window.set_visible(true);
                     window.focus_window();
                     window.request_redraw();
+                } else if menu_event.id == direct_id {
+                    open_direct_window(&app, &mut direct_children);
                 }
             }
             Event::UserEvent(SextantEvent::TrayIcon(tray_event)) => {
@@ -1802,6 +1901,10 @@ fn run_visible_app(
                 }
             }
             Event::AboutToWait => {
+                // Reap direct windows the user has closed (the Job Object handles
+                // the kill-on-quit case; this just keeps the tracking list tidy).
+                direct_children.retain_mut(|child| matches!(child.try_wait(), Ok(None)));
+
                 if !visible_first_draw_seen
                     && (!pending_start_inputs.is_empty()
                         || app.pending_user_navigation.is_some()
