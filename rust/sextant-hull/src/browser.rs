@@ -8914,8 +8914,33 @@ fn draw_egui_bridge(
             }
         });
         ui.add_space(6.0);
-        // Row 2: full-width address/intent bar + RUN.
+        // Row 2: nav controls + full-width address/intent bar + RUN.
         ui.horizontal(|ui| {
+            let (can_back, can_fwd) = app
+                .active_tab()
+                .map(|tab| (tab.can_go_back, tab.can_go_forward))
+                .unwrap_or((false, false));
+            if ui
+                .add_enabled(can_back, egui::Button::new("◀"))
+                .on_hover_text("Back")
+                .clicked()
+            {
+                app.back();
+            }
+            if ui
+                .add_enabled(can_fwd, egui::Button::new("▶"))
+                .on_hover_text("Forward")
+                .clicked()
+            {
+                app.forward();
+            }
+            if ui.button("⟳").on_hover_text("Reload").clicked() {
+                app.reload();
+            }
+            if ui.button("+").on_hover_text("New tab").clicked() {
+                app.new_tab();
+            }
+            ui.separator();
             let button_w = 56.0;
             let field_w = (ui.available_width() - button_w - ui.spacing().item_spacing.x).max(80.0);
             let resp = ui.add(
@@ -8928,6 +8953,44 @@ fn draw_egui_bridge(
                 app.navigate_input();
             }
         });
+        // Row 2.5: open page tabs — click to switch, × closes the active tab.
+        {
+            let active_id = app.active_tab().map(|tab| tab.id);
+            let tabs: Vec<(Uuid, String, bool)> = app
+                .engine
+                .get_tabs()
+                .iter()
+                .map(|tab| {
+                    let label = tab
+                        .url
+                        .as_ref()
+                        .map(short_url)
+                        .unwrap_or_else(|| "about:blank".to_string());
+                    (tab.id, label, Some(tab.id) == active_id)
+                })
+                .collect();
+            if !tabs.is_empty() {
+                let mut to_switch = None;
+                let mut close_active = false;
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    for (id, label, active) in &tabs {
+                        if ui.selectable_label(*active, truncate(label, 22)).clicked() {
+                            to_switch = Some(*id);
+                        }
+                    }
+                    if ui.button("×").on_hover_text("Close active tab").clicked() {
+                        close_active = true;
+                    }
+                });
+                if let Some(id) = to_switch {
+                    app.switch_to_page_tab(id);
+                }
+                if close_active {
+                    app.close_tab();
+                }
+            }
+        }
         ui.add_space(6.0);
         // Row 3: view tabs.
         ui.horizontal(|ui| {

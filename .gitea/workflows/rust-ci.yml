@@ -37,7 +37,11 @@ jobs:
 
           DISTILLER="${RUNNER_TEMP:-/tmp}/wsky-distiller"
           rm -rf "$DISTILLER"
-          git clone --depth 1 --no-tags "https://${WSKY_TOKEN}@gitea.w-sky.net/rustcor/wsky-distiller.git" "$DISTILLER"
+          # Pin the sibling crate to a known-good rev; local dev keeps the live
+          # path dep, CI builds against a frozen distill so HEAD drift can't break
+          # an unrelated Sextant push. Full clone (no --depth) so the rev resolves.
+          git clone --no-tags "https://${WSKY_TOKEN}@gitea.w-sky.net/rustcor/wsky-distiller.git" "$DISTILLER"
+          git -C "$DISTILLER" checkout --quiet c12146d891642b96314715d1223ea59bc95bd524
 
           cd "$WORK/rust"
           # fmt only the Sextant members; --all would also format the external
@@ -75,7 +79,9 @@ jobs:
 
           $sibling = Join-Path $base 'wsky-distiller'
           if (Test-Path $sibling) { Remove-Item -Recurse -Force $sibling }
-          git clone --depth 1 --no-tags "https://$($env:WSKY_TOKEN)@gitea.w-sky.net/rustcor/wsky-distiller.git" $sibling
+          # Pin to the same frozen rev as fast-linux (see note there).
+          git clone --no-tags "https://$($env:WSKY_TOKEN)@gitea.w-sky.net/rustcor/wsky-distiller.git" $sibling
+          git -C $sibling checkout --quiet c12146d891642b96314715d1223ea59bc95bd524
 
           Set-Location "$work\rust"
           cargo check -p sextant-hull --bin sextant-browser --locked
