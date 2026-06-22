@@ -2183,7 +2183,16 @@ pub fn draw_ai_rail(buffer: &mut [u32], width: u32, height: u32, app: &BrowserAp
     if let Some(run) = app.last_pilot_run.as_ref() {
         // Surface the structured agentic run — the planned steps and the
         // analysis the pilot produced — instead of one truncated plan line.
-        draw_text(buffer, width, height, rail_x + 20, 266, "PILOT PLAN", TEXT_DIM, 1);
+        draw_text(
+            buffer,
+            width,
+            height,
+            rail_x + 20,
+            266,
+            "PILOT PLAN",
+            TEXT_DIM,
+            1,
+        );
         let mut step_y = 286;
         for (index, step) in run.plan.iter().take(4).enumerate() {
             let detail = truncate(&step.detail, 26);
@@ -2192,7 +2201,16 @@ pub fn draw_ai_rail(buffer: &mut [u32], width: u32, height: u32, app: &BrowserAp
             } else {
                 format!("{}. {} {}", index + 1, step.kind.to_uppercase(), detail)
             };
-            draw_text(buffer, width, height, rail_x + 20, step_y, &line, TEXT_SOFT, 1);
+            draw_text(
+                buffer,
+                width,
+                height,
+                rail_x + 20,
+                step_y,
+                &line,
+                TEXT_SOFT,
+                1,
+            );
             step_y += 15;
         }
         if let Some(analysis) = run.analysis.iter().find(|line| !line.trim().is_empty()) {
@@ -2208,7 +2226,16 @@ pub fn draw_ai_rail(buffer: &mut [u32], width: u32, height: u32, app: &BrowserAp
             );
         }
     } else {
-        draw_text(buffer, width, height, rail_x + 56, 266, "NEXT STEP", TEXT_DIM, 1);
+        draw_text(
+            buffer,
+            width,
+            height,
+            rail_x + 56,
+            266,
+            "NEXT STEP",
+            TEXT_DIM,
+            1,
+        );
         draw_chat_bubble(
             buffer,
             width,
