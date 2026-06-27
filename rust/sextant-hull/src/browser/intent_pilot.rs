@@ -159,14 +159,28 @@ impl BrowserApp {
         self.dispatch_native_intent(raw, false);
     }
 
-    /// Run a quick-intent preset (AI-rail launcher): mirror the intent into the
-    /// address field, show the browser view, and plan it through the local model
-    /// brain (same path as the interactive intent bar).
+    /// Run a quick-intent preset (AI-rail launcher). These presets act on the
+    /// page you are *currently viewing*, so they must NOT go through the
+    /// navigate-planner — the planner has no notion of "the page I am viewing"
+    /// and would treat the phrase as a web search, navigating away (the exact
+    /// confusion this replaced). Instead we distill the active page directly;
+    /// the post-perception analysis pass then answers the preset intent against
+    /// the page's real content.
     #[cfg(feature = "xilem-shell")]
     pub fn run_preset_intent(&mut self, intent: &str) {
-        self.address_input = intent.to_string();
-        self.main_view = MainView::Browser;
-        self.run_native_intent(intent);
+        if self.active_tab().is_none() {
+            self.last_status =
+                "Open a page first, then use the rail presets to summarize or distill it."
+                    .to_string();
+            self.last_ok = false;
+            self.validation.error_seen = true;
+            return;
+        }
+        self.last_intent = intent.to_string();
+        // Surface the grounded result in the full-width Pilot view rather than
+        // the cramped rail — these presets exist to show the analysis.
+        self.main_view = MainView::Pilot;
+        self.execute_planned_actions(intent, vec![PilotAction::Distill], "rail-preset", 0);
     }
 
     pub fn dispatch_native_intent(&mut self, raw: &str, use_brain: bool) {
@@ -390,6 +404,94 @@ impl BrowserApp {
             println!("[pilot-run] {json}");
         }
         self.last_pilot_run = Some(artifact);
+        // Now that the page is fetched, run a genuine analysis pass: hand the
+        // distilled content back to the model to actually answer the intent,
+        // instead of leaving only the pre-fetch placeholder line.
+        if completed {
+            self.start_pilot_analysis(intent);
+        }
+    }
+
+    /// Kick off the genuine post-perception analysis: if the run produced a
+    /// distilled page, ask the local model to answer the intent from the page's
+    /// actual content. Best-effort and non-blocking — `collect_pending_pilot_analysis`
+    /// appends the result to `last_pilot_run.analysis` when it lands.
+    #[cfg(feature = "xilem-shell")]
+    pub fn start_pilot_analysis(&mut self, intent: &str) {
+        // Snapshot the page text first so the immutable borrow ends before we
+        // touch `self` mutably below.
+        let page_text = match self
+            .active_tab()
+            .and_then(|tab| tab.distilled_page.as_ref())
+        {
+            Some(page) => format!(
+                "TITLE: {}\nURL: {}\n\n{}",
+                page.title, page.url, page.content
+            ),
+            None => return,
+        };
+        match self.pilot_brain_lane.analyze(intent.to_string(), page_text) {
+            Ok(result_rx) => {
+                self.pending_pilot_analysis = Some(PendingPilotAnalysis {
+                    intent: intent.to_string(),
+                    result_rx,
+                    started: Instant::now(),
+                });
+                self.last_status =
+                    format!("Analyzing page with local model: {}", truncate(intent, 48));
+            }
+            Err(error) => {
+                // A missing analysis lane must never fail the run itself.
+                eprintln!("[pilot-analysis] lane unavailable: {error}");
+            }
+        }
+    }
+
+    /// Per-frame poll of the analysis lane (mirrors `collect_pending_pilot_plan`).
+    /// Appends the model's genuine, content-grounded analysis to the latest run.
+    #[cfg(feature = "xilem-shell")]
+    pub fn collect_pending_pilot_analysis(&mut self) -> Option<Duration> {
+        let pending = self.pending_pilot_analysis.as_ref()?;
+        match pending.result_rx.try_recv() {
+            Ok(result) => {
+                let pending = self
+                    .pending_pilot_analysis
+                    .take()
+                    .expect("pending pilot analysis disappeared");
+                let elapsed = pending.started.elapsed();
+                match result {
+                    Ok(analysis) => {
+                        let analysis = analysis.trim().to_string();
+                        if let Some(run) = self.last_pilot_run.as_mut() {
+                            run.analysis.push(format!("MODEL: {analysis}"));
+                        }
+                        self.pilot_result = analysis.clone();
+                        self.pilot_status = "PILOT COMPLETE".to_string();
+                        self.last_status =
+                            format!("Pilot analysis complete in {}ms", elapsed.as_millis());
+                        self.last_ok = true;
+                    }
+                    Err(error) => {
+                        if let Some(run) = self.last_pilot_run.as_mut() {
+                            run.analysis.push(format!(
+                                "Model analysis unavailable: {}",
+                                truncate(&error, 80)
+                            ));
+                        }
+                        self.last_status =
+                            format!("Pilot analysis failed: {}", truncate(&error, 56));
+                        self.validation.error_seen = true;
+                    }
+                }
+                Some(elapsed)
+            }
+            Err(mpsc::TryRecvError::Empty) => None,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.pending_pilot_analysis.take();
+                self.last_status = "Pilot analysis lane dropped the request.".to_string();
+                None
+            }
+        }
     }
 
     /// Whether a local-model plan is currently in flight. Always defined so the
@@ -398,6 +500,18 @@ impl BrowserApp {
         #[cfg(feature = "xilem-shell")]
         {
             self.pending_pilot_plan.is_some()
+        }
+        #[cfg(not(feature = "xilem-shell"))]
+        {
+            false
+        }
+    }
+
+    /// Whether a post-perception analysis pass is currently in flight.
+    pub fn pilot_analysis_pending(&self) -> bool {
+        #[cfg(feature = "xilem-shell")]
+        {
+            self.pending_pilot_analysis.is_some()
         }
         #[cfg(not(feature = "xilem-shell"))]
         {

@@ -331,14 +331,35 @@ fn pilot_status_color_maps_states() {
 
 #[cfg(feature = "xilem-shell")]
 #[test]
-fn preset_intent_mirrors_address_and_shows_browser() -> Result<(), String> {
+fn preset_intent_acts_on_active_page_without_navigating() -> Result<(), String> {
     let data_dir = env::temp_dir().join(format!("sextant-browser-preset-{}", Uuid::new_v4()));
     let mut app = BrowserApp::new_with_data_dir(data_dir.clone())?;
     app.set_browser_mode(BrowserMode::Agent);
 
     app.run_preset_intent(AI_RAIL_PRESETS[0].1);
-    assert_eq!(app.address_input.as_str(), AI_RAIL_PRESETS[0].1);
-    assert!(app.main_view == MainView::Browser);
+
+    // The preset must act on the active page, not route the phrase through the
+    // navigate-planner (which would turn "the page I am viewing" into a web
+    // search and navigate away). So the resulting run plan never navigates.
+    assert_eq!(app.last_intent.as_str(), AI_RAIL_PRESETS[0].1);
+    assert_eq!(app.main_view, MainView::Pilot);
+    let run = app
+        .last_pilot_run
+        .as_ref()
+        .expect("rail preset should record a structured pilot run");
+    assert!(
+        run.plan.iter().all(|step| step.kind != "navigate"),
+        "rail preset must not navigate; got {:?}",
+        run.plan
+            .iter()
+            .map(|step| step.kind.clone())
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        run.plan.iter().any(|step| step.kind == "distill"),
+        "rail preset should distill the active page; got {:?}",
+        run.plan
+    );
 
     let _ = std::fs::remove_dir_all(&data_dir);
     Ok(())
@@ -902,6 +923,21 @@ fn visible_log_refresh_can_complete_from_persistence_lane() -> Result<(), String
         .recent_logs
         .iter()
         .any(|entry| entry.intent == "visible log refresh lane"));
+
+    let _ = std::fs::remove_dir_all(data_dir);
+    Ok(())
+}
+
+#[cfg(feature = "xilem-shell")]
+#[test]
+fn pilot_tab_switches_to_pilot_view() -> Result<(), String> {
+    let data_dir = env::temp_dir().join(format!("sextant-browser-pilot-tab-{}", Uuid::new_v4()));
+    let mut app = BrowserApp::new_with_data_dir(data_dir.clone())?;
+    app.layout(PhysicalSize::new(1180, 760));
+
+    let pilot_tab = app.pilot_tab_rect;
+    click_rect(&mut app, pilot_tab, "Pilot tab")?;
+    assert_eq!(app.main_view, MainView::Pilot);
 
     let _ = std::fs::remove_dir_all(data_dir);
     Ok(())

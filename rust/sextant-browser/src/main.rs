@@ -2215,6 +2215,12 @@ fn run_visible_app(
                     app.update_title(&window);
                     window.request_redraw();
                 }
+                #[cfg(feature = "xilem-shell")]
+                if app.collect_pending_pilot_analysis().is_some() {
+                    println!("[window-user] {}", app.last_status);
+                    app.update_title(&window);
+                    window.request_redraw();
+                }
                 if app.collect_pending_frame_capture() {
                     if let Some(started) = smoke_input_started {
                         if smoke_requires_input_latency && !smoke_input_done {
@@ -2254,9 +2260,9 @@ fn run_visible_app(
                     elwt.set_control_flow(ControlFlow::WaitUntil(
                         Instant::now() + Duration::from_millis(16),
                     ));
-                } else if app.pilot_plan_pending() {
-                    // The local-model plan can take seconds; keep the loop ticking
-                    // coarsely so `collect_pending_pilot_plan` runs without input.
+                } else if app.pilot_plan_pending() || app.pilot_analysis_pending() {
+                    // Local-model plan/analysis can take seconds; keep the loop
+                    // ticking coarsely so lane polls run without input.
                     elwt.set_control_flow(ControlFlow::WaitUntil(
                         Instant::now() + Duration::from_millis(50),
                     ));

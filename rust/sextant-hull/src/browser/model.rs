@@ -211,9 +211,11 @@ impl BrowserMode {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum MainView {
     Browser,
+    #[cfg(feature = "xilem-shell")]
+    Pilot,
     Wake,
     Log,
     Guard,
@@ -724,6 +726,15 @@ pub fn env_override(name: &str) -> Option<String> {
 pub struct PendingPilotPlan {
     pub intent: String,
     pub result_rx: mpsc::Receiver<Result<Vec<PilotAction>, String>>,
+    pub started: Instant,
+}
+
+/// In-flight post-perception analysis pass: the model is reading the fetched
+/// page to answer `intent`. Polled each frame, mirroring [`PendingPilotPlan`].
+#[cfg(feature = "xilem-shell")]
+pub struct PendingPilotAnalysis {
+    pub intent: String,
+    pub result_rx: mpsc::Receiver<Result<String, String>>,
     pub started: Instant,
 }
 

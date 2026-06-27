@@ -293,6 +293,11 @@ enum PilotBrainCommand {
         context: Vec<WakeEntry>,
         reply_tx: mpsc::Sender<Result<Vec<PilotAction>, String>>,
     },
+    Analyze {
+        intent: String,
+        page_text: String,
+        reply_tx: mpsc::Sender<Result<String, String>>,
+    },
     Shutdown,
 }
 
@@ -332,6 +337,11 @@ impl PilotBrainLane {
                                         "pilot brain runtime init failed: {error}"
                                     )));
                                 }
+                                PilotBrainCommand::Analyze { reply_tx, .. } => {
+                                    let _ = reply_tx.send(Err(format!(
+                                        "pilot brain runtime init failed: {error}"
+                                    )));
+                                }
                                 PilotBrainCommand::Shutdown => break,
                             }
                         }
@@ -354,6 +364,21 @@ impl PilotBrainLane {
                         } => {
                             let result = match &brain {
                                 Some(brain) => runtime.block_on(brain.reason(&intent, &context)),
+                                None => Err(format!(
+                                    "local model endpoint '{worker_endpoint}' is not a valid URL"
+                                )),
+                            };
+                            let _ = reply_tx.send(result);
+                        }
+                        PilotBrainCommand::Analyze {
+                            intent,
+                            page_text,
+                            reply_tx,
+                        } => {
+                            let result = match &brain {
+                                Some(brain) => {
+                                    runtime.block_on(brain.analyze_page(&intent, &page_text))
+                                }
                                 None => Err(format!(
                                     "local model endpoint '{worker_endpoint}' is not a valid URL"
                                 )),
@@ -387,6 +412,25 @@ impl PilotBrainLane {
             .send(PilotBrainCommand::Reason {
                 intent,
                 context,
+                reply_tx,
+            })
+            .map_err(|error| format!("pilot brain lane unavailable: {error}"))?;
+        Ok(result_rx)
+    }
+
+    /// Kick off a non-blocking post-perception analysis. The caller polls the
+    /// returned receiver each frame (mirrors [`reason`](Self::reason)) so the
+    /// model call never blocks rendering.
+    pub fn analyze(
+        &self,
+        intent: String,
+        page_text: String,
+    ) -> Result<mpsc::Receiver<Result<String, String>>, String> {
+        let (reply_tx, result_rx) = mpsc::channel();
+        self.command_tx
+            .send(PilotBrainCommand::Analyze {
+                intent,
+                page_text,
                 reply_tx,
             })
             .map_err(|error| format!("pilot brain lane unavailable: {error}"))?;

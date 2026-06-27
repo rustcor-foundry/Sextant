@@ -40,6 +40,11 @@ pub fn draw(
     draw_metric_cards(&mut buffer, width, height, app);
     let frame_blit = match app.main_view {
         MainView::Browser => draw_page_panel(&mut buffer, width, height, app),
+        #[cfg(feature = "xilem-shell")]
+        MainView::Pilot => {
+            draw_pilot_panel(&mut buffer, width, height, app);
+            None
+        }
         MainView::Wake => {
             draw_wake_panel(&mut buffer, width, height, app);
             None
@@ -277,6 +282,15 @@ pub fn draw_controls(buffer: &mut [u32], width: u32, height: u32, app: &BrowserA
         app.validation_tab_rect,
         "VALIDATION",
         app.main_view == MainView::Validation,
+    );
+    #[cfg(feature = "xilem-shell")]
+    draw_pill(
+        buffer,
+        width,
+        height,
+        app.pilot_tab_rect,
+        "PILOT",
+        app.main_view == MainView::Pilot,
     );
     #[cfg(feature = "xilem-shell")]
     draw_pill(
@@ -834,6 +848,125 @@ pub fn draw_page_panel(
         );
     }
     None
+}
+
+#[cfg(feature = "xilem-shell")]
+pub fn draw_pilot_panel(buffer: &mut [u32], width: u32, height: u32, app: &BrowserApp) {
+    let rail_x = right_rail_x(width);
+    let panel = main_panel_rect(rail_x, height);
+    draw_panel_surface(buffer, width, height, panel, BUTTON_BRIGHT);
+    let max_chars = (panel.w.saturating_sub(40) / 8).max(20) as usize;
+    let text_x = panel.x + 20;
+
+    draw_text(
+        buffer,
+        width,
+        height,
+        text_x,
+        panel.y + 18,
+        "PILOT RUN",
+        TEXT,
+        1,
+    );
+
+    let Some(run) = app.last_pilot_run.as_ref() else {
+        draw_text(
+            buffer,
+            width,
+            height,
+            text_x,
+            panel.y + 54,
+            "NO PILOT RUN YET. ENTER AN INTENT (intent: ...) IN THE ADDRESS BAR AND PRESS RUN.",
+            TEXT_DIM,
+            1,
+        );
+        return;
+    };
+
+    // Status + timing chip at the panel's top-right.
+    draw_status_chip(
+        buffer,
+        width,
+        height,
+        Rect {
+            x: panel.x + panel.w.saturating_sub(170),
+            y: panel.y + 12,
+            w: 150,
+            h: 22,
+        },
+        &truncate(&format!("{} - {}ms", run.status, run.reason_ms), 18),
+        pilot_status_color(&format!("PILOT {}", run.status)),
+        !run.status.eq_ignore_ascii_case("failed"),
+    );
+
+    let mut y = panel.y + 50;
+    for line in [
+        format!("INTENT   {}", run.intent),
+        format!("PLANNER  {}", run.planner),
+    ] {
+        draw_text(
+            buffer,
+            width,
+            height,
+            text_x,
+            y,
+            &truncate(&line, max_chars),
+            TEXT_SOFT,
+            1,
+        );
+        y += 18;
+    }
+
+    let bottom = panel.y + panel.h.saturating_sub(20);
+    y += 14;
+    draw_text(buffer, width, height, text_x, y, "PLAN", TEXT_DIM, 1);
+    y += 22;
+    for (index, step) in run.plan.iter().enumerate() {
+        if y > bottom {
+            break;
+        }
+        let line = if step.detail.trim().is_empty() {
+            format!("{}.  {}", index + 1, step.kind.to_uppercase())
+        } else {
+            format!(
+                "{}.  {}   {}",
+                index + 1,
+                step.kind.to_uppercase(),
+                step.detail
+            )
+        };
+        draw_text(
+            buffer,
+            width,
+            height,
+            text_x + 12,
+            y,
+            &truncate(&line, max_chars),
+            TEXT_SOFT,
+            1,
+        );
+        y += 18;
+    }
+
+    let analysis: Vec<&String> = run
+        .analysis
+        .iter()
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    if !analysis.is_empty() && y < bottom {
+        y += 14;
+        draw_text(buffer, width, height, text_x, y, "ANALYSIS", TEXT_DIM, 1);
+        y += 22;
+        for paragraph in analysis {
+            for wrapped in wrap_text(paragraph, max_chars) {
+                if y > bottom {
+                    break;
+                }
+                draw_text(buffer, width, height, text_x + 12, y, &wrapped, TEXT, 1);
+                y += 16;
+            }
+        }
+    }
 }
 
 pub fn draw_wake_panel(buffer: &mut [u32], width: u32, height: u32, app: &BrowserApp) {
@@ -2027,11 +2160,8 @@ pub fn proof_report_title(report: &[String]) -> &'static str {
 /// Always compiled (label data) so the softbuffer reader shell builds without the
 /// `xilem-shell` feature; the click path that runs an intent stays feature-gated.
 pub const AI_RAIL_PRESETS: [(&str, &str); 2] = [
-    (
-        "SUMMARIZE",
-        "intent: open example.com and summarize the page",
-    ),
-    ("DISTILL HERE", "intent: distill the active page into Wake"),
+    ("SUMMARIZE", "summarize the page I am viewing"),
+    ("DISTILL HERE", "distill the page I am viewing into Wake"),
 ];
 
 /// Map a pilot status to a palette color (Xilem dashboard salvage): green for
@@ -2180,6 +2310,7 @@ pub fn draw_ai_rail(buffer: &mut [u32], width: u32, height: u32, app: &BrowserAp
         &page_state,
         false,
     );
+    #[cfg(feature = "xilem-shell")]
     if let Some(run) = app.last_pilot_run.as_ref() {
         // Surface the structured agentic run — the planned steps and the
         // analysis the pilot produced — instead of one truncated plan line.
@@ -2226,6 +2357,33 @@ pub fn draw_ai_rail(buffer: &mut [u32], width: u32, height: u32, app: &BrowserAp
             );
         }
     } else {
+        draw_text(
+            buffer,
+            width,
+            height,
+            rail_x + 56,
+            266,
+            "NEXT STEP",
+            TEXT_DIM,
+            1,
+        );
+        draw_chat_bubble(
+            buffer,
+            width,
+            height,
+            Rect {
+                x: rail_x + 56,
+                y: 284,
+                w: RAIL_WIDTH.saturating_sub(76),
+                h: 66,
+            },
+            &next_step,
+            true,
+        );
+    }
+    #[cfg(not(feature = "xilem-shell"))]
+    {
+        // No pilot subsystem in this build — render the static next-step hint.
         draw_text(
             buffer,
             width,

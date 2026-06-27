@@ -27,6 +27,7 @@ fn rgb32(color: u32) -> egui::Color32 {
 fn egui_bridge_tabs() -> Vec<(MainView, &'static str)> {
     vec![
         (MainView::Browser, "BROWSER"),
+        (MainView::Pilot, "PILOT"),
         (MainView::Wake, "WAKE"),
         (MainView::Log, "LOG"),
         (MainView::Guard, "GUARD"),
@@ -209,6 +210,44 @@ fn egui_bridge_central(
                         });
                     }
                 });
+            }
+        }
+        MainView::Pilot => {
+            ui.label(egui::RichText::new("PILOT RUN").color(cyan).strong());
+            if let Some(run) = app.last_pilot_run.as_ref() {
+                ui.label(egui::RichText::new(format!("INTENT  {}", run.intent)));
+                ui.label(
+                    egui::RichText::new(format!(
+                        "PLANNER {}  |  {}  |  {}ms",
+                        run.planner, run.status, run.reason_ms
+                    ))
+                    .color(dim)
+                    .small(),
+                );
+                ui.separator();
+                ui.label(egui::RichText::new("PLAN").color(dim).small());
+                for (index, step) in run.plan.iter().enumerate() {
+                    ui.label(egui::RichText::new(format!(
+                        "{}. {}  {}",
+                        index + 1,
+                        step.kind.to_uppercase(),
+                        step.detail
+                    )));
+                }
+                if run.analysis.iter().any(|line| !line.trim().is_empty()) {
+                    ui.separator();
+                    ui.label(egui::RichText::new("ANALYSIS").color(dim).small());
+                    for line in &run.analysis {
+                        if !line.trim().is_empty() {
+                            ui.label(egui::RichText::new(line));
+                        }
+                    }
+                }
+            } else {
+                ui.label(
+                    egui::RichText::new("NO PILOT RUN YET. ENTER AN INTENT IN THE ADDRESS BAR.")
+                        .color(dim),
+                );
             }
         }
         MainView::Log => {
@@ -915,6 +954,7 @@ fn poll_egui_bridge_lanes(app: &mut BrowserApp) -> bool {
     changed |= app.collect_pending_log_writes();
     changed |= app.collect_pending_log_refresh();
     changed |= app.collect_pending_pilot_plan().is_some();
+    changed |= app.collect_pending_pilot_analysis().is_some();
     changed |= app.collect_pending_frame_capture();
     // Push queued viewport input (clicks / scroll / typed keys) into the live
     // Servo session before refreshing, the same way the softbuffer loop does.
@@ -943,6 +983,7 @@ fn egui_bridge_has_pending_async(app: &BrowserApp) -> bool {
         || app.pending_frame_capture.is_some()
         || !app.pending_viewport_input.is_empty()
         || app.pilot_plan_pending()
+        || app.pilot_analysis_pending()
 }
 
 /// Experimental egui bridge shell entry (`SEXTANT_EGUI_BRIDGE=1`). Reuses the

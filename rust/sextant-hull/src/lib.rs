@@ -185,6 +185,7 @@ pub struct BrowserApp {
     pub perception_tab_rect: Rect,
     pub perf_tab_rect: Rect,
     pub validation_tab_rect: Rect,
+    pub pilot_tab_rect: Rect,
     pub browser_viewport_rect: Rect,
     pub buttons: Vec<ButtonRegion>,
     pub mode_rects: Vec<ModeRegion>,
@@ -223,6 +224,10 @@ pub struct BrowserApp {
     pub pilot_brain_lane: PilotBrainLane,
     #[cfg(feature = "xilem-shell")]
     pub pending_pilot_plan: Option<PendingPilotPlan>,
+    // In-flight post-perception analysis pass (model reading the fetched page to
+    // answer the intent); its result is appended to `last_pilot_run.analysis`.
+    #[cfg(feature = "xilem-shell")]
+    pub pending_pilot_analysis: Option<PendingPilotAnalysis>,
     // Latest structured pilot run, retained as the hook a future visual dashboard /
     // MCP reads; the human-readable view already renders via pilot_plan/result.
     #[cfg(feature = "xilem-shell")]
@@ -348,6 +353,12 @@ impl BrowserApp {
                 w: 1,
                 h: 1,
             },
+            pilot_tab_rect: Rect {
+                x: 0,
+                y: 0,
+                w: 1,
+                h: 1,
+            },
             browser_viewport_rect: Rect {
                 x: 0,
                 y: 0,
@@ -411,6 +422,8 @@ impl BrowserApp {
             pilot_brain_lane: PilotBrainLane::new(&ai_config),
             #[cfg(feature = "xilem-shell")]
             pending_pilot_plan: None,
+            #[cfg(feature = "xilem-shell")]
+            pending_pilot_analysis: None,
             #[cfg(feature = "xilem-shell")]
             last_pilot_run: None,
             #[cfg(feature = "xilem-shell")]
@@ -654,10 +667,16 @@ impl BrowserApp {
             w: 118,
             h: 30,
         };
+        self.pilot_tab_rect = Rect {
+            x: 672,
+            y: CHROME_H + STRIP_H + 5,
+            w: 66,
+            h: 30,
+        };
         #[cfg(feature = "xilem-shell")]
         {
             self.settings_tab_rect = Rect {
-                x: 674,
+                x: 742,
                 y: CHROME_H + STRIP_H + 5,
                 w: 96,
                 h: 30,

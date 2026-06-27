@@ -362,6 +362,24 @@ fn plan_prompt(intent: &str, context: &[sextant_wake::WakeEntry]) -> String {
     )
 }
 
+/// Prompt for the post-perception analysis pass. Unlike [`plan_prompt`] (which
+/// runs before the page loads), this feeds the distilled page content back to
+/// the model so it answers the intent from what the page actually contains.
+fn analysis_prompt(intent: &str, page_text: &str) -> String {
+    // Bound the page text so a large page can't blow past the model context.
+    let trimmed: String = page_text.chars().take(6000).collect();
+    format!(
+        "You are the Sextant Pilot for a sovereign browser, reviewing a page the \
+         user just visited.\n\
+         User intent: {intent}\n\
+         Using ONLY the page content below, answer the intent directly and \
+         concisely. If the page does not contain the answer, say so plainly and \
+         suggest the most likely next step. Reply in 1-3 short sentences of plain \
+         prose — no JSON, no preamble, no restating the intent.\n\n\
+         PAGE CONTENT:\n{trimmed}"
+    )
+}
+
 fn extract_json_payload(response: &str) -> &str {
     let trimmed = response.trim();
     if let Some(start) = trimmed.find("```") {
@@ -748,6 +766,21 @@ impl LocalBrain {
             },
         }
     }
+
+    /// Genuine post-perception analysis: feed the *fetched* page back to the
+    /// model and ask it to answer the user's intent from the page's actual
+    /// content. Distinct from [`reason`](Self::reason), which only plans actions
+    /// up front, before the page has loaded. Used by the pilot's analysis lane.
+    pub async fn analyze_page(&self, intent: &str, page_text: &str) -> Result<String, String> {
+        let prompt = analysis_prompt(intent, page_text);
+        let response = self.inference.generate(&prompt, &self.config).await?;
+        let text = response.trim().to_string();
+        if text.is_empty() {
+            Err("model returned an empty analysis".to_string())
+        } else {
+            Ok(text)
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -782,6 +815,15 @@ impl PilotBrain for LocalBrain {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn analysis_prompt_includes_intent_and_bounds_page_text() {
+        let page = "word ".repeat(2000);
+        let prompt = analysis_prompt("summarize the page I am viewing", &page);
+        assert!(prompt.contains("summarize the page I am viewing"));
+        assert!(prompt.contains("PAGE CONTENT:"));
+        assert!(prompt.len() < page.len(), "page body should be truncated");
+    }
 
     #[test]
     fn model_plan_without_consent_is_gated_for_sensitive_intent() {

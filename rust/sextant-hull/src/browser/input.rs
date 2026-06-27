@@ -53,6 +53,11 @@ impl BrowserApp {
             return;
         }
         #[cfg(feature = "xilem-shell")]
+        if self.pilot_tab_rect.contains(x, y) {
+            self.main_view = MainView::Pilot;
+            return;
+        }
+        #[cfg(feature = "xilem-shell")]
         if self.settings_tab_rect.contains(x, y) {
             self.main_view = MainView::Settings;
             return;
@@ -176,7 +181,7 @@ impl BrowserApp {
     /// next intent plans through the newly selected server.
     #[cfg(feature = "xilem-shell")]
     pub fn apply_ai_backend(&mut self, backend: &str) {
-        if self.pending_pilot_plan.is_some() {
+        if self.pending_pilot_plan.is_some() || self.pending_pilot_analysis.is_some() {
             // Rebuilding the lane joins its worker thread, which would block on an
             // in-flight model call. Make the user finish the current intent first.
             self.last_status =
