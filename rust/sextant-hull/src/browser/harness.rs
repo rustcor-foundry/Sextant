@@ -1536,6 +1536,37 @@ pub fn parse_duration_arg(
     Ok(Duration::from_secs(seconds))
 }
 
+/// Whether the interactive bridge shell should use the egui renderer (default)
+/// instead of the legacy softbuffer HUD. Window-smoke and other automated
+/// proofs keep the softbuffer path for determinism; set `SEXTANT_SOFTBUFFER_BRIDGE=1`
+/// to opt back into the pixel HUD for manual sessions too.
+#[cfg(all(
+    target_os = "windows",
+    feature = "servo-backend",
+    feature = "xilem-shell"
+))]
+pub fn bridge_shell_use_egui(interactive: bool) -> bool {
+    if !interactive {
+        return false;
+    }
+    !truthy_env_flag("SEXTANT_SOFTBUFFER_BRIDGE")
+}
+
+#[cfg(all(
+    target_os = "windows",
+    feature = "servo-backend",
+    feature = "xilem-shell"
+))]
+fn truthy_env_flag(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|value| {
+            let value = value.trim().to_ascii_lowercase();
+            !value.is_empty() && value != "0" && value != "false" && value != "no"
+        })
+        .unwrap_or(false)
+}
+
 pub fn operator_arg_value(args: &[String], flag: &str) -> Option<String> {
     args.windows(2)
         .find(|pair| pair[0] == flag)

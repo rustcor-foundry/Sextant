@@ -131,6 +131,17 @@ impl BrowserMode {
         }
     }
 
+    /// Sentence-case label for modern egui chrome chips.
+    pub fn chip_label(self) -> &'static str {
+        match self {
+            BrowserMode::Agent => "Agent",
+            BrowserMode::Assisted => "Assist",
+            BrowserMode::Observe => "Observe",
+            BrowserMode::Direct => "Direct",
+            BrowserMode::Incognito => "Incognito",
+        }
+    }
+
     pub fn status(self) -> &'static str {
         match self {
             BrowserMode::Agent => "Agent Mode: AI can observe, control, persist, and expose tools.",
@@ -224,6 +235,40 @@ pub enum MainView {
     Validation,
     #[cfg(feature = "xilem-shell")]
     Settings,
+}
+
+impl MainView {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Browser => "Browser",
+            #[cfg(feature = "xilem-shell")]
+            Self::Pilot => "Pilot",
+            Self::Wake => "Wake",
+            Self::Log => "Log",
+            Self::Guard => "Guard",
+            Self::Perception => "Sense",
+            Self::Perf => "Perf",
+            Self::Validation => "Validation",
+            #[cfg(feature = "xilem-shell")]
+            Self::Settings => "Settings",
+        }
+    }
+
+    /// Views shown in the bridge shell tab strip (egui path).
+    #[cfg(feature = "xilem-shell")]
+    pub fn bridge_views() -> &'static [MainView] {
+        &[
+            MainView::Browser,
+            MainView::Pilot,
+            MainView::Wake,
+            MainView::Log,
+            MainView::Guard,
+            MainView::Perception,
+            MainView::Perf,
+            MainView::Validation,
+            MainView::Settings,
+        ]
+    }
 }
 
 #[derive(Default)]
@@ -710,6 +755,54 @@ impl AiLocalConfig {
             "ollama" => "Ollama",
             "vllm" => "vLLM",
             _ => "llama.cpp",
+        }
+    }
+}
+
+/// Chrome look-and-feel for egui shells. Modern matches hosted-direct; retro keeps
+/// the monospace HUD palette. Persisted to `<profile>/chrome-ui.json`; env
+/// `SEXTANT_CHROME_THEME=modern|retro` overrides on load.
+#[cfg(any(feature = "xilem-shell", feature = "servo-backend"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ChromeUiTheme {
+    Modern,
+    Retro,
+}
+
+#[cfg(any(feature = "xilem-shell", feature = "servo-backend"))]
+impl ChromeUiTheme {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Modern => "Modern",
+            Self::Retro => "Retro HUD",
+        }
+    }
+
+    pub fn config_path(profile_dir: &Path) -> PathBuf {
+        profile_dir.join("chrome-ui.json")
+    }
+
+    pub fn load(profile_dir: &Path) -> Self {
+        let from_file = std::fs::read_to_string(Self::config_path(profile_dir))
+            .ok()
+            .and_then(|raw| serde_json::from_str::<ChromeUiTheme>(&raw).ok());
+        let from_env = std::env::var("SEXTANT_CHROME_THEME")
+            .ok()
+            .and_then(|value| Self::parse(&value));
+        from_env.or(from_file).unwrap_or(Self::Modern)
+    }
+
+    pub fn save(self, profile_dir: &Path) -> Result<(), String> {
+        let json = serde_json::to_string_pretty(&self).map_err(|error| error.to_string())?;
+        std::fs::write(Self::config_path(profile_dir), json).map_err(|error| error.to_string())
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "modern" | "direct" => Some(Self::Modern),
+            "retro" | "hud" | "terminal" => Some(Self::Retro),
+            _ => None,
         }
     }
 }

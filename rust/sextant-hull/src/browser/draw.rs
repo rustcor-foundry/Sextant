@@ -1350,6 +1350,29 @@ pub fn settings_backend_button_rects(panel: Rect) -> Vec<(&'static str, Rect)> {
         .collect()
 }
 
+#[cfg(any(feature = "xilem-shell", feature = "servo-backend"))]
+pub fn settings_theme_button_rects(panel: Rect) -> Vec<(ChromeUiTheme, Rect)> {
+    let button_w = 150;
+    let gap = 14;
+    let y = panel.y + 248;
+    [ChromeUiTheme::Modern, ChromeUiTheme::Retro]
+        .into_iter()
+        .enumerate()
+        .map(|(index, theme)| {
+            let x = panel.x + 24 + index as u32 * (button_w + gap);
+            (
+                theme,
+                Rect {
+                    x,
+                    y,
+                    w: button_w,
+                    h: 34,
+                },
+            )
+        })
+        .collect()
+}
+
 #[cfg(feature = "xilem-shell")]
 pub fn draw_settings_panel(buffer: &mut [u32], width: u32, height: u32, app: &BrowserApp) {
     let rail_x = right_rail_x(width);
@@ -1453,6 +1476,45 @@ pub fn draw_settings_panel(buffer: &mut [u32], width: u32, height: u32, app: &Br
         TEXT_DIM,
         1,
     );
+    #[cfg(any(feature = "xilem-shell", feature = "servo-backend"))]
+    {
+        let theme_y = panel.y + 220;
+        draw_text(
+            buffer,
+            width,
+            height,
+            panel.x + 24,
+            theme_y,
+            "CHROME THEME",
+            TEXT_DIM,
+            1,
+        );
+        for (theme, rect) in settings_theme_button_rects(panel) {
+            let selected = app.chrome_ui_theme == theme;
+            draw_button(
+                buffer,
+                width,
+                height,
+                rect,
+                theme.label(),
+                selected,
+                true,
+            );
+        }
+        draw_text(
+            buffer,
+            width,
+            height,
+            panel.x + 24,
+            theme_y + 72,
+            &truncate(
+                "Modern matches hosted-direct. Retro HUD keeps monospace cyan edges. Legacy pixel shell: SEXTANT_SOFTBUFFER_BRIDGE=1.",
+                max_chars,
+            ),
+            TEXT_DIM,
+            1,
+        );
+    }
 }
 
 pub fn guard_appliance_refresh_rect(panel: Rect) -> Rect {

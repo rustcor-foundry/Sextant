@@ -1,11 +1,7 @@
-//! egui bridge shell — the experimental egui-rendered chrome (gated behind
-//! the SEXTANT_EGUI_BRIDGE flag), extracted from the browser.rs crate root.
-//!
+//! egui bridge shell — the default interactive full-mode renderer on Windows.
 //! Renders the same `BrowserApp` state/logic as the softbuffer bridge shell,
-//! but through the retro egui theme for anti-aliased text + HiDPI. The whole
-//! module is gated at its `mod` declaration on
-//! `all(windows, servo-backend, xilem-shell)`, so the per-fn cfg attrs below
-//! are redundant-but-verbatim from the original location.
+//! but through the shared modern/retro egui themes for anti-aliased text + HiDPI.
+//! Opt into the legacy pixel HUD with `SEXTANT_SOFTBUFFER_BRIDGE=1`.
 
 use super::*;
 
@@ -19,56 +15,8 @@ fn rgb32(color: u32) -> egui::Color32 {
     egui::Color32::from_rgb((color >> 16) as u8, (color >> 8) as u8, color as u8)
 }
 
-#[cfg(all(
-    target_os = "windows",
-    feature = "servo-backend",
-    feature = "xilem-shell"
-))]
-fn egui_bridge_tabs() -> Vec<(MainView, &'static str)> {
-    vec![
-        (MainView::Browser, "BROWSER"),
-        (MainView::Pilot, "PILOT"),
-        (MainView::Wake, "WAKE"),
-        (MainView::Log, "LOG"),
-        (MainView::Guard, "GUARD"),
-        (MainView::Perception, "SENSE"),
-        (MainView::Perf, "PERF"),
-        (MainView::Validation, "VALIDATION"),
-        (MainView::Settings, "SETTINGS"),
-    ]
-}
-
-#[cfg(all(
-    target_os = "windows",
-    feature = "servo-backend",
-    feature = "xilem-shell"
-))]
-fn egui_metric_card(
-    ui: &mut egui::Ui,
-    label: &str,
-    value: &str,
-    sub: &str,
-    value_color: egui::Color32,
-) {
-    let dim = egui::Color32::from_rgb(0x93, 0xa4, 0xb0);
-    egui::Frame::group(ui.style()).show(ui, |ui| {
-        ui.vertical(|ui| {
-            ui.set_width(150.0);
-            ui.label(egui::RichText::new(label).color(dim).small());
-            ui.label(
-                egui::RichText::new(value)
-                    .color(value_color)
-                    .size(20.0)
-                    .strong(),
-            );
-            ui.label(egui::RichText::new(sub).color(dim).small());
-        });
-    });
-}
-
-/// Per-view central content. First pass: Browser shows the active URL (the Servo
-/// frame viewport is the final port step), Settings has the backend selector, and
-/// the data tabs show summaries pending their full panel port.
+/// Per-view central content. Browser shows the live Servo viewport; Settings has
+/// backend/theme controls; data tabs show summaries pending their full panel port.
 #[cfg(all(
     target_os = "windows",
     feature = "servo-backend",
@@ -85,7 +33,7 @@ fn egui_bridge_central(
     let red = egui::Color32::from_rgb(0xe0, 0x52, 0x4a);
     match app.main_view {
         MainView::Browser => {
-            ui.label(egui::RichText::new("ACTIVE PAGE").color(dim).small());
+            egui_section_heading(ui, "Active page");
             let url = app
                 .active_tab()
                 .and_then(|tab| tab.url.as_ref())
@@ -96,7 +44,7 @@ fn egui_bridge_central(
                 }
                 None => {
                     ui.label(
-                        egui::RichText::new("NO ACTIVE PAGE — enter a URL or intent above.")
+                        egui::RichText::new("No active page — enter a URL or intent above.")
                             .color(dim),
                     );
                 }
@@ -104,9 +52,6 @@ fn egui_bridge_central(
             ui.add_space(6.0);
             match viewport {
                 Some(texture) => {
-                    // Live Servo frame uploaded as an egui texture (see
-                    // `run_visible_app_egui`). Fit it into the available area while
-                    // preserving the captured frame's aspect ratio.
                     let [tw, th] = texture.size();
                     let (tw, th) = (tw.max(1) as f32, th.max(1) as f32);
                     let avail = ui.available_size();
@@ -120,7 +65,7 @@ fn egui_bridge_central(
                     forward_egui_viewport_input(ui, app, &response, tw, th);
                     ui.label(
                         egui::RichText::new(format!(
-                            "SERVO FRAME {}x{}  ·  CLICK TO FOCUS, THEN TYPE / SCROLL TO INTERACT",
+                            "Live frame {}×{} · click to focus, then type or scroll",
                             tw as u32, th as u32
                         ))
                         .color(dim)
@@ -128,7 +73,7 @@ fn egui_bridge_central(
                     );
                 }
                 None => {
-                    egui::Frame::group(ui.style()).show(ui, |ui| {
+                    egui_panel_card(ui, |ui| {
                         ui.set_min_height(140.0);
                         match app.active_tab().and_then(|tab| tab.distilled_page.as_ref()) {
                             Some(page) => {
@@ -146,7 +91,7 @@ fn egui_bridge_central(
                             None => {
                                 ui.label(
                                     egui::RichText::new(
-                                        "NO SERVO FRAME YET — press RUN or an intent to capture the live viewport.",
+                                        "No Servo frame yet — press Run or enter an intent.",
                                     )
                                     .color(dim),
                                 );
@@ -157,51 +102,65 @@ fn egui_bridge_central(
             }
         }
         MainView::Settings => {
-            ui.label(egui::RichText::new("LOCAL AI BACKEND").color(dim).small());
+            egui_section_heading(ui, "Local AI backend");
             ui.horizontal(|ui| {
                 for backend in AiLocalConfig::BACKENDS {
                     let active = app.ai_config.backend == backend;
-                    if ui
-                        .selectable_label(active, AiLocalConfig::backend_label(backend))
-                        .clicked()
-                    {
+                    if egui_chip(ui, AiLocalConfig::backend_label(backend), active) {
                         app.apply_ai_backend(backend);
                     }
                 }
             });
             ui.add_space(6.0);
             ui.label(
-                egui::RichText::new(format!("ENDPOINT  {}", app.ai_config.endpoint))
+                egui::RichText::new(format!("Endpoint  {}", app.ai_config.endpoint))
                     .color(dim)
                     .small(),
             );
             ui.label(
-                egui::RichText::new(format!("MODEL     {}", app.ai_config.model))
+                egui::RichText::new(format!("Model     {}", app.ai_config.model))
                     .color(dim)
                     .small(),
             );
+            ui.add_space(10.0);
+            egui_section_heading(ui, "Chrome theme");
+            ui.horizontal(|ui| {
+                for theme in [ChromeUiTheme::Modern, ChromeUiTheme::Retro] {
+                    let active = app.chrome_ui_theme == theme;
+                    if egui_chip(ui, theme.label(), active) {
+                        app.set_chrome_ui_theme(theme);
+                    }
+                }
+            });
+            ui.label(
+                egui::RichText::new(
+                    "Modern matches hosted-direct chrome. Retro HUD keeps monospace edges. Legacy pixel shell: SEXTANT_SOFTBUFFER_BRIDGE=1.",
+                )
+                .color(dim)
+                .small(),
+            );
         }
         MainView::Wake => {
-            ui.label(egui::RichText::new("DIGITAL WAKE").color(cyan).strong());
+            ui.label(egui::RichText::new("Digital Wake").color(cyan).strong());
             if app.wake_results.is_empty() {
                 ui.label(
                     egui::RichText::new(
-                        "NO WAKE RESULTS YET. DISTILL A PAGE OR SEARCH WAKE IN THE RAIL.",
+                        "No wake results yet — distill a page or search Wake in the rail.",
                     )
                     .color(dim),
                 );
             } else {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     for entry in &app.wake_results {
-                        egui::Frame::group(ui.style()).show(ui, |ui| {
+                        egui_panel_card(ui, |ui| {
                             ui.label(egui::RichText::new(format!(
-                                "{} | {}",
+                                "{} · {}",
                                 entry.title,
                                 short_url(&entry.url)
                             )));
                             ui.label(
                                 egui::RichText::new(format!(
-                                    "IMPORTANCE {:.2} | USED {}",
+                                    "Importance {:.2} · used {}",
                                     entry.importance, entry.usage_count
                                 ))
                                 .color(dim)
@@ -213,19 +172,19 @@ fn egui_bridge_central(
             }
         }
         MainView::Pilot => {
-            ui.label(egui::RichText::new("PILOT RUN").color(cyan).strong());
+            ui.label(egui::RichText::new("Pilot run").color(cyan).strong());
             if let Some(run) = app.last_pilot_run.as_ref() {
-                ui.label(egui::RichText::new(format!("INTENT  {}", run.intent)));
+                ui.label(egui::RichText::new(format!("Intent  {}", run.intent)));
                 ui.label(
                     egui::RichText::new(format!(
-                        "PLANNER {}  |  {}  |  {}ms",
+                        "Planner {} · {} · {}ms",
                         run.planner, run.status, run.reason_ms
                     ))
                     .color(dim)
                     .small(),
                 );
                 ui.separator();
-                ui.label(egui::RichText::new("PLAN").color(dim).small());
+                egui_section_heading(ui, "Plan");
                 for (index, step) in run.plan.iter().enumerate() {
                     ui.label(egui::RichText::new(format!(
                         "{}. {}  {}",
@@ -236,30 +195,32 @@ fn egui_bridge_central(
                 }
                 if run.analysis.iter().any(|line| !line.trim().is_empty()) {
                     ui.separator();
-                    ui.label(egui::RichText::new("ANALYSIS").color(dim).small());
-                    for line in &run.analysis {
-                        if !line.trim().is_empty() {
-                            ui.label(egui::RichText::new(line));
+                    egui_section_heading(ui, "Analysis");
+                    egui_panel_card(ui, |ui| {
+                        for line in &run.analysis {
+                            if !line.trim().is_empty() {
+                                ui.label(egui::RichText::new(line));
+                            }
                         }
-                    }
+                    });
                 }
             } else {
                 ui.label(
-                    egui::RichText::new("NO PILOT RUN YET. ENTER AN INTENT IN THE ADDRESS BAR.")
+                    egui::RichText::new("No pilot run yet — enter an intent in the address bar.")
                         .color(dim),
                 );
             }
         }
         MainView::Log => {
-            ui.label(egui::RichText::new("CAPTAIN'S LOG").color(cyan).strong());
+            ui.label(egui::RichText::new("Captain's log").color(cyan).strong());
             if app.recent_logs.is_empty() {
-                ui.label(egui::RichText::new("NO LOG ENTRIES YET").color(dim));
+                ui.label(egui::RichText::new("No log entries yet").color(dim));
             } else {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     for entry in &app.recent_logs {
                         ui.label(
                             egui::RichText::new(format!(
-                                "{} | {}",
+                                "{} · {}",
                                 status_label(&entry.status),
                                 entry.intent
                             ))
@@ -270,7 +231,7 @@ fn egui_bridge_central(
             }
         }
         MainView::Guard => {
-            ui.label(egui::RichText::new("LOCAL GUARD").color(cyan).strong());
+            ui.label(egui::RichText::new("Local guard").color(cyan).strong());
             let lines = {
                 let active_url = app
                     .active_tab()
@@ -283,124 +244,131 @@ fn egui_bridge_central(
                 let active_page = app.active_tab().and_then(|tab| tab.distilled_page.as_ref());
                 guard_report_lines(app, active_url, active_page)
             };
-            for line in &lines {
-                let color = if line.contains("BLOCK") || line.contains("HARDENED") {
-                    red
-                } else if line.contains("ALLOW") || line.contains("ONLINE") {
-                    green
-                } else {
-                    dim
-                };
-                ui.label(egui::RichText::new(line.as_str()).color(color).small());
-            }
+            egui_panel_card(ui, |ui| {
+                for line in &lines {
+                    let color = if line.contains("BLOCK") || line.contains("HARDENED") {
+                        red
+                    } else if line.contains("ALLOW") || line.contains("ONLINE") {
+                        green
+                    } else {
+                        dim
+                    };
+                    ui.label(egui::RichText::new(line.as_str()).color(color).small());
+                }
+            });
             ui.add_space(8.0);
-            ui.separator();
             egui_appliance_cert_section(ui, app);
         }
         MainView::Perception => {
-            ui.label(egui::RichText::new("PAGE PERCEPTION").color(cyan).strong());
+            ui.label(egui::RichText::new("Page perception").color(cyan).strong());
             match app.active_tab().and_then(|tab| tab.distilled_page.as_ref()) {
                 None => {
                     ui.label(
                         egui::RichText::new(
-                            "NO DISTILLED PAGE YET. DISTILL THE ACTIVE TAB TO BUILD A SEMANTIC MAP.",
+                            "No distilled page yet — distill the active tab to build a semantic map.",
                         )
                         .color(dim),
                     );
                 }
                 Some(page) => {
                     let counts = semantic_counts(page);
-                    ui.label(egui::RichText::new(page.title.clone()).strong());
-                    ui.label(
-                        egui::RichText::new(page.url.as_str().to_string())
+                    egui_panel_card(ui, |ui| {
+                        ui.label(egui::RichText::new(page.title.clone()).strong());
+                        ui.label(
+                            egui::RichText::new(page.url.as_str().to_string())
+                                .color(dim)
+                                .small(),
+                        );
+                        ui.label(egui::RichText::new(page_perception_summary(page)).color(green));
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "Headings {} · links {} · buttons {} · inputs {} · images {} · text {}",
+                                counts.headings,
+                                counts.links,
+                                counts.buttons,
+                                counts.inputs,
+                                counts.images,
+                                counts.text
+                            ))
                             .color(dim)
                             .small(),
-                    );
-                    ui.label(egui::RichText::new(page_perception_summary(page)).color(green));
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "SEMANTICS H={} LINKS={} BUTTONS={} INPUTS={} IMAGES={} TEXT={}",
-                            counts.headings,
-                            counts.links,
-                            counts.buttons,
-                            counts.inputs,
-                            counts.images,
-                            counts.text
-                        ))
-                        .color(dim)
-                        .small(),
-                    );
-                    let source = page
-                        .metadata
-                        .get("distillation_backend")
-                        .or_else(|| page.metadata.get("source"))
-                        .or_else(|| page.metadata.get("distiller"))
-                        .cloned()
-                        .unwrap_or_else(|| "unknown".to_string());
-                    ui.label(
-                        egui::RichText::new(format!("SOURCE {source}"))
-                            .color(dim)
-                            .small(),
-                    );
+                        );
+                        let source = page
+                            .metadata
+                            .get("distillation_backend")
+                            .or_else(|| page.metadata.get("source"))
+                            .or_else(|| page.metadata.get("distiller"))
+                            .cloned()
+                            .unwrap_or_else(|| "unknown".to_string());
+                        ui.label(
+                            egui::RichText::new(format!("Source  {source}"))
+                                .color(dim)
+                                .small(),
+                        );
+                    });
                     ui.add_space(6.0);
+                    egui_section_heading(ui, "Semantic nodes");
                     egui::ScrollArea::vertical().show(ui, |ui| {
-                        egui::Grid::new("sense_nodes").striped(true).show(ui, |ui| {
-                            ui.label(egui::RichText::new("TYPE").color(dim).small());
-                            ui.label(egui::RichText::new("SELECTOR").color(dim).small());
-                            ui.label(egui::RichText::new("TEXT").color(dim).small());
-                            ui.end_row();
-                            for node in key_semantic_nodes(page) {
-                                let color = match &node.node_type {
-                                    NodeType::Heading => cyan,
-                                    NodeType::Input | NodeType::Button => red,
-                                    NodeType::Link => green,
-                                    NodeType::Image | NodeType::Text => dim,
-                                };
-                                ui.label(
-                                    egui::RichText::new(semantic_node_type_label(&node.node_type))
-                                        .color(color),
-                                );
-                                ui.label(
-                                    egui::RichText::new(truncate(&node.selector, 40)).color(dim),
-                                );
-                                ui.label(
-                                    egui::RichText::new(truncate(&node.text, 80)).color(color),
-                                );
+                        egui_panel_card(ui, |ui| {
+                            egui::Grid::new("sense_nodes").striped(true).show(ui, |ui| {
+                                ui.label(egui::RichText::new("Type").color(dim).small());
+                                ui.label(egui::RichText::new("Selector").color(dim).small());
+                                ui.label(egui::RichText::new("Text").color(dim).small());
                                 ui.end_row();
-                            }
+                                for node in key_semantic_nodes(page) {
+                                    let color = match &node.node_type {
+                                        NodeType::Heading => cyan,
+                                        NodeType::Input | NodeType::Button => red,
+                                        NodeType::Link => green,
+                                        NodeType::Image | NodeType::Text => dim,
+                                    };
+                                    ui.label(
+                                        egui::RichText::new(semantic_node_type_label(
+                                            &node.node_type,
+                                        ))
+                                        .color(color),
+                                    );
+                                    ui.label(
+                                        egui::RichText::new(truncate(&node.selector, 40))
+                                            .color(dim),
+                                    );
+                                    ui.label(
+                                        egui::RichText::new(truncate(&node.text, 80)).color(color),
+                                    );
+                                    ui.end_row();
+                                }
+                            });
                         });
                     });
                 }
             }
         }
         MainView::Perf => {
-            ui.label(
-                egui::RichText::new("BROWSER PERFORMANCE")
-                    .color(cyan)
-                    .strong(),
-            );
-            ui.label(
-                egui::RichText::new(format!("LATEST {}", app.perf.summary()))
-                    .color(dim)
-                    .small(),
-            );
-            let slowest = app
-                .slowest_perf_event()
-                .map(|event| {
-                    format!(
-                        "SLOWEST {} {} {}",
-                        event.phase,
-                        format_duration(event.duration),
-                        event.label
-                    )
-                })
-                .unwrap_or_else(|| "SLOWEST pending".to_string());
-            ui.label(egui::RichText::new(slowest).color(red).small());
+            ui.label(egui::RichText::new("Performance").color(cyan).strong());
+            egui_panel_card(ui, |ui| {
+                ui.label(
+                    egui::RichText::new(format!("Latest  {}", app.perf.summary()))
+                        .color(dim)
+                        .small(),
+                );
+                let slowest = app
+                    .slowest_perf_event()
+                    .map(|event| {
+                        format!(
+                            "Slowest  {} {} {}",
+                            event.phase,
+                            format_duration(event.duration),
+                            event.label
+                        )
+                    })
+                    .unwrap_or_else(|| "Slowest  pending".to_string());
+                ui.label(egui::RichText::new(slowest).color(red).small());
+            });
             ui.add_space(6.0);
             if app.perf_events.is_empty() {
                 ui.label(
                     egui::RichText::new(
-                        "NO PERFORMANCE EVENTS YET. OPEN, DISTILL, OR CAPTURE A FRAME.",
+                        "No performance events yet — open, distill, or capture a frame.",
                     )
                     .color(dim),
                 );
@@ -408,26 +376,32 @@ fn egui_bridge_central(
                 let slow = app
                     .slowest_perf_event()
                     .map(|event| (event.phase, event.duration));
+                egui_section_heading(ui, "Event log");
                 egui::ScrollArea::vertical().show(ui, |ui| {
-                    egui::Grid::new("perf_events").striped(true).show(ui, |ui| {
-                        ui.label(egui::RichText::new("PHASE").color(dim).small());
-                        ui.label(egui::RichText::new("TIME").color(dim).small());
-                        ui.label(egui::RichText::new("DETAIL").color(dim).small());
-                        ui.end_row();
-                        for event in app.perf_events.iter().rev() {
-                            let hot = slow
-                                .map(|(phase, duration)| {
-                                    phase == event.phase && duration == event.duration
-                                })
-                                .unwrap_or(false);
-                            let color = if hot { red } else { dim };
-                            ui.label(egui::RichText::new(event.phase).color(color));
-                            ui.label(
-                                egui::RichText::new(format_duration(event.duration)).color(color),
-                            );
-                            ui.label(egui::RichText::new(truncate(&event.label, 80)).color(color));
+                    egui_panel_card(ui, |ui| {
+                        egui::Grid::new("perf_events").striped(true).show(ui, |ui| {
+                            ui.label(egui::RichText::new("Phase").color(dim).small());
+                            ui.label(egui::RichText::new("Time").color(dim).small());
+                            ui.label(egui::RichText::new("Detail").color(dim).small());
                             ui.end_row();
-                        }
+                            for event in app.perf_events.iter().rev() {
+                                let hot = slow
+                                    .map(|(phase, duration)| {
+                                        phase == event.phase && duration == event.duration
+                                    })
+                                    .unwrap_or(false);
+                                let color = if hot { red } else { dim };
+                                ui.label(egui::RichText::new(event.phase).color(color));
+                                ui.label(
+                                    egui::RichText::new(format_duration(event.duration))
+                                        .color(color),
+                                );
+                                ui.label(
+                                    egui::RichText::new(truncate(&event.label, 80)).color(color),
+                                );
+                                ui.end_row();
+                            }
+                        });
                     });
                 });
             }
@@ -435,26 +409,28 @@ fn egui_bridge_central(
         MainView::Validation => {
             let rows = app.validation_rows();
             let pass = app.validation_pass_count();
-            ui.label(
-                egui::RichText::new("NATIVE BROWSER VALIDATION")
-                    .color(cyan)
-                    .strong(),
-            );
-            ui.label(
-                egui::RichText::new(format!("{} OF {} CHECKS COMPLETE", pass, rows.len()))
-                    .color(if pass == rows.len() { green } else { red }),
-            );
+            ui.label(egui::RichText::new("Validation").color(cyan).strong());
+            egui_panel_card(ui, |ui| {
+                ui.label(
+                    egui::RichText::new(format!("{} of {} checks complete", pass, rows.len()))
+                        .color(if pass == rows.len() { green } else { red }),
+                );
+            });
             ui.add_space(6.0);
             egui::ScrollArea::vertical().show(ui, |ui| {
                 for row in &rows {
-                    ui.horizontal(|ui| {
-                        let color = rgb32(validation_status_color(row.status));
-                        ui.label(
-                            egui::RichText::new(validation_status_label(row.status)).color(color),
-                        );
-                        ui.label(egui::RichText::new(row.label).strong());
-                        ui.label(egui::RichText::new(truncate(&row.detail, 80)).color(dim));
+                    egui_panel_card(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            let color = rgb32(validation_status_color(row.status));
+                            ui.label(
+                                egui::RichText::new(validation_status_label(row.status))
+                                    .color(color),
+                            );
+                            ui.label(egui::RichText::new(row.label).strong());
+                        });
+                        ui.label(egui::RichText::new(truncate(&row.detail, 120)).color(dim).small());
                     });
+                    ui.add_space(4.0);
                 }
             });
         }
@@ -471,11 +447,7 @@ fn egui_bridge_central(
 ))]
 fn egui_appliance_cert_section(ui: &mut egui::Ui, app: &mut BrowserApp) {
     let dim = egui::Color32::from_rgb(0x93, 0xa4, 0xb0);
-    ui.label(
-        egui::RichText::new("LOCAL APPLIANCE CERTIFICATES")
-            .color(dim)
-            .small(),
-    );
+    egui_section_heading(ui, "Local appliance certificates");
 
     let can_forget = app
         .selected_appliance_cert
@@ -483,11 +455,11 @@ fn egui_appliance_cert_section(ui: &mut egui::Ui, app: &mut BrowserApp) {
     let mut refresh = false;
     let mut forget = false;
     ui.horizontal(|ui| {
-        if ui.button("REFRESH").clicked() {
+        if ui.button("Refresh").clicked() {
             refresh = true;
         }
         if ui
-            .add_enabled(can_forget, egui::Button::new("FORGET"))
+            .add_enabled(can_forget, egui::Button::new("Forget"))
             .clicked()
         {
             forget = true;
@@ -502,23 +474,28 @@ fn egui_appliance_cert_section(ui: &mut egui::Ui, app: &mut BrowserApp) {
     let mut to_select: Option<usize> = None;
     if app.appliance_cert_entries.is_empty() {
         ui.label(
-            egui::RichText::new("NO TRUSTED LOCAL APPLIANCE CERTIFICATES.")
+            egui::RichText::new("No trusted local appliance certificates.")
                 .color(dim)
                 .small(),
         );
     } else {
-        for (index, entry) in app.appliance_cert_entries.iter().enumerate() {
-            let selected = app.selected_appliance_cert == Some(index);
-            let label = appliance_cert_entry_label(entry);
-            let fingerprint = compact_fingerprint(&entry.fingerprint_sha256);
-            let created = truncate(&entry.created_at, 24);
-            if ui
-                .selectable_label(selected, format!("{label}  ({fingerprint} | {created})"))
-                .clicked()
-            {
-                to_select = Some(index);
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
+            for (index, entry) in app.appliance_cert_entries.iter().enumerate() {
+                let selected = app.selected_appliance_cert == Some(index);
+                let label = truncate_label(
+                    &format!(
+                        "{} · {}",
+                        appliance_cert_entry_label(entry),
+                        compact_fingerprint(&entry.fingerprint_sha256)
+                    ),
+                    28,
+                );
+                if egui_chip(ui, &label, selected) {
+                    to_select = Some(index);
+                }
             }
-        }
+        });
     }
 
     if let Some(index) = to_select {
@@ -713,24 +690,72 @@ fn draw_egui_bridge(
     let dim = Color32::from_rgb(0x93, 0xa4, 0xb0);
 
     egui::TopBottomPanel::top("bridge_top").show(ctx, |ui| {
-        ui.add_space(4.0);
-        // Row 1: branding + mode chips.
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("SEXTANT").color(cyan).strong());
-            ui.label(RichText::new("AI BROWSER").color(dim).small());
-            ui.separator();
-            for mode in BrowserMode::ALL {
-                let active = app.browser_mode == mode;
-                if ui
-                    .selectable_label(active, mode.label().to_uppercase())
-                    .clicked()
-                {
-                    app.set_browser_mode(mode);
+        ui.spacing_mut().item_spacing.y = 3.0;
+        // Row 1: page tabs (hosted-direct style).
+        {
+            let active_id = app.active_tab().map(|tab| tab.id);
+            let tabs: Vec<(Uuid, String, String, bool)> = app
+                .engine
+                .get_tabs()
+                .iter()
+                .map(|tab| {
+                    let url = tab
+                        .url
+                        .as_ref()
+                        .map(|u| u.to_string())
+                        .unwrap_or_else(|| "about:blank".to_string());
+                    let site = if tab.url.is_some() {
+                        hosted_direct_tab_site(&url)
+                    } else {
+                        "New Tab".to_string()
+                    };
+                    (tab.id, site, url, Some(tab.id) == active_id)
+                })
+                .collect();
+            let mut to_switch = None;
+            let mut close_id = None;
+            egui::ScrollArea::horizontal()
+                .max_height(30.0)
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 2.0;
+                        let multi_tab = tabs.len() > 1;
+                        for (id, site, url, active) in &tabs {
+                            let response = egui_tab_chip(ui, site, url, *active, multi_tab);
+                            if response.clicked && !*active {
+                                to_switch = Some(*id);
+                            }
+                            if multi_tab && response.close_clicked {
+                                close_id = Some(*id);
+                            }
+                        }
+                        ui.add_space(2.0);
+                        if ui
+                            .add(
+                                egui::Button::new(egui::RichText::new("+").size(16.0))
+                                    .min_size(egui::vec2(26.0, 24.0)),
+                            )
+                            .on_hover_text("New tab")
+                            .clicked()
+                        {
+                            app.new_tab();
+                        }
+                    });
+                });
+            if let Some(id) = to_switch {
+                app.switch_to_page_tab(id);
+            }
+            if let Some(id) = close_id {
+                if app.active_tab().is_some_and(|tab| tab.id == id) {
+                    app.close_tab();
+                } else {
+                    app.switch_to_page_tab(id);
+                    app.close_tab();
                 }
             }
-        });
-        ui.add_space(6.0);
-        // Row 2: nav controls + full-width address/intent bar + RUN.
+        }
+        ui.separator();
+        // Row 2: navigation + address/intent bar + RUN.
         ui.horizontal(|ui| {
             let (can_back, can_fwd) = app
                 .active_tab()
@@ -753,122 +778,124 @@ fn draw_egui_bridge(
             if ui.button("⟳").on_hover_text("Reload").clicked() {
                 app.reload();
             }
-            if ui.button("+").on_hover_text("New tab").clicked() {
-                app.new_tab();
-            }
-            ui.separator();
             let button_w = 56.0;
             let field_w = (ui.available_width() - button_w - ui.spacing().item_spacing.x).max(80.0);
-            let resp = ui.add(
+            let resp = ui.add_sized(
+                [field_w, 24.0],
                 egui::TextEdit::singleline(&mut app.address_input)
-                    .desired_width(field_w)
-                    .hint_text("URL, search, or  intent: ..."),
+                    .hint_text("URL, search, or intent: ..."),
             );
-            let run = ui.button(RichText::new("RUN").color(green)).clicked();
+            let run = ui.button(RichText::new("Run").color(green)).clicked();
             if run || (resp.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter))) {
                 app.navigate_input();
             }
         });
-        // Row 2.5: open page tabs — click to switch, × closes the active tab.
-        {
-            let active_id = app.active_tab().map(|tab| tab.id);
-            let tabs: Vec<(Uuid, String, bool)> = app
-                .engine
-                .get_tabs()
-                .iter()
-                .map(|tab| {
-                    let label = tab
-                        .url
-                        .as_ref()
-                        .map(short_url)
-                        .unwrap_or_else(|| "about:blank".to_string());
-                    (tab.id, label, Some(tab.id) == active_id)
-                })
-                .collect();
-            if !tabs.is_empty() {
-                let mut to_switch = None;
-                let mut close_active = false;
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    for (id, label, active) in &tabs {
-                        if ui.selectable_label(*active, truncate(label, 22)).clicked() {
-                            to_switch = Some(*id);
-                        }
-                    }
-                    if ui.button("×").on_hover_text("Close active tab").clicked() {
-                        close_active = true;
-                    }
-                });
-                if let Some(id) = to_switch {
-                    app.switch_to_page_tab(id);
-                }
-                if close_active {
-                    app.close_tab();
-                }
-            }
-        }
-        ui.add_space(6.0);
-        // Row 3: view tabs.
+        ui.separator();
+        // Row 3: main view chips + browser mode on the right.
         ui.horizontal(|ui| {
-            for (view, label) in egui_bridge_tabs() {
-                if ui.selectable_label(app.main_view == view, label).clicked() {
-                    app.main_view = view;
+            egui::ScrollArea::horizontal()
+                .id_source("bridge_view_tabs")
+                .max_height(28.0)
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 2.0;
+                        for view in MainView::bridge_views() {
+                            if egui_chip(ui, view.label(), app.main_view == *view) {
+                                app.main_view = *view;
+                            }
+                        }
+                    });
+                });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                for mode in BrowserMode::ALL.iter().rev() {
+                    if egui_chip(ui, mode.chip_label(), app.browser_mode == *mode) {
+                        app.set_browser_mode(*mode);
+                    }
                 }
-            }
+            });
         });
-        ui.add_space(4.0);
+        ui.add_space(2.0);
     });
 
-    egui::TopBottomPanel::bottom("bridge_status").show(ctx, |ui| {
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("\u{25CF}").color(if app.last_ok { green } else { red }));
-            ui.label(
-                RichText::new(format!("MODE {}", app.browser_mode.label().to_uppercase()))
-                    .color(dim),
-            );
-            ui.separator();
-            ui.label(RichText::new(truncate(&app.last_status, 140)).color(dim));
+    egui::TopBottomPanel::bottom("bridge_status")
+        .exact_height(28.0)
+        .show(ctx, |ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            ui.horizontal(|ui| {
+                let status_color = if app.last_ok { green } else { red };
+                egui::Frame::none()
+                    .fill(status_color.linear_multiply(0.18))
+                    .rounding(4.0)
+                    .inner_margin(egui::Margin::symmetric(8.0, 3.0))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("●").color(status_color));
+                            ui.label(
+                                RichText::new(app.browser_mode.chip_label())
+                                    .color(status_color)
+                                    .small(),
+                            );
+                        });
+                    });
+                ui.label(RichText::new(truncate(&app.last_status, 120)).weak());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(
+                        RichText::new(format!(
+                            "Bridge · {} · {}",
+                            app.render_path_label(),
+                            app.chrome_ui_theme.label()
+                        ))
+                        .color(dim)
+                        .small(),
+                    );
+                });
+            });
         });
-    });
 
     egui::SidePanel::right("bridge_rail")
         .resizable(false)
-        .exact_width(320.0)
+        .exact_width(300.0)
         .show(ctx, |ui| {
-            ui.add_space(4.0);
-            ui.label(RichText::new("MAYA SIDECAR").color(dim).small());
+            ui.spacing_mut().item_spacing.y = 6.0;
+            ui.add_space(2.0);
+            ui.label(RichText::new("Agent rail").color(cyan).strong());
             let status_label = app
                 .pilot_status
                 .trim_start_matches("PILOT ")
                 .trim()
                 .to_string();
-            ui.label(
-                RichText::new(format!("\u{25CF} {status_label}"))
-                    .color(rgb32(pilot_status_color(&app.pilot_status))),
-            );
-            ui.separator();
+            egui_panel_card(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("●").color(rgb32(pilot_status_color(&app.pilot_status))),
+                    );
+                    ui.label(RichText::new(status_label).strong());
+                });
+            });
             if !app.pilot_plan.is_empty() {
-                ui.label(RichText::new("PLAN").color(dim).small());
-                for step in &app.pilot_plan {
-                    ui.label(RichText::new(format!("\u{2022} {step}")).small());
-                }
-                ui.add_space(4.0);
+                egui_section_heading(ui, "Plan");
+                egui_panel_card(ui, |ui| {
+                    for step in &app.pilot_plan {
+                        ui.label(RichText::new(format!("• {step}")).small());
+                    }
+                });
             }
-            ui.label(RichText::new("RESULT").color(dim).small());
-            egui::Frame::group(ui.style()).show(ui, |ui| {
+            egui_section_heading(ui, "Result");
+            egui_panel_card(ui, |ui| {
                 ui.label(if app.pilot_result.is_empty() {
-                    "\u{2014}"
+                    "—"
                 } else {
                     app.pilot_result.as_str()
                 });
             });
 
             if app.native_intent_allowed() && app.pending_consent.is_none() {
-                ui.add_space(6.0);
-                ui.label(RichText::new("QUICK INTENTS").color(dim).small());
-                ui.horizontal(|ui| {
+                ui.add_space(4.0);
+                egui_section_heading(ui, "Quick intents");
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
                     for (label, intent) in AI_RAIL_PRESETS {
-                        if ui.button(label).clicked() {
+                        if egui_chip(ui, label, false) {
                             app.run_preset_intent(intent);
                         }
                     }
@@ -876,27 +903,30 @@ fn draw_egui_bridge(
             }
 
             if let Some(pending) = app.pending_consent.clone() {
-                ui.add_space(6.0);
-                ui.label(RichText::new("CAPTAIN'S KEY").color(dim).small());
-                ui.label(RichText::new(truncate(&pending.message, 90)).small());
-                ui.horizontal(|ui| {
-                    if ui.button(RichText::new("AUTHORIZE").color(green)).clicked() {
-                        app.authorize_pilot_consent();
-                    }
-                    if ui.button("DENY").clicked() {
-                        app.deny_pilot_consent();
-                    }
+                ui.add_space(4.0);
+                egui_section_heading(ui, "Captain's key");
+                egui_panel_card(ui, |ui| {
+                    ui.label(RichText::new(truncate(&pending.message, 90)).small());
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        if ui.button(RichText::new("Authorize").color(green)).clicked() {
+                            app.authorize_pilot_consent();
+                        }
+                        if ui.button("Deny").clicked() {
+                            app.deny_pilot_consent();
+                        }
+                    });
                 });
             }
 
-            ui.add_space(10.0);
-            ui.label(RichText::new("ASK OR SEARCH WAKE").color(dim).small());
+            ui.add_space(6.0);
+            egui_section_heading(ui, "Ask or search Wake");
             ui.horizontal(|ui| {
-                let resp = ui.add(
-                    egui::TextEdit::singleline(&mut app.wake_query)
-                        .desired_width((ui.available_width() - 70.0).max(60.0)),
+                let resp = ui.add_sized(
+                    [ui.available_width() - 64.0, 24.0],
+                    egui::TextEdit::singleline(&mut app.wake_query).hint_text("Search wake…"),
                 );
-                if ui.button("SEARCH").clicked()
+                if ui.button("Search").clicked()
                     || (resp.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)))
                 {
                     app.search_wake();
@@ -910,27 +940,27 @@ fn draw_egui_bridge(
         let backend = app
             .active_tab()
             .map(|tab| display_backend(app, tab).to_string())
-            .unwrap_or_else(|| "NONE".to_string());
+            .unwrap_or_else(|| "None".to_string());
         let page = app
             .active_tab()
             .and_then(|tab| tab.distilled_page.as_ref())
-            .map(|_| "READY")
-            .unwrap_or("PENDING");
+            .map(|_| "Ready")
+            .unwrap_or("Pending");
         ui.horizontal(|ui| {
-            egui_metric_card(ui, "TABS", &tab_count.to_string(), "ACTIVE SESSION", green);
-            egui_metric_card(ui, "ENGINE", &backend, "LOCAL BUILD", cyan);
+            egui_metric_card(ui, "Tabs", &tab_count.to_string(), "open sessions", green);
+            egui_metric_card(ui, "Engine", &backend, "active backend", cyan);
             egui_metric_card(
                 ui,
-                "WAKE",
+                "Wake",
                 &app.wake_results.len().to_string(),
-                "SEARCH HITS",
+                "search hits",
                 if app.wake_results.is_empty() {
                     dim
                 } else {
                     green
                 },
             );
-            egui_metric_card(ui, "PAGE", page, "DISTILL STATUS", cyan);
+            egui_metric_card(ui, "Page", page, "distill status", cyan);
         });
         ui.add_space(8.0);
         ui.separator();
@@ -986,8 +1016,8 @@ fn egui_bridge_has_pending_async(app: &BrowserApp) -> bool {
         || app.pilot_analysis_pending()
 }
 
-/// Experimental egui bridge shell entry (`SEXTANT_EGUI_BRIDGE=1`). Reuses the
-/// production egui+softbuffer chrome path so it renders on this GPU-less host.
+/// Default interactive bridge shell entry. Reuses the production egui chrome
+/// backend (wgpu or software rasterizer) so it renders on GPU-less hosts too.
 #[cfg(all(
     target_os = "windows",
     feature = "servo-backend",
@@ -998,7 +1028,7 @@ pub fn run_visible_app_egui(browser_mode: BrowserMode) -> Result<(), String> {
         EventLoop::new().map_err(|error| format!("event loop initialization failed: {error}"))?;
     let window = Arc::new(
         WindowBuilder::new()
-            .with_title("Sextant Browser (egui)")
+            .with_title("Sextant Browser")
             .with_inner_size(PhysicalSize::new(1280, 820))
             .with_window_icon(sextant_window_icon())
             .build(&event_loop)
@@ -1007,7 +1037,7 @@ pub fn run_visible_app_egui(browser_mode: BrowserMode) -> Result<(), String> {
     let mut chrome = init_chrome_backend(&window)?;
     let mut size = window.inner_size();
     let egui_ctx = egui::Context::default();
-    apply_retro_egui_theme(&egui_ctx);
+    let mut applied_theme;
     let mut egui_state = egui_winit::State::new(
         egui_ctx.clone(),
         egui::ViewportId::ROOT,
@@ -1023,6 +1053,9 @@ pub fn run_visible_app_egui(browser_mode: BrowserMode) -> Result<(), String> {
         return Err(app.last_status.clone());
     }
     app.layout(size);
+
+    applied_theme = app.chrome_ui_theme;
+    apply_chrome_ui_theme(&egui_ctx, applied_theme);
 
     // Live Servo-frame viewport state for the BROWSER view: keep the last
     // uploaded egui texture plus a fingerprint of the frame it came from, so the
@@ -1072,6 +1105,10 @@ pub fn run_visible_app_egui(browser_mode: BrowserMode) -> Result<(), String> {
                                 }
                             }
                             _ => viewport_tex = None,
+                        }
+                        if applied_theme != app.chrome_ui_theme {
+                            applied_theme = app.chrome_ui_theme;
+                            apply_chrome_ui_theme(&egui_ctx, applied_theme);
                         }
                         let raw_input = egui_state.take_egui_input(&window);
                         let full_output = egui_ctx.run(raw_input, |ctx| {

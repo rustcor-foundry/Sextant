@@ -45,6 +45,8 @@ pub fn run_hosted_direct_app_egui(
 
     let mut size = window.inner_size();
     let egui_ctx = egui::Context::default();
+    let chrome_ui_theme = ChromeUiTheme::load(&app_data_dir().join("browser"));
+    apply_chrome_ui_theme(&egui_ctx, chrome_ui_theme);
     let mut egui_state = egui_winit::State::new(
         egui_ctx.clone(),
         egui::ViewportId::ROOT,
@@ -52,6 +54,9 @@ pub fn run_hosted_direct_app_egui(
         Some(window.scale_factor() as f32),
         None,
     );
+
+    let mut chrome_px =
+        hosted_direct_egui_chrome_height_px(window.scale_factor() as f32);
 
     let mut child = Some(spawn_hosted_direct_child(
         parent_hwnd,
@@ -63,16 +68,20 @@ pub fn run_hosted_direct_app_egui(
         remember_local_appliance_cert.as_deref(),
         allow_insecure_local_tls,
         direct_resource_audit,
+        chrome_px,
     )?);
 
     let mut summary = HostedDirectLogSummary::default();
     let mut log_monitor = HostedDirectLogMonitor::default();
-    let log_path = child.as_ref().map(|child| child.log_path.clone());
+    let mut log_path = child.as_ref().map(|child| child.log_path.clone());
     let mut next_refresh = Instant::now();
     let mut address = target.clone();
+    let mut fallback_target = target;
     let mut address_focused = false;
     let mut bookmarks = load_hosted_direct_bookmarks();
     let mut last_positioned: Option<(u32, u32, u32)> = None;
+    let mut pending_certificate_trust: Option<HostedDirectCertificateTrust> = None;
+    let mut hosted_local_appliance_cert_fingerprint = local_appliance_cert_fingerprint;
     let started = Instant::now();
 
     let event_loop_result = event_loop.run(move |event, elwt| {
@@ -93,6 +102,8 @@ pub fn run_hosted_direct_app_egui(
                     }
                     WindowEvent::Resized(new_size) => {
                         size = new_size;
+                        chrome_px =
+                            hosted_direct_egui_chrome_height_px(window.scale_factor() as f32);
                         chrome.resize(new_size);
                         last_positioned = None;
                         window.request_redraw();
@@ -123,6 +134,7 @@ pub fn run_hosted_direct_app_egui(
                         let full_output = egui_ctx.run(raw_input, |ctx| {
                             action = draw_hosted_direct_chrome_egui(
                                 ctx,
+                                browser_mode,
                                 &summary,
                                 &mut address,
                                 &mut address_focused,
@@ -132,6 +144,9 @@ pub fn run_hosted_direct_app_egui(
                         egui_state.handle_platform_output(&window, full_output.platform_output);
                         match action {
                             Some(HostedDirectChromeAction::Child(command)) => {
+                                if let Some(rest) = command.strip_prefix("navigate ") {
+                                    fallback_target = rest.trim().to_string();
+                                }
                                 send_hosted_direct_command(child.as_mut(), &command);
                                 next_refresh = Instant::now();
                             }
@@ -163,6 +178,18 @@ pub fn run_hosted_direct_app_egui(
                                     }
                                 }
                             }
+                            Some(HostedDirectChromeAction::CertificateTrustOnce) => {
+                                pending_certificate_trust =
+                                    Some(HostedDirectCertificateTrust::Once);
+                                send_hosted_direct_command(child.as_mut(), "trust-once");
+                                next_refresh = Instant::now();
+                            }
+                            Some(HostedDirectChromeAction::CertificateTrustAppliance) => {
+                                pending_certificate_trust =
+                                    Some(HostedDirectCertificateTrust::Remember);
+                                send_hosted_direct_command(child.as_mut(), "trust-this-appliance");
+                                next_refresh = Instant::now();
+                            }
                             None => {}
                         }
                         chrome.render(
@@ -179,8 +206,47 @@ pub fn run_hosted_direct_app_egui(
             }
             Event::AboutToWait => {
                 let now = Instant::now();
-                if let Some((_status, _path)) = poll_hosted_direct_child_exit(&mut child) {
-                    elwt.exit();
+                if let Some((status, exit_log_path)) = poll_hosted_direct_child_exit(&mut child) {
+                    summary = parse_hosted_direct_log_summary(&exit_log_path);
+                    if let Some(trust) = pending_certificate_trust.take() {
+                        match relaunch_hosted_direct_child_after_certificate_trust(
+                            parent_hwnd,
+                            size,
+                            &summary,
+                            &fallback_target,
+                            trust,
+                            browser_mode,
+                            certificate_path.as_deref(),
+                            &mut hosted_local_appliance_cert_fingerprint,
+                            remember_local_appliance_cert.as_deref(),
+                            direct_resource_audit,
+                            chrome_px,
+                        ) {
+                            Ok((new_child, restart_target)) => {
+                                fallback_target = restart_target.clone();
+                                if !address_focused {
+                                    address = restart_target;
+                                }
+                                log_monitor = HostedDirectLogMonitor::default();
+                                child = Some(new_child);
+                                log_path = child.as_ref().map(|child| child.log_path.clone());
+                                summary = HostedDirectLogSummary::default();
+                                last_positioned = None;
+                                println!(
+                                    "[hosted-direct-egui] certificate trust child relaunched after {status}"
+                                );
+                                window.request_redraw();
+                            }
+                            Err(error) => {
+                                eprintln!(
+                                    "[hosted-direct-egui] failed to relaunch trusted child after {status}: {error}"
+                                );
+                                elwt.exit();
+                            }
+                        }
+                    } else {
+                        elwt.exit();
+                    }
                     return;
                 }
                 if now >= next_refresh {
@@ -195,8 +261,6 @@ pub fn run_hosted_direct_app_egui(
                 // Keep the embedded child sized to sit just below the egui chrome;
                 // its physical top offset tracks the display scale.
                 if let Some(child) = child.as_mut() {
-                    let chrome_px =
-                        (HOSTED_DIRECT_CHROME_POINTS * window.scale_factor() as f32).round() as u32;
                     let key = (size.width, size.height, chrome_px);
                     if last_positioned != Some(key)
                         && position_hosted_direct_child(parent_hwnd, child, size, chrome_px)
@@ -254,6 +318,7 @@ fn sweep_direct_incognito_data_dirs() {
 #[cfg(all(target_os = "windows", feature = "servo-backend"))]
 fn draw_hosted_direct_chrome_egui(
     ctx: &egui::Context,
+    browser_mode: BrowserMode,
     summary: &HostedDirectLogSummary,
     address: &mut String,
     address_focused: &mut bool,
@@ -263,47 +328,53 @@ fn draw_hosted_direct_chrome_egui(
     egui::TopBottomPanel::top("hosted-direct-chrome")
         .exact_height(HOSTED_DIRECT_CHROME_POINTS)
         .show(ctx, |ui| {
-            ui.spacing_mut().item_spacing.y = 4.0;
-            // Row 1: standard-width tab strip, like Chrome/Firefox — each tab shows
-            // a favicon-placeholder initial, the (truncated) site, and a nested
-            // close button; a `+` opens a new tab.
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 3.0;
-                let multi_tab = summary.tabs.len() > 1;
-                if summary.tabs.is_empty() {
-                    let label =
-                        truncate_label(summary.active_title.as_deref().unwrap_or("New Tab"), 16);
-                    let _ = ui.add_sized([150.0, 26.0], egui::SelectableLabel::new(true, label));
-                } else {
-                    for (index, tab) in summary.tabs.iter().enumerate() {
-                        let site = hosted_direct_tab_site(&tab.url);
-                        let initial = site.chars().next().unwrap_or('•').to_ascii_uppercase();
-                        let label = format!("{initial}   {}", truncate_label(&site, 14));
+            ui.spacing_mut().item_spacing.y = 3.0;
+            // Row 1: scrollable tab strip with favicon badges and inline close buttons.
+            egui::ScrollArea::horizontal()
+                .max_height(30.0)
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 2.0;
+                        let multi_tab = summary.tabs.len() > 1;
+                        if summary.tabs.is_empty() {
+                            egui_tab_chip(
+                                ui,
+                                summary.active_title.as_deref().unwrap_or("New Tab"),
+                                "about:blank",
+                                true,
+                                false,
+                            );
+                        } else {
+                            for (index, tab) in summary.tabs.iter().enumerate() {
+                                let site = hosted_direct_tab_site(&tab.url);
+                                let response = egui_tab_chip(
+                                    ui,
+                                    &site,
+                                    &tab.url,
+                                    tab.active,
+                                    multi_tab,
+                                );
+                                if response.clicked && !tab.active {
+                                    action = Some(HostedDirectChromeAction::SelectTab(index));
+                                }
+                                if multi_tab && response.close_clicked {
+                                    action = Some(HostedDirectChromeAction::CloseTab(index));
+                                }
+                            }
+                        }
+                        ui.add_space(2.0);
                         if ui
-                            .add_sized([138.0, 26.0], egui::SelectableLabel::new(tab.active, label))
-                            .on_hover_text(&tab.url)
+                            .add(
+                                egui::Button::new(egui::RichText::new("+").size(16.0))
+                                    .min_size(egui::vec2(26.0, 24.0)),
+                            )
+                            .on_hover_text("New tab")
                             .clicked()
-                            && !tab.active
                         {
-                            action = Some(HostedDirectChromeAction::SelectTab(index));
+                            action = Some(HostedDirectChromeAction::Child("new-tab".to_string()));
                         }
-                        if multi_tab && ui.small_button("×").on_hover_text("Close tab").clicked() {
-                            action = Some(HostedDirectChromeAction::CloseTab(index));
-                        }
-                    }
-                }
-                ui.add_space(4.0);
-                if ui
-                    .add(
-                        egui::Button::new(egui::RichText::new("+").size(18.0))
-                            .min_size(egui::vec2(28.0, 26.0)),
-                    )
-                    .on_hover_text("New tab")
-                    .clicked()
-                {
-                    action = Some(HostedDirectChromeAction::Child("new-tab".to_string()));
-                }
-            });
+                    });
+                });
             ui.separator();
             // Row 2: navigation controls and the address bar.
             ui.horizontal(|ui| {
@@ -348,18 +419,35 @@ fn draw_hosted_direct_chrome_egui(
                         egui::Color32::from_rgb(0xd9, 0xa4, 0x41),
                         "Certificate warning",
                     );
+                    if let Some(fingerprint) = summary.certificate_fingerprint_sha256.as_deref() {
+                        ui.label(format!(
+                            "SHA-256 {}",
+                            compact_fingerprint(fingerprint)
+                        ));
+                    }
                     if ui.button("Go back").clicked() {
                         action = Some(HostedDirectChromeAction::Child(
                             "certificate-go-back".to_string(),
                         ));
                     }
-                    if ui.button("Trust once").clicked() {
-                        action = Some(HostedDirectChromeAction::Child("trust-once".to_string()));
+                    let cert_ready = summary.certificate_fingerprint_sha256.is_some();
+                    if ui
+                        .add_enabled(cert_ready, egui::Button::new("Trust once"))
+                        .clicked()
+                    {
+                        action = Some(HostedDirectChromeAction::CertificateTrustOnce);
                     }
-                    if ui.button("Trust this appliance").clicked() {
-                        action = Some(HostedDirectChromeAction::Child(
-                            "trust-this-appliance".to_string(),
-                        ));
+                    if ui
+                        .add_enabled(
+                            cert_ready && browser_mode != BrowserMode::Incognito,
+                            egui::Button::new("Trust this appliance"),
+                        )
+                        .on_disabled_hover_text(
+                            "Incognito cannot persist certificate trust for this session.",
+                        )
+                        .clicked()
+                    {
+                        action = Some(HostedDirectChromeAction::CertificateTrustAppliance);
                     }
                 });
             } else {

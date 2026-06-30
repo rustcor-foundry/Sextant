@@ -68,6 +68,7 @@ pub fn run_hosted_direct_app(
         remember_local_appliance_cert.as_deref(),
         allow_insecure_local_tls,
         direct_resource_audit,
+        HOSTED_DIRECT_CHROME_H,
     )?);
 
     window.request_redraw();
@@ -82,7 +83,12 @@ pub fn run_hosted_direct_app(
                 WindowEvent::Resized(size) => {
                     latest_parent_size = size;
                     if let Some(child) = direct_child.as_mut() {
-                        resize_hosted_direct_child(parent_hwnd, child, size);
+                        resize_hosted_direct_child(
+                            parent_hwnd,
+                            child,
+                            size,
+                            HOSTED_DIRECT_CHROME_H,
+                        );
                     }
                     direct_summary = HostedDirectLogSummary::default();
                     next_summary_refresh = Instant::now();
@@ -144,62 +150,42 @@ pub fn run_hosted_direct_app(
                 if let Some((status, log_path)) = poll_hosted_direct_child_exit(&mut direct_child) {
                     direct_summary = parse_hosted_direct_log_summary(&log_path);
                     if let Some(trust) = shell.take_pending_certificate_trust() {
-                        if let Some(fingerprint) =
-                            direct_summary.certificate_fingerprint_sha256.clone()
-                        {
-                            let relaunch_allow_insecure_local_tls = match trust {
-                                HostedDirectCertificateTrust::Once => {
-                                    true
+                        match relaunch_hosted_direct_child_after_certificate_trust(
+                            parent_hwnd,
+                            latest_parent_size,
+                            &direct_summary,
+                            &shell.target,
+                            trust,
+                            browser_mode,
+                            certificate_path.as_deref(),
+                            &mut hosted_local_appliance_cert_fingerprint,
+                            remember_local_appliance_cert.as_deref(),
+                            direct_resource_audit,
+                            HOSTED_DIRECT_CHROME_H,
+                        ) {
+                            Ok((child, restart_target)) => {
+                                shell.target = restart_target.clone();
+                                if !shell.address_focused {
+                                    shell.address_input = restart_target;
+                                    shell.address_cursor = shell.address_input.len();
                                 }
-                                HostedDirectCertificateTrust::Remember => {
-                                    hosted_local_appliance_cert_fingerprint = Some(fingerprint);
-                                    false
-                                }
-                            };
-                            let restart_target = direct_summary
-                                .latest_url
-                                .as_deref()
-                                .unwrap_or(shell.target.as_str())
-                                .to_string();
-                            match spawn_hosted_direct_child(
-                                parent_hwnd,
-                                latest_parent_size,
-                                &restart_target,
-                                browser_mode,
-                                certificate_path.as_deref(),
-                                hosted_local_appliance_cert_fingerprint.as_deref(),
-                                remember_local_appliance_cert.as_deref(),
-                                relaunch_allow_insecure_local_tls,
-                                direct_resource_audit,
-                            ) {
-                                Ok(child) => {
-                                    shell.target = restart_target.clone();
-                                    if !shell.address_focused {
-                                        shell.address_input = restart_target;
-                                        shell.address_cursor = shell.address_input.len();
-                                    }
-                                    direct_log_monitor = HostedDirectLogMonitor::default();
-                                    direct_child = Some(child);
-                                    direct_summary = HostedDirectLogSummary::default();
-                                    hosted_smoke_action_relaunched = true;
-                                    if let Some(action) = hosted_direct_smoke_action {
-                                        println!(
-                                            "[hosted-direct-smoke] certificate action {} child relaunched",
-                                            action.label()
-                                        );
-                                    }
-                                    window.request_redraw();
-                                }
-                                Err(error) => {
-                                    eprintln!(
-                                        "[hosted-direct] failed to relaunch trusted child after {status}: {error}"
+                                direct_log_monitor = HostedDirectLogMonitor::default();
+                                direct_child = Some(child);
+                                direct_summary = HostedDirectLogSummary::default();
+                                hosted_smoke_action_relaunched = true;
+                                if let Some(action) = hosted_direct_smoke_action {
+                                    println!(
+                                        "[hosted-direct-smoke] certificate action {} child relaunched",
+                                        action.label()
                                     );
                                 }
+                                window.request_redraw();
                             }
-                        } else {
-                            eprintln!(
-                                "[hosted-direct] child exited after certificate trust request without a fingerprint: {status}"
-                            );
+                            Err(error) => {
+                                eprintln!(
+                                    "[hosted-direct] failed to relaunch trusted child after {status}: {error}"
+                                );
+                            }
                         }
                     } else {
                         eprintln!("[hosted-direct] child exited: {status}");
@@ -338,7 +324,12 @@ pub fn run_hosted_direct_app(
                         }
                     }
                     if let Some(child) = direct_child.as_mut() {
-                        if resize_hosted_direct_child(parent_hwnd, child, latest_parent_size) {
+                        if resize_hosted_direct_child(
+                            parent_hwnd,
+                            child,
+                            latest_parent_size,
+                            HOSTED_DIRECT_CHROME_H,
+                        ) {
                             window.request_redraw();
                         }
                     }
@@ -366,6 +357,27 @@ pub fn run_hosted_direct_app(
 #[cfg(all(target_os = "windows", feature = "servo-backend"))]
 pub const HOSTED_DIRECT_CHROME_POINTS: f32 = 108.0;
 
+/// Physical chrome height for the egui hosted-direct shell at the given scale.
+#[cfg(all(target_os = "windows", feature = "servo-backend"))]
+pub fn hosted_direct_egui_chrome_height_px(scale_factor: f32) -> u32 {
+    (HOSTED_DIRECT_CHROME_POINTS * scale_factor).round().max(1.0) as u32
+}
+
+/// Deterministic favicon badge color from a tab URL/host (placeholder until real
+/// favicons are fetched from the page).
+#[cfg(all(target_os = "windows", feature = "servo-backend"))]
+pub fn hosted_direct_tab_favicon_rgb(url: &str) -> (u8, u8, u8) {
+    let key = hosted_direct_tab_site(url);
+    let hash = key
+        .bytes()
+        .fold(0u32, |acc, byte| acc.wrapping_mul(31).wrapping_add(u32::from(byte)));
+    (
+        72 + ((hash >> 16) & 0x7f) as u8,
+        72 + ((hash >> 8) & 0x7f) as u8,
+        72 + (hash & 0x7f) as u8,
+    )
+}
+
 /// A saved bookmark shown in the hosted-direct chrome bookmarks bar.
 #[cfg(all(target_os = "windows", feature = "servo-backend"))]
 #[derive(Clone, Serialize, Deserialize)]
@@ -381,6 +393,8 @@ pub enum HostedDirectChromeAction {
     SelectTab(usize),
     CloseTab(usize),
     AddBookmark,
+    CertificateTrustOnce,
+    CertificateTrustAppliance,
 }
 
 #[cfg(all(target_os = "windows", feature = "servo-backend"))]
@@ -1481,8 +1495,9 @@ pub fn spawn_hosted_direct_child(
     remember_local_appliance_cert: Option<&str>,
     allow_insecure_local_tls: bool,
     direct_resource_audit: bool,
+    chrome_height_px: u32,
 ) -> Result<HostedDirectChild, String> {
-    let (_, _, width, height) = hosted_direct_child_bounds(parent_size);
+    let (_, embed_y, width, height) = hosted_direct_child_bounds(parent_size, chrome_height_px);
     let log_path = hosted_direct_child_log_path()?;
     let log = std::fs::OpenOptions::new()
         .create(true)
@@ -1511,7 +1526,7 @@ pub fn spawn_hosted_direct_child(
         .arg("--embed-x")
         .arg("0")
         .arg("--embed-y")
-        .arg(HOSTED_DIRECT_CHROME_H.to_string())
+        .arg(embed_y.to_string())
         .arg("--embed-width")
         .arg(width.to_string())
         .arg("--embed-height")
@@ -1554,6 +1569,70 @@ pub fn spawn_hosted_direct_child(
         #[cfg(all(target_os = "windows", feature = "servo-backend"))]
         last_resized_parent_size: None,
     })
+}
+
+/// Relaunch the embedded Servo child after a certificate trust decision. The
+/// child exits once the trust action completes; the parent reads the log
+/// summary for the fingerprint and target URL, then spawns a replacement child
+/// with the appropriate trust flags (session-only TLS bypass vs persisted trust).
+#[cfg(all(target_os = "windows", feature = "servo-backend"))]
+pub fn hosted_direct_cert_trust_launch_flags(
+    trust: HostedDirectCertificateTrust,
+    fingerprint: String,
+    stored_fingerprint: &mut Option<String>,
+) -> bool {
+    match trust {
+        HostedDirectCertificateTrust::Once => true,
+        HostedDirectCertificateTrust::Remember => {
+            *stored_fingerprint = Some(fingerprint);
+            false
+        }
+    }
+}
+
+#[cfg(all(target_os = "windows", feature = "servo-backend"))]
+pub fn relaunch_hosted_direct_child_after_certificate_trust(
+    parent_hwnd: isize,
+    parent_size: PhysicalSize<u32>,
+    summary: &HostedDirectLogSummary,
+    fallback_target: &str,
+    trust: HostedDirectCertificateTrust,
+    browser_mode: BrowserMode,
+    certificate_path: Option<&Path>,
+    hosted_local_appliance_cert_fingerprint: &mut Option<String>,
+    remember_local_appliance_cert: Option<&str>,
+    direct_resource_audit: bool,
+    chrome_height_px: u32,
+) -> Result<(HostedDirectChild, String), String> {
+    let fingerprint = summary
+        .certificate_fingerprint_sha256
+        .clone()
+        .ok_or_else(|| {
+            "child exited after certificate trust request without a fingerprint".to_string()
+        })?;
+    let allow_insecure_local_tls = hosted_direct_cert_trust_launch_flags(
+        trust,
+        fingerprint,
+        hosted_local_appliance_cert_fingerprint,
+    );
+    let restart_target = summary
+        .latest_url
+        .as_deref()
+        .unwrap_or(fallback_target)
+        .to_string();
+    let child = spawn_hosted_direct_child(
+        parent_hwnd,
+        parent_size,
+        &restart_target,
+        browser_mode,
+        certificate_path,
+        hosted_local_appliance_cert_fingerprint.as_deref(),
+        remember_local_appliance_cert,
+        allow_insecure_local_tls,
+        direct_resource_audit,
+        chrome_height_px,
+    )?;
+    Ok((child, restart_target))
 }
 
 pub fn send_hosted_direct_command(child: Option<&mut HostedDirectChild>, command: &str) -> bool {
@@ -1671,14 +1750,18 @@ pub fn hosted_direct_chrome_rects(size: PhysicalSize<u32>) -> HostedDirectChrome
     }
 }
 
-pub fn hosted_direct_child_bounds(parent_size: PhysicalSize<u32>) -> (i32, i32, u32, u32) {
+pub fn hosted_direct_child_bounds(
+    parent_size: PhysicalSize<u32>,
+    chrome_height_px: u32,
+) -> (i32, i32, u32, u32) {
+    let chrome = chrome_height_px.min(parent_size.height);
     (
         0,
-        HOSTED_DIRECT_CHROME_H as i32,
+        chrome as i32,
         parent_size.width.max(320),
         parent_size
             .height
-            .saturating_sub(HOSTED_DIRECT_CHROME_H)
+            .saturating_sub(chrome)
             .max(240),
     )
 }
@@ -1688,6 +1771,7 @@ pub fn resize_hosted_direct_child(
     parent_hwnd: isize,
     child: &mut HostedDirectChild,
     parent_size: PhysicalSize<u32>,
+    chrome_height_px: u32,
 ) -> bool {
     if child.window_hwnd.is_some() && child.last_resized_parent_size == Some(parent_size) {
         return false;
@@ -1698,7 +1782,7 @@ pub fn resize_hosted_direct_child(
     let Some(hwnd) = child.window_hwnd else {
         return false;
     };
-    let (x, y, width, height) = hosted_direct_child_bounds(parent_size);
+    let (x, y, width, height) = hosted_direct_child_bounds(parent_size, chrome_height_px);
     let resized = unsafe {
         SetWindowPos(
             hwnd as HWND,
@@ -1721,6 +1805,7 @@ pub fn resize_hosted_direct_child(
     _parent_hwnd: isize,
     _child: &mut HostedDirectChild,
     _parent_size: PhysicalSize<u32>,
+    _chrome_height_px: u32,
 ) -> bool {
     false
 }

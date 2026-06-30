@@ -122,16 +122,61 @@ fn parses_hosted_direct_certificate_smoke_actions() -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(all(target_os = "windows", feature = "servo-backend"))]
+#[test]
+fn hosted_direct_cert_trust_launch_flags_match_trust_mode() {
+    let fingerprint = "a".repeat(64);
+    let mut stored = None;
+    assert!(hosted_direct_cert_trust_launch_flags(
+        HostedDirectCertificateTrust::Once,
+        fingerprint.clone(),
+        &mut stored,
+    ));
+    assert!(stored.is_none());
+
+    assert!(!hosted_direct_cert_trust_launch_flags(
+        HostedDirectCertificateTrust::Remember,
+        fingerprint.clone(),
+        &mut stored,
+    ));
+    assert_eq!(stored.as_deref(), Some(fingerprint.as_str()));
+}
+
 #[test]
 fn hosted_direct_child_bounds_keep_chrome_reserved() {
     assert_eq!(
-        hosted_direct_child_bounds(PhysicalSize::new(1180, 760)),
+        hosted_direct_child_bounds(PhysicalSize::new(1180, 760), HOSTED_DIRECT_CHROME_H),
         (0, HOSTED_DIRECT_CHROME_H as i32, 1180, 688)
     );
     assert_eq!(
-        hosted_direct_child_bounds(PhysicalSize::new(100, 80)),
+        hosted_direct_child_bounds(PhysicalSize::new(100, 80), HOSTED_DIRECT_CHROME_H),
         (0, HOSTED_DIRECT_CHROME_H as i32, 320, 240)
     );
+}
+
+#[cfg(all(target_os = "windows", feature = "servo-backend"))]
+#[test]
+fn hosted_direct_egui_child_bounds_track_scaled_chrome() {
+    assert_eq!(
+        hosted_direct_child_bounds(
+            PhysicalSize::new(1180, 760),
+            hosted_direct_egui_chrome_height_px(1.0),
+        ),
+        (0, 108, 1180, 652)
+    );
+    assert_eq!(
+        hosted_direct_egui_chrome_height_px(1.5),
+        162
+    );
+}
+
+#[cfg(all(target_os = "windows", feature = "servo-backend"))]
+#[test]
+fn hosted_direct_tab_favicon_color_is_stable() {
+    let a = hosted_direct_tab_favicon_rgb("https://example.com/");
+    let b = hosted_direct_tab_favicon_rgb("https://example.com/");
+    assert_eq!(a, b);
+    assert_ne!(a, hosted_direct_tab_favicon_rgb("https://duckduckgo.com/"));
 }
 
 #[test]
@@ -315,6 +360,50 @@ fn settings_backend_selection_persists_and_rebuilds() -> Result<(), String> {
 
     let _ = std::fs::remove_dir_all(&data_dir);
     Ok(())
+}
+
+#[cfg(any(feature = "xilem-shell", feature = "servo-backend"))]
+#[test]
+fn chrome_ui_theme_defaults_modern_and_persists() -> Result<(), String> {
+    let data_dir = env::temp_dir().join(format!("sextant-browser-chrome-ui-{}", Uuid::new_v4()));
+    let mut app = BrowserApp::new_with_data_dir(data_dir.clone())?;
+    assert_eq!(app.chrome_ui_theme, ChromeUiTheme::Modern);
+
+    app.set_chrome_ui_theme(ChromeUiTheme::Retro);
+    assert!(app.last_ok);
+    assert_eq!(app.chrome_ui_theme, ChromeUiTheme::Retro);
+
+    let raw = std::fs::read_to_string(ChromeUiTheme::config_path(&app.profile_data_dir))
+        .map_err(|error| error.to_string())?;
+    assert!(raw.contains("retro"));
+
+    let reloaded = BrowserApp::new_with_data_dir(data_dir.clone())?;
+    assert_eq!(reloaded.chrome_ui_theme, ChromeUiTheme::Retro);
+    assert_eq!(ChromeUiTheme::parse("direct"), Some(ChromeUiTheme::Modern));
+    assert_eq!(ChromeUiTheme::parse("hud"), Some(ChromeUiTheme::Retro));
+
+    let _ = std::fs::remove_dir_all(&data_dir);
+    Ok(())
+}
+
+#[test]
+fn main_view_and_mode_chip_labels_are_sentence_case() {
+    assert_eq!(MainView::Browser.label(), "Browser");
+    assert_eq!(MainView::Perception.label(), "Sense");
+    assert_eq!(BrowserMode::Agent.chip_label(), "Agent");
+    assert_eq!(BrowserMode::Incognito.chip_label(), "Incognito");
+    assert_eq!(BrowserMode::Agent.label(), "AGENT");
+}
+
+#[cfg(all(
+    target_os = "windows",
+    feature = "servo-backend",
+    feature = "xilem-shell"
+))]
+#[test]
+fn bridge_shell_defaults_to_egui_for_interactive_sessions() {
+    assert!(bridge_shell_use_egui(true));
+    assert!(!bridge_shell_use_egui(false));
 }
 
 #[test]

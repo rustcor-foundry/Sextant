@@ -512,14 +512,15 @@ fn main() {
         return;
     }
 
-    // Experimental egui bridge shell (parity port in progress). Opt in with
-    // SEXTANT_EGUI_BRIDGE=1; only the interactive bridge path (no smoke).
+    // Interactive bridge shell defaults to the egui renderer (modern chrome).
+    // Opt into the legacy softbuffer HUD with SEXTANT_SOFTBUFFER_BRIDGE=1.
+    // Window-smoke and automated proofs still use the softbuffer shell.
     #[cfg(all(
         target_os = "windows",
         feature = "servo-backend",
         feature = "xilem-shell"
     ))]
-    if window_smoke.is_none() && env_override("SEXTANT_EGUI_BRIDGE").is_some() {
+    if bridge_shell_use_egui(window_smoke.is_none()) {
         if let Err(error) = run_visible_app_egui(browser_mode) {
             eprintln!("[sextant-browser] egui bridge failed: {error}");
             std::process::exit(1);

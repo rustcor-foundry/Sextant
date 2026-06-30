@@ -79,6 +79,19 @@ pub use model::*;
 mod egui_retro;
 #[cfg(all(target_os = "windows", feature = "servo-backend"))]
 pub use egui_retro::{apply_retro_egui_theme, run_retro_egui_proof};
+#[cfg(all(target_os = "windows", feature = "servo-backend"))]
+#[path = "browser/egui_modern.rs"]
+mod egui_modern;
+#[cfg(all(target_os = "windows", feature = "servo-backend"))]
+pub use egui_modern::apply_modern_egui_theme;
+#[cfg(all(target_os = "windows", feature = "servo-backend"))]
+#[path = "browser/egui_chrome.rs"]
+mod egui_chrome;
+#[cfg(all(target_os = "windows", feature = "servo-backend"))]
+pub use egui_chrome::{
+    apply_chrome_ui_theme, egui_chip, egui_metric_card, egui_panel_card, egui_section_heading,
+    egui_tab_chip, EguiTabChipResponse,
+};
 
 #[cfg(all(
     target_os = "windows",
@@ -235,6 +248,8 @@ pub struct BrowserApp {
     pub last_pilot_run: Option<PilotRunArtifact>,
     #[cfg(feature = "xilem-shell")]
     pub ai_config: AiLocalConfig,
+    #[cfg(any(feature = "xilem-shell", feature = "servo-backend"))]
+    pub chrome_ui_theme: ChromeUiTheme,
     #[cfg(feature = "xilem-shell")]
     pub settings_tab_rect: Rect,
 }
@@ -252,6 +267,8 @@ impl BrowserApp {
         let persistence_lane = PersistenceLane::new(&data_dir)?;
         #[cfg(feature = "xilem-shell")]
         let ai_config = AiLocalConfig::load(&profile_data_dir);
+        #[cfg(any(feature = "xilem-shell", feature = "servo-backend"))]
+        let chrome_ui_theme = ChromeUiTheme::load(&profile_data_dir);
         #[cfg(any(feature = "xilem-shell", feature = "servo-backend"))]
         let appliance_cert_entries = ApplianceCertTrustStore::load(&profile_data_dir)?.entries;
         let mut app = Self {
@@ -428,6 +445,8 @@ impl BrowserApp {
             last_pilot_run: None,
             #[cfg(feature = "xilem-shell")]
             ai_config,
+            #[cfg(any(feature = "xilem-shell", feature = "servo-backend"))]
+            chrome_ui_theme,
             #[cfg(feature = "xilem-shell")]
             settings_tab_rect: Rect {
                 x: 0,

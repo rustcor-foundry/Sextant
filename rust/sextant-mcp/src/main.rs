@@ -2638,16 +2638,14 @@ fn browser_direct_browsing_baseline_tool(arguments: Value) -> Value {
         form_arguments["target"] = Value::String(form_target);
     }
     cases.push(run_direct_baseline_case("live_form", true, form_arguments));
-    // Link-click navigation defaults to example.com -> iana.org. Optional for
-    // now so a transient cross-host hiccup is not a release blocker; promote to
-    // required once it proves stable in the rotation.
+    // Link-click navigation defaults to example.com -> iana.org.
     let link_arguments = json!({
         "mode": "direct",
         "render_path": "direct",
         "live_link_smoke": true,
         "timeout_seconds": timeout_seconds,
     });
-    cases.push(run_direct_baseline_case("live_link", false, link_arguments));
+    cases.push(run_direct_baseline_case("live_link", true, link_arguments));
 
     let required_failures: Vec<Value> = cases
         .iter()

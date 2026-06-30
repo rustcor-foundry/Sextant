@@ -174,6 +174,13 @@ impl BrowserApp {
                 return true;
             }
         }
+        #[cfg(any(feature = "xilem-shell", feature = "servo-backend"))]
+        for (theme, rect) in settings_theme_button_rects(panel) {
+            if rect.contains(x, y) {
+                self.set_chrome_ui_theme(theme);
+                return true;
+            }
+        }
         false
     }
 
@@ -689,6 +696,28 @@ impl BrowserApp {
         }
         if refresh_logs_after && !self.defer_user_navigation {
             self.refresh_logs();
+        }
+    }
+
+    /// Switch the egui chrome theme and persist it for hosted-direct and bridge shells.
+    #[cfg(any(feature = "xilem-shell", feature = "servo-backend"))]
+    pub fn set_chrome_ui_theme(&mut self, theme: ChromeUiTheme) {
+        if self.chrome_ui_theme == theme {
+            self.last_status = format!("{} chrome theme is already active.", theme.label());
+            self.last_ok = true;
+            return;
+        }
+        match theme.save(&self.profile_data_dir) {
+            Ok(()) => {
+                self.chrome_ui_theme = theme;
+                self.last_status = format!("Chrome theme set to {}.", theme.label());
+                self.last_ok = true;
+            }
+            Err(error) => {
+                self.last_status = format!("Failed to save chrome theme: {error}");
+                self.last_ok = false;
+                self.validation.error_seen = true;
+            }
         }
     }
 }
