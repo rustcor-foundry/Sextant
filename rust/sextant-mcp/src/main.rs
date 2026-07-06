@@ -352,6 +352,7 @@ fn run() -> Result<(), String> {
         let result = browser_guard_policy_write_tool(json!({
             "policy": policy,
             "source": path,
+            "auth_token": env::var("SEXTANT_GUARD_POLICY_WRITE_TOKEN").unwrap_or_default(),
         }));
         if args.iter().any(|arg| arg == "--json") {
             println!(
@@ -3056,6 +3057,7 @@ fn browser_guard_policy_read_tool(arguments: Value) -> Value {
 
 fn browser_guard_policy_write_tool(arguments: Value) -> Value {
     let result = (|| -> Result<Value, String> {
+        require_guard_policy_write_auth(&arguments)?;
         let policy_value = arguments
             .get("policy")
             .cloned()
@@ -6140,6 +6142,24 @@ fn cleanup_isolated_profile(path: Option<&Path>) -> Value {
 
 fn browser_guard_policy_path() -> PathBuf {
     browser_data_dir().join("guard-policy.json")
+}
+
+fn require_guard_policy_write_auth(arguments: &Value) -> Result<(), String> {
+    match env::var("SEXTANT_GUARD_POLICY_WRITE_TOKEN") {
+        Ok(expected) if !expected.is_empty() => {
+            let provided = arguments
+                .get("auth_token")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            if provided != expected {
+                return Err(
+                    "guard policy write rejected: missing or invalid auth_token (set SEXTANT_GUARD_POLICY_WRITE_TOKEN)".to_string(),
+                );
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -88,7 +88,7 @@ accesskit = { version = "0.14", optional = true }
 smallvec = { version = "1.13", optional = true }
 sextant-vault = { path = "../sextant-vault", optional = true }
 sextant-engine = { path = "../sextant-engine" }
-servo = { git = "https://github.com/servo/servo", branch = "main", optional = true }
+servo = { git = "https://github.com/servo/servo", rev = "d3932a2118d05ab49dcbbd739d05959dbccb2c3a", optional = true }
 sextant-wake = { path = "../sextant-wake" }
 sextant-pilot = { path = "../sextant-pilot", optional = true }
 sextant-sync = { path = "../sextant-sync", optional = true }

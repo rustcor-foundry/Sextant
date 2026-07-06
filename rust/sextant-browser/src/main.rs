@@ -145,7 +145,11 @@ fn spawn_direct_window(job: isize, url: Option<String>) -> Option<Child> {
         // SAFETY: job and the child's process handle are both valid; the child
         // is freshly spawned and still owned here.
         unsafe {
-            AssignProcessToJobObject(job as *mut _, child.as_raw_handle() as *mut _);
+            if AssignProcessToJobObject(job as *mut _, child.as_raw_handle() as *mut _) == 0 {
+                eprintln!(
+                    "[sextant-browser] failed to assign direct child to kill-on-close job object"
+                );
+            }
         }
     }
     let _ = job;
@@ -1391,6 +1395,36 @@ fn cleanup_direct_incognito_data_dir(data_dir: &Path) -> Result<(), String> {
     ))
 }
 
+const OPERATOR_TEMP_DIR_PREFIXES: &[&str] = &[
+    "sextant-browser-operator-smoke-",
+    "sextant-browser-showcase-",
+    "sextant-browser-real-browsing-",
+    "sextant-browser-intent-run-",
+    "sextant-browser-operator-run-",
+    "sextant-browser-incognito-",
+];
+
+fn sweep_operator_temp_data_dirs() {
+    let Ok(entries) = std::fs::read_dir(env::temp_dir()) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if OPERATOR_TEMP_DIR_PREFIXES
+            .iter()
+            .any(|prefix| name.starts_with(prefix))
+        {
+            let _ = std::fs::remove_dir_all(path);
+        }
+    }
+}
+
 #[cfg(not(feature = "servo-backend"))]
 fn run_direct_servo_browser(
     _window_smoke: Option<WindowSmokeSpec>,
@@ -1456,6 +1490,7 @@ where
                 "[{label}] timed out after {}s; terminating native-browser operator run",
                 timeout.as_secs()
             );
+            sweep_operator_temp_data_dirs();
             std::process::exit(124);
         }
         Err(mpsc::RecvTimeoutError::Disconnected) => {

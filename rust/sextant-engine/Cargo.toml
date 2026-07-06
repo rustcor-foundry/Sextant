@@ -8,7 +8,7 @@ description = "Parallelized DOM layout and semantic parsing engine for Sextant"
 servo-backend = ["dep:servo"]
 
 [dependencies]
-servo = { git = "https://github.com/servo/servo", branch = "main", optional = true }
+servo = { git = "https://github.com/servo/servo", rev = "d3932a2118d05ab49dcbbd739d05959dbccb2c3a", optional = true }
 dpi = "0.1.2"
 selectors = "0.25"
 reqwest = { version = "0.12", features = ["blocking", "rustls-tls"] }
@@ -24,5 +24,6 @@ sextant-firewall = { path = "../sextant-firewall" }
 sextant-bridge = { path = "../sextant-bridge" }
 sextant-privacy = { path = "../sextant-privacy" }
 rand = "0.8"
+# Optional sibling checkout; CI clones wsky-distiller beside this repo. See docs/architecture.md.
 distill = { path = "../../../wsky-distiller/distill" }
 rustls = { version = "0.23", features = ["ring"] }

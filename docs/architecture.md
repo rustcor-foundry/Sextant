@@ -102,6 +102,8 @@ The older Xilem/Masonry hull remains in the package as reference code for the as
 
 **Pilot action bridge before full orchestration**: The active browser shell currently uses the `PilotAction` command vocabulary directly for explicit intents while preserving the browser-owned engine/Wake/log objects. The next architecture step is to move this from an action bridge into full `SextantPilot` ownership with vault-backed plan signatures and consent resumption once the browser state can be safely shared with the Pilot runtime.
 
-**Digital Wake decay**: Wake entries age via importance decay (5% per 7 days, pruned at 30 days / <0.2 importance). Semantic deduplication uses cosine similarity > 0.95 threshold.
+**Digital Wake decay**: Wake entries age via importance decay (5% per completed 7-day period after the first week, pruned at 30 days / <0.2 importance). Semantic deduplication uses cosine similarity > 0.95 threshold.
+
+**Engine distillation dependency**: `sextant-engine` depends on the sibling checkout `wsky-distiller/distill` (path `../../../wsky-distiller/distill`). CI clones that repo beside Sextant; local builds need the same layout or the engine crate will not compile.
 
 **MSVC build**: Windows target requires VS Build Tools 2026. The `.cargo/config.toml` in `rust/` persists the linker and INCLUDE/LIB paths so any shell works without manual env setup.

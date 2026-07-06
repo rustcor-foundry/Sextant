@@ -1,6 +1,7 @@
 use std::cell::{Cell, RefCell};
 use std::env;
 use std::io::{BufRead, Read, Write};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::net::{Shutdown, TcpListener};
 use std::num::NonZeroIsize;
 use std::path::PathBuf;
@@ -273,7 +274,12 @@ impl SixtyHzRefreshDriver {
                         std::thread::sleep(next_frame - now);
                     }
                     next_frame = Instant::now() + DIRECT_REFRESH_FRAME_INTERVAL;
-                    callback();
+                    if let Err(payload) = catch_unwind(AssertUnwindSafe(|| callback())) {
+                        eprintln!(
+                            "[servo-direct] refresh driver callback panicked: {:?}",
+                            payload
+                        );
+                    }
                 }
             })
             .expect("failed to spawn sextant direct refresh driver thread");

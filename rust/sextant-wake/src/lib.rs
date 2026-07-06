@@ -65,6 +65,17 @@ fn normalize_fts_query(query: &str) -> String {
         .join(" ")
 }
 
+fn completed_decay_periods(timestamp: &str) -> i64 {
+    let Ok(parsed) = DateTime::parse_from_rfc3339(timestamp) else {
+        return 0;
+    };
+    let age_days = (Utc::now() - parsed.with_timezone(&Utc)).num_days();
+    if age_days <= 7 {
+        return 0;
+    }
+    (age_days - 7) / 7
+}
+
 pub struct DigitalWake {
     conn: Connection,
 }
@@ -150,6 +161,10 @@ impl DigitalWake {
             "CREATE INDEX IF NOT EXISTS idx_wake_persona ON wake_entries(persona_id)",
             [],
         )?;
+        let _ = self.conn.execute(
+            "ALTER TABLE wake_entries ADD COLUMN decay_periods_applied INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
         Ok(())
     }
 
@@ -403,16 +418,10 @@ impl DigitalWake {
         // 1. Build associations before pruning
         let _ = self.associate(persona_id);
 
-        // 2. Temporal Decay: Reduce importance of all entries in this persona over time
-        // We simulate this by reducing importance by 5% for entries older than 7 days
-        self.conn.execute(
-            "UPDATE wake_entries 
-             SET importance = importance * 0.95 
-             WHERE persona_id = ?1 AND timestamp < datetime('now', '-7 days')",
-            params![persona_id],
-        )?;
+        // 2. Temporal Decay: 5% per completed 7-day period after the first week.
+        self.apply_temporal_decay(persona_id)?;
 
-        // 2. Remove low-importance old entries
+        // 3. Remove low-importance old entries
         deleted_count += self.conn.execute(
             "DELETE FROM wake_entries 
              WHERE persona_id = ?1 AND timestamp < datetime('now', '-30 days') 
@@ -452,6 +461,72 @@ impl DigitalWake {
         Ok(deleted_count)
     }
 
+    fn apply_temporal_decay(&self, persona_id: &str) -> Result<()> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, importance, decay_periods_applied, timestamp
+             FROM wake_entries
+             WHERE persona_id = ?1 AND timestamp < datetime('now', '-7 days')",
+        )?;
+        let rows = stmt
+            .query_map(params![persona_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, f32>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        for (id, importance, applied, timestamp) in rows {
+            let target_periods = completed_decay_periods(&timestamp);
+            if target_periods <= applied {
+                continue;
+            }
+            let mut new_importance = importance;
+            for _ in applied..target_periods {
+                new_importance *= 0.95;
+            }
+            self.conn.execute(
+                "UPDATE wake_entries
+                 SET importance = ?1, decay_periods_applied = ?2
+                 WHERE id = ?3",
+                params![new_importance, target_periods, id],
+            )?;
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn test_importance_for_persona(&self, persona_id: &str) -> Result<f32> {
+        self.conn.query_row(
+            "SELECT importance FROM wake_entries WHERE persona_id = ?1 LIMIT 1",
+            params![persona_id],
+            |row| row.get(0),
+        )
+    }
+
+    #[cfg(test)]
+    fn test_insert_old_entry(&self, persona_id: &str, importance: f32, age_days: i64) -> Result<()> {
+        let timestamp = (Utc::now() - chrono::Duration::days(age_days)).to_rfc3339();
+        self.conn.execute(
+            "INSERT INTO wake_entries (
+                id, persona_id, timestamp, url, title, content,
+                semantic_map_json, metadata_json, importance, decay_periods_applied
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, '{}', '{}', ?7, 0)",
+            params![
+                Uuid::new_v4().to_string(),
+                persona_id,
+                timestamp,
+                "https://example.com",
+                "Old entry",
+                "decay test content",
+                importance,
+            ],
+        )?;
+        Ok(())
+    }
+
     /// Explicitly prunes a specific memory entry from the wake.
     pub fn prune(&self, entry_id: &Uuid) -> Result<()> {
         self.conn.execute(
@@ -470,6 +545,23 @@ impl DigitalWake {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    #[test]
+    fn consolidate_applies_decay_once_per_seven_day_period() {
+        let wake = DigitalWake::new_in_memory().unwrap();
+        wake.test_insert_old_entry("persona", 1.0, 15).unwrap();
+
+        wake.consolidate("persona").unwrap();
+        let after_first = wake.test_importance_for_persona("persona").unwrap();
+        assert!(after_first < 1.0);
+
+        wake.consolidate("persona").unwrap();
+        let after_second = wake.test_importance_for_persona("persona").unwrap();
+        assert!(
+            (after_second - after_first).abs() < f32::EPSILON,
+            "second consolidate should not re-decay the same periods"
+        );
+    }
 
     #[test]
     fn test_wake_persistence() {
