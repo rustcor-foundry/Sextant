@@ -76,7 +76,13 @@ fn main() {
         let data_dir = app_data_dir();
         fs::create_dir_all(&data_dir).expect("Failed to create Sextant data directory");
 
-        let vault = Arc::new(Mutex::new(CitadelVault::new()));
+        // Persistent Captain's Key vault: survives restarts, protected by the
+        // per-profile machine secret (or SEXTANT_VAULT_PASSPHRASE) instead of a
+        // hardcoded compile-time passphrase.
+        let vault = Arc::new(Mutex::new(
+            sextant_hull::init_browser_consent_vault(&data_dir)
+                .expect("Failed to init persistent vault"),
+        ));
         let engine = Arc::new(Mutex::new(sextant_engine::SextantEngine::new()));
 
         let wake = Arc::new(Mutex::new(
@@ -116,24 +122,46 @@ fn main() {
             SextantPilot::new(vault.clone(), engine.clone(), wake.clone(), log_store.clone(), brain);
 
         let mut vault_guard = vault.lock().await;
-        vault_guard
-            .initialize_new("password123")
-            .expect("Failed to init vault");
-        let persona_personal = vault_guard
-            .create_persona("Personal", "Primary browsing persona")
-            .expect("Failed to create persona");
-        let _persona_work = vault_guard
-            .create_persona("Work", "Professional persona")
-            .expect("Failed to create work persona");
-        let identity = vault_guard
-            .derive_identity(
-                &persona_personal.id,
-                "Main Pilot",
-                KeyType::Ed25519,
-                "m/44'/0'/0'/0/0",
-            )
-            .expect("Failed to derive identity");
+        // The vault persists across launches; only seed the default personas
+        // and pilot identity on first run instead of duplicating them.
+        let persona_personal = match vault_guard
+            .get_personas()
+            .into_iter()
+            .find(|persona| persona.label == "Personal")
+        {
+            Some(persona) => persona,
+            None => vault_guard
+                .create_persona("Personal", "Primary browsing persona")
+                .expect("Failed to create persona"),
+        };
+        if !vault_guard
+            .get_personas()
+            .iter()
+            .any(|persona| persona.label == "Work")
+        {
+            vault_guard
+                .create_persona("Work", "Professional persona")
+                .expect("Failed to create work persona");
+        }
+        let identity = match vault_guard
+            .get_identities(&persona_personal.id)
+            .into_iter()
+            .find(|identity| identity.label == "Main Pilot")
+        {
+            Some(identity) => identity,
+            None => vault_guard
+                .derive_identity(
+                    &persona_personal.id,
+                    "Main Pilot",
+                    KeyType::Ed25519,
+                    "m/44'/0'/0'/0/0",
+                )
+                .expect("Failed to derive identity"),
+        };
         let available_personas = vault_guard.get_personas();
+        if let Err(error) = sextant_hull::persist_browser_consent_vault(&data_dir, &vault_guard) {
+            eprintln!("[sextant-hull] failed to persist vault after seeding: {error}");
+        }
         drop(vault_guard);
 
         pilot.set_persona(Some(persona_personal.id.clone()));

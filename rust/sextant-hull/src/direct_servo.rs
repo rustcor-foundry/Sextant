@@ -4417,6 +4417,10 @@ impl DirectServoState {
     }
 
     fn load(self: &Rc<Self>, url: Url) {
+        if let Err(reason) = direct_navigation_guard(&url) {
+            eprintln!("[servo-direct] navigation to {url} refused: {reason}");
+            return;
+        }
         self.location_active.set(false);
         self.location_replace_on_text.set(false);
         // Navigate the active webview in place so Servo records session history
@@ -4500,6 +4504,10 @@ impl DirectServoState {
     }
 
     fn new_tab_with_url(self: &Rc<Self>, url: Url) {
+        if let Err(reason) = direct_navigation_guard(&url) {
+            eprintln!("[servo-direct] new tab at {url} refused: {reason}");
+            return;
+        }
         if let Some(active) = self.active_webview() {
             active.hide();
         }
@@ -4660,7 +4668,20 @@ fn servo_mouse_button(button: WinitMouseButton) -> Option<MouseButton> {
 fn parse_direct_navigation_target(input: &str) -> Result<Url, String> {
     let trimmed = input.trim();
     if let Ok(url) = Url::parse(trimmed) {
-        return Ok(url);
+        // Scheme allowlist: user/host-command navigation may only reach web
+        // content. file:, data:, and other schemes are rejected instead of
+        // being handed to the engine.
+        if matches!(url.scheme(), "http" | "https") {
+            return Ok(url);
+        }
+        if trimmed.contains("://") {
+            return Err(format!(
+                "scheme '{}:' is not allowed in the direct browsing lane",
+                url.scheme()
+            ));
+        }
+        // Inputs like "example.com:8080" parse as a URL with scheme
+        // "example.com"; fall through and treat them as a host instead.
     }
     if trimmed.contains('.') && !trimmed.contains(' ') {
         return Url::parse(&format!("https://{}", trimmed))
@@ -4669,6 +4690,49 @@ fn parse_direct_navigation_target(input: &str) -> Result<Url, String> {
     let query = url::form_urlencoded::byte_serialize(trimmed.as_bytes()).collect::<String>();
     Url::parse(&format!("https://duckduckgo.com/?q={query}"))
         .map_err(|error| format!("Search URL parse failed: {error}"))
+}
+
+/// Local-guard check for the hosted-direct lane: scheme allowlist plus the
+/// same persona firewall the bridge shell enforces, so direct browsing is no
+/// longer exempt from the trust boundary. `about:`/`data:` are shell-internal
+/// pages (new-tab, smoke) and carry no network destination.
+fn direct_navigation_guard(url: &Url) -> Result<(), String> {
+    match url.scheme() {
+        "http" | "https" => {}
+        "about" | "data" => return Ok(()),
+        other => {
+            return Err(format!(
+                "scheme '{other}:' is not allowed in the direct browsing lane"
+            ))
+        }
+    }
+
+    #[cfg(feature = "xilem-shell")]
+    {
+        use sextant_firewall::{FirewallAction, SextantFirewall};
+        use std::sync::OnceLock;
+        static GUARD_FIREWALL: OnceLock<(SextantFirewall, String)> = OnceLock::new();
+        let (firewall, source) = GUARD_FIREWALL.get_or_init(|| {
+            crate::load_browser_guard_firewall(&crate::app_data_dir().join("browser"))
+                .unwrap_or_else(|error| {
+                    eprintln!(
+                        "[servo-direct] guard policy load failed ({error}); using built-in defaults"
+                    );
+                    (
+                        SextantFirewall::new(),
+                        "built-in defaults (policy load failed)".to_string(),
+                    )
+                })
+        });
+        let (action, reason) = firewall.check_access(crate::BROWSER_PERSONA_ID, url);
+        if matches!(action, FirewallAction::Block) {
+            return Err(format!(
+                "local guard blocked navigation: {reason} (policy {source})"
+            ));
+        }
+    }
+
+    Ok(())
 }
 
 fn certificate_fingerprint_sha256_from_base64(value: &str) -> Result<String, String> {
@@ -4738,7 +4802,7 @@ mod tests {
 
     use super::{
         certificate_fingerprint_sha256_from_base64, keep_worst_total_frame,
-        parse_direct_navigation_target, retained_navigation_title_target,
+        parse_direct_navigation_target, retained_navigation_title_target, Url,
         RETAINED_NAVIGATION_TITLE_PREFIX,
     };
 
@@ -4778,6 +4842,31 @@ mod tests {
                 .as_str(),
             "https://duckduckgo.com/?q=servo+browser"
         );
+    }
+
+    #[test]
+    fn rejects_non_web_schemes_in_direct_navigation() {
+        assert!(parse_direct_navigation_target("file:///C:/Windows/win.ini").is_err());
+        assert!(parse_direct_navigation_target("javascript://alert(1)").is_err());
+        assert!(parse_direct_navigation_target("ftp://example.com/file").is_err());
+        // Host-with-port inputs still resolve as https instead of being
+        // misparsed as a URL scheme.
+        assert_eq!(
+            parse_direct_navigation_target("example.com:8080")
+                .unwrap()
+                .as_str(),
+            "https://example.com:8080/"
+        );
+    }
+
+    #[test]
+    fn direct_navigation_guard_allows_web_and_internal_schemes_only() {
+        use super::direct_navigation_guard;
+        assert!(
+            direct_navigation_guard(&Url::parse("about:blank").unwrap()).is_ok(),
+            "shell-internal about: pages must stay reachable"
+        );
+        assert!(direct_navigation_guard(&Url::parse("file:///C:/secret.txt").unwrap()).is_err());
     }
 
     #[test]

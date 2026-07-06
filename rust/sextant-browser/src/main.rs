@@ -133,7 +133,9 @@ fn spawn_direct_window(job: isize, url: Option<String>) -> Option<Child> {
         .arg("--browser-mode")
         .arg("direct");
     if let Some(url) = url {
-        command.arg(url);
+        // Startup navigation is only read from `--start`; a bare argv token
+        // was ignored and the child opened the default page instead.
+        command.arg("--start").arg(url);
     }
     let child = command.spawn().ok()?;
     #[cfg(windows)]

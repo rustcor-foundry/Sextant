@@ -251,6 +251,10 @@ impl BrowserApp {
                 self.page_scroll = 0;
                 self.begin_frame_warmup();
                 self.last_frame_viewport = None;
+                // Drop the previous tab's frame so the viewport (and any AI
+                // observation of it) never shows stale pixels under the new
+                // tab's identity while the fresh capture is in flight.
+                self.latest_frame = None;
                 self.refresh_render_bridge_frame_after_visible_tab_change();
                 self.layout(self.window_size);
                 self.last_status = format!("Switched to tab {}.", short_id(tab_id));

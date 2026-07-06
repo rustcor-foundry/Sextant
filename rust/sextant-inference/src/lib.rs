@@ -40,11 +40,39 @@ pub struct SextantInference {
     client: Client,
 }
 
+/// Default request timeout. Without one, a stalled model server hangs the
+/// pilot lane indefinitely. Overridable via `SEXTANT_INFERENCE_TIMEOUT_SECS`.
+const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 120;
+
 impl SextantInference {
     pub fn new() -> Self {
-        Self {
-            client: Client::new(),
+        let timeout_secs = std::env::var("SEXTANT_INFERENCE_TIMEOUT_SECS")
+            .ok()
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(DEFAULT_REQUEST_TIMEOUT_SECS);
+        let client = Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(timeout_secs))
+            .build()
+            .unwrap_or_else(|_| Client::new());
+        Self { client }
+    }
+
+    /// Surfaces HTTP-level API errors (auth failures, quota, bad model names)
+    /// instead of letting them decay into a generic "Invalid response from X"
+    /// JSON-shape error.
+    async fn json_checked(
+        res: reqwest::Response,
+        provider: &str,
+    ) -> Result<serde_json::Value, String> {
+        let status = res.status();
+        if !status.is_success() {
+            let body = res.text().await.unwrap_or_default();
+            let snippet: String = body.chars().take(300).collect();
+            return Err(format!("{provider} returned HTTP {status}: {snippet}"));
         }
+        res.json().await.map_err(|e| e.to_string())
     }
 
     pub async fn generate(&self, prompt: &str, config: &InferenceConfig) -> Result<String, String> {
@@ -89,7 +117,7 @@ impl SextantInference {
             .await
             .map_err(|e| e.to_string())?;
 
-        let json: serde_json::Value = res.json().await.map_err(|e| e.to_string())?;
+        let json = Self::json_checked(res, "OpenAI").await?;
         let embedding = json["data"][0]["embedding"]
             .as_array()
             .ok_or("Invalid response from OpenAI")?
@@ -101,7 +129,9 @@ impl SextantInference {
 
     async fn embed_gemini(&self, text: &str, config: &InferenceConfig) -> Result<Vec<f32>, String> {
         let api_key = config.api_key.as_ref().ok_or("Gemini API key missing")?;
-        let url = format!("https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key={}", api_key);
+        // The key travels in a header, not the query string: URLs are logged
+        // by proxies and tracing layers, headers generally are not.
+        let url = "https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent";
 
         let body = serde_json::json!({
             "model": "models/text-embedding-004",
@@ -115,12 +145,13 @@ impl SextantInference {
         let res = self
             .client
             .post(url)
+            .header("x-goog-api-key", api_key)
             .json(&body)
             .send()
             .await
             .map_err(|e| e.to_string())?;
 
-        let json: serde_json::Value = res.json().await.map_err(|e| e.to_string())?;
+        let json = Self::json_checked(res, "Gemini").await?;
         let embedding = json["embedding"]["values"]
             .as_array()
             .ok_or("Invalid response from Gemini")?
@@ -148,7 +179,7 @@ impl SextantInference {
             .await
             .map_err(|e| e.to_string())?;
 
-        let json: serde_json::Value = res.json().await.map_err(|e| e.to_string())?;
+        let json = Self::json_checked(res, "Ollama").await?;
         let embedding = json["embedding"]
             .as_array()
             .ok_or("Invalid response from Ollama")?
@@ -186,7 +217,7 @@ impl SextantInference {
             .await
             .map_err(|e| e.to_string())?;
 
-        let json: serde_json::Value = res.json().await.map_err(|e| e.to_string())?;
+        let json = Self::json_checked(res, "llama.cpp").await?;
         json["choices"][0]["message"]["content"]
             .as_str()
             .map(|s| s.to_string())
@@ -218,7 +249,7 @@ impl SextantInference {
             .await
             .map_err(|e| e.to_string())?;
 
-        let json: serde_json::Value = res.json().await.map_err(|e| e.to_string())?;
+        let json = Self::json_checked(res, "vLLM").await?;
         json["choices"][0]["text"]
             .as_str()
             .map(|s| s.to_string())
@@ -253,7 +284,7 @@ impl SextantInference {
             .await
             .map_err(|e| e.to_string())?;
 
-        let json: serde_json::Value = res.json().await.map_err(|e| e.to_string())?;
+        let json = Self::json_checked(res, "Ollama").await?;
         json["response"]
             .as_str()
             .map(|s| s.to_string())
@@ -285,7 +316,7 @@ impl SextantInference {
             .await
             .map_err(|e| e.to_string())?;
 
-        let json: serde_json::Value = res.json().await.map_err(|e| e.to_string())?;
+        let json = Self::json_checked(res, "MLC-LLM").await?;
         json["choices"][0]["message"]["content"]
             .as_str()
             .map(|s| s.to_string())
@@ -316,7 +347,7 @@ impl SextantInference {
             .await
             .map_err(|e| e.to_string())?;
 
-        let json: serde_json::Value = res.json().await.map_err(|e| e.to_string())?;
+        let json = Self::json_checked(res, "OpenAI").await?;
         json["choices"][0]["message"]["content"]
             .as_str()
             .map(|s| s.to_string())
@@ -348,7 +379,7 @@ impl SextantInference {
             .await
             .map_err(|e| e.to_string())?;
 
-        let json: serde_json::Value = res.json().await.map_err(|e| e.to_string())?;
+        let json = Self::json_checked(res, "Anthropic").await?;
         json["content"][0]["text"]
             .as_str()
             .map(|s| s.to_string())
@@ -361,9 +392,10 @@ impl SextantInference {
         config: &InferenceConfig,
     ) -> Result<String, String> {
         let api_key = config.api_key.as_ref().ok_or("Gemini API key missing")?;
+        // Key in header, not URL query (see embed_gemini).
         let url = format!(
-            "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
-            config.model_name, api_key
+            "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent",
+            config.model_name
         );
 
         let body = serde_json::json!({
@@ -381,12 +413,13 @@ impl SextantInference {
         let res = self
             .client
             .post(url)
+            .header("x-goog-api-key", api_key)
             .json(&body)
             .send()
             .await
             .map_err(|e| e.to_string())?;
 
-        let json: serde_json::Value = res.json().await.map_err(|e| e.to_string())?;
+        let json = Self::json_checked(res, "Gemini").await?;
         json["candidates"][0]["content"]["parts"][0]["text"]
             .as_str()
             .map(|s| s.to_string())

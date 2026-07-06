@@ -24,7 +24,7 @@ The system is built around a clean layered split:
 | `sextant-hull` | Native UI shell package. Active lane is `sextant-browser` (`winit` + `softbuffer`); Xilem shell is parked reference code |
 | `sextant-pilot` | Agentic orchestration — intent reasoning, navigation, consent gating |
 | `sextant-engine` | Browser engine surface — optional Servo live navigation/frame capture/input, reader fallback, and semantic extraction |
-| `sextant-vault` | Citadel Vault — BIP-39 HD keys, Ed25519/ML-DSA identity, AES-256-GCM encryption |
+| `sextant-vault` | Citadel Vault — BIP-39 seed, Ed25519/ECDSA-P256 identities (custom HMAC-SHA512 derivation, not BIP-32), AES-256-GCM encryption, passphrase-verified unlock, persistent encrypted seed |
 | `sextant-wake` | Digital Wake — SQLite FTS5 + vector memory store, temporal decay, consolidation |
 | `sextant-inference` | Multi-backend LLM client — llama.cpp, OpenAI, Anthropic, Gemini |
 | `sextant-log` | Captain's Log — SQLite audit trail with persona isolation |
@@ -33,19 +33,19 @@ The system is built around a clean layered split:
 
 | Crate | Role |
 |-------|------|
-| `sextant-pq` | Post-quantum identity — ML-DSA-65 signing via `pqcrypto-dilithium` |
-| `sextant-privacy` | PII redaction — privacy levels (None / Standard / Strict) |
-| `sextant-firewall` | Network filtering — domain rules, tracker blocking |
-| `sextant-airgap` | Air-gap mode — Online / Isolated / Hardened states |
+| `sextant-pq` | **SIMULATED** post-quantum identity — hash-based placeholder, NOT real ML-DSA; provides no cryptographic security (see crate docs) |
+| `sextant-privacy` | PII redaction prototype — privacy levels (None / Standard / Strict); demo-grade pattern matching |
+| `sextant-firewall` | Network filtering — persona domain rules (wildcard subdomain matching, IP-literal hosts), global blocklist |
+| `sextant-airgap` | Air-gap mode — Online / Isolated / Hardened states; enforced in the browser shell via `SEXTANT_AIRGAP` and the guard path |
 
 ### Connectivity Layer
 
 | Crate | Role |
 |-------|------|
-| `sextant-mesh` | P2P mesh — libp2p-based local network, tab/file sharing |
+| `sextant-mesh` | **SIMULATED** P2P mesh — in-memory prototype, no real networking (libp2p integration is future work) |
 | `sextant-bridge` | Multimodal bridge — image/audio/video input processing |
-| `sextant-sync` | Cross-device sync — persona payload serialization and merge |
-| `sextant-bio` | Biometric auth — TouchID / FaceID proof abstraction |
+| `sextant-sync` | Cross-device sync prototype — persona payload serialization/merge; same-seed integrity MAC only, no cross-device key exchange yet |
+| `sextant-bio` | **SIMULATED** biometric auth — no OS biometric integration; proofs are forgeable and cannot unlock a locked vault (see crate docs) |
 
 ---
 

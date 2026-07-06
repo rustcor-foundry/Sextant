@@ -3115,13 +3115,16 @@ pub fn guard_report_lines(
             app.guard_firewall.persona_rules(&app.persona_id).len(),
             app.guard_firewall.global_blacklist().len()
         ));
-        let airgap = SextantAirGap::new();
-        let network = if airgap.check_network_allowed() {
+        let network = if app.airgap.check_network_allowed() {
             "ONLINE network allowed"
         } else {
             "ISOLATED network blocked"
         };
-        lines.push(format!("airgap: {:?} | {}", airgap.get_status(), network));
+        lines.push(format!(
+            "airgap: {:?} | {}",
+            app.airgap.get_status(),
+            network
+        ));
 
         if let Some(url) = target_url {
             let (action, reason) = app.guard_firewall.check_access(&app.persona_id, url);

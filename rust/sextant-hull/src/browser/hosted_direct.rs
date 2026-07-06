@@ -150,6 +150,7 @@ pub fn run_hosted_direct_app(
                 if let Some((status, log_path)) = poll_hosted_direct_child_exit(&mut direct_child) {
                     direct_summary = parse_hosted_direct_log_summary(&log_path);
                     if let Some(trust) = shell.take_pending_certificate_trust() {
+                        #[cfg(all(target_os = "windows", feature = "servo-backend"))]
                         match relaunch_hosted_direct_child_after_certificate_trust(
                             parent_hwnd,
                             latest_parent_size,
@@ -186,6 +187,13 @@ pub fn run_hosted_direct_app(
                                     "[hosted-direct] failed to relaunch trusted child after {status}: {error}"
                                 );
                             }
+                        }
+                        #[cfg(not(all(target_os = "windows", feature = "servo-backend")))]
+                        {
+                            let _ = trust;
+                            eprintln!(
+                                "[hosted-direct] child exited ({status}); certificate trust relaunch unavailable in this build"
+                            );
                         }
                     } else {
                         eprintln!("[hosted-direct] child exited: {status}");
@@ -1413,8 +1421,15 @@ impl HostedDirectShellState {
             self.address_cursor = 0;
             self.address_replace_on_text = false;
         }
+        self.address_cursor =
+            clamp_char_boundary(&self.address_input, self.address_cursor);
         self.address_input.insert_str(self.address_cursor, value);
-        self.address_cursor += value.len();
+        // IME commits and pasted text can be multi-byte; keep the cursor on a
+        // scalar boundary so `address_input[..cursor]` never panics.
+        self.address_cursor = clamp_char_boundary(
+            &self.address_input,
+            self.address_cursor.saturating_add(value.len()),
+        );
     }
 
     pub fn handle_text_commit(&mut self, text: String) -> bool {
@@ -1432,7 +1447,10 @@ impl HostedDirectShellState {
         if !self.address_focused {
             return truncate(&self.target, max_chars);
         }
-        let cursor = self.address_cursor.min(self.address_input.len());
+        let cursor = clamp_char_boundary(
+            &self.address_input,
+            self.address_cursor.min(self.address_input.len()),
+        );
         let mut display = String::with_capacity(self.address_input.len() + 1);
         display.push_str(&self.address_input[..cursor]);
         display.push('_');
@@ -1455,7 +1473,7 @@ impl HostedDirectShellState {
 }
 
 pub fn previous_char_boundary(value: &str, index: usize) -> usize {
-    let index = index.min(value.len());
+    let index = clamp_char_boundary(value, index.min(value.len()));
     value[..index]
         .char_indices()
         .last()
@@ -1463,15 +1481,29 @@ pub fn previous_char_boundary(value: &str, index: usize) -> usize {
         .unwrap_or(0)
 }
 
+pub fn clamp_char_boundary(value: &str, index: usize) -> usize {
+    if index >= value.len() {
+        return value.len();
+    }
+    if value.is_char_boundary(index) {
+        return index;
+    }
+    let mut i = index;
+    while i > 0 && !value.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
 pub fn next_char_boundary(value: &str, index: usize) -> usize {
-    let index = index.min(value.len());
+    let index = clamp_char_boundary(value, index.min(value.len()));
     if index >= value.len() {
         return value.len();
     }
     value[index..]
-        .char_indices()
-        .nth(1)
-        .map(|(offset, _)| index + offset)
+        .chars()
+        .next()
+        .map(|ch| index + ch.len_utf8())
         .unwrap_or(value.len())
 }
 
@@ -2567,4 +2599,36 @@ pub fn parse_duration_label_ms(label: &str) -> Option<f64> {
         return value.parse::<f64>().ok().map(|seconds| seconds * 1000.0);
     }
     None
+}
+
+#[cfg(test)]
+mod address_cursor_tests {
+    use super::{clamp_char_boundary, next_char_boundary, HostedDirectShellState};
+
+    #[test]
+    fn push_address_text_keeps_cursor_on_char_boundary() {
+        let mut shell = HostedDirectShellState::new("https://example.com".to_string());
+        shell.address_focused = true;
+        shell.push_address_text("café");
+        shell.push_address_text("🙂");
+        // Must not panic when rendering the caret.
+        let _ = shell.address_display_text(80);
+        assert!(shell.address_input.is_char_boundary(shell.address_cursor));
+    }
+
+    #[test]
+    fn clamp_char_boundary_never_panics_on_mid_scalar() {
+        let text = "a🙂b";
+        let mid = 2; // inside the 4-byte emoji
+        assert_eq!(clamp_char_boundary(text, mid), 1);
+        assert!(text.is_char_boundary(clamp_char_boundary(text, mid)));
+        assert_eq!(clamp_char_boundary(text, text.len()), text.len());
+    }
+
+    #[test]
+    fn next_char_boundary_skips_whole_scalars() {
+        let text = "a🙂b";
+        assert_eq!(next_char_boundary(text, 1), 5);
+        assert_eq!(next_char_boundary(text, 2), 5);
+    }
 }

@@ -6,15 +6,16 @@ impl BrowserApp {
     pub fn guard_decision(&self, url: &Url) -> GuardDecision {
         #[cfg(feature = "xilem-shell")]
         {
-            let airgap = SextantAirGap::new();
+            // Consult the app's shared air-gap state; constructing a fresh
+            // instance here made every check see Online.
             let network_required = matches!(url.scheme(), "http" | "https");
-            let network_allowed = !network_required || airgap.check_network_allowed();
+            let network_allowed = !network_required || self.airgap.check_network_allowed();
             if !network_allowed {
                 return GuardDecision {
                     action: "BLOCK",
                     reason: format!(
                         "{:?} air-gap blocks network navigation",
-                        airgap.get_status()
+                        self.airgap.get_status()
                     ),
                     allowed: false,
                     network_allowed,

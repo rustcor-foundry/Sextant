@@ -2,7 +2,7 @@ use chrono::Utc;
 #[cfg(any(feature = "xilem-shell", feature = "servo-backend"))]
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "xilem-shell")]
-use sextant_airgap::SextantAirGap;
+use sextant_airgap::{AirGapStatus, SextantAirGap};
 use sextant_engine::{
     AsyncDistillResult, AsyncFrameCapture, AsyncNavigationResult, AsyncNavigationTimings,
     BrowserEvalProbe, BrowserKey, DistilledPage, EngineBackend, EngineStatus, NodeType,
@@ -144,6 +144,10 @@ mod persistence_ops;
 #[path = "browser/validation_perf.rs"]
 mod validation_perf;
 
+/// Persona id under which the product browser shell (both the bridge and the
+/// hosted-direct lanes) evaluates firewall policy.
+pub const BROWSER_PERSONA_ID: &str = "browser-persona";
+
 pub struct BrowserApp {
     pub engine: SextantEngine,
     pub wake: DigitalWake,
@@ -158,6 +162,11 @@ pub struct BrowserApp {
     pub guard_firewall: SextantFirewall,
     #[cfg(feature = "xilem-shell")]
     pub guard_policy_source: String,
+    /// Shared air-gap state consulted by every guard decision. Previously each
+    /// check constructed a fresh (always-Online) instance, so Isolated/Hardened
+    /// modes were unenforceable in the active shell.
+    #[cfg(feature = "xilem-shell")]
+    pub airgap: SextantAirGap,
     pub persona_id: String,
     pub address_input: String,
     pub wake_query: String,
@@ -271,6 +280,8 @@ impl BrowserApp {
         let chrome_ui_theme = ChromeUiTheme::load(&profile_data_dir);
         #[cfg(any(feature = "xilem-shell", feature = "servo-backend"))]
         let appliance_cert_entries = ApplianceCertTrustStore::load(&profile_data_dir)?.entries;
+        #[cfg(feature = "xilem-shell")]
+        let consent_vault = init_browser_consent_vault(&data_dir)?;
         let mut app = Self {
             engine: SextantEngine::new(),
             wake: DigitalWake::open(data_dir.join("wake.db")).map_err(|e| e.to_string())?,
@@ -280,12 +291,14 @@ impl BrowserApp {
             profile_data_dir,
             incognito_data_dir: None,
             #[cfg(feature = "xilem-shell")]
-            consent_vault: init_browser_consent_vault()?,
+            consent_vault,
             #[cfg(feature = "xilem-shell")]
             guard_firewall,
             #[cfg(feature = "xilem-shell")]
             guard_policy_source,
-            persona_id: "browser-persona".to_string(),
+            #[cfg(feature = "xilem-shell")]
+            airgap: init_browser_airgap(),
+            persona_id: BROWSER_PERSONA_ID.to_string(),
             address_input: "https://example.com".to_string(),
             wake_query: "example".to_string(),
             last_status: "Ready. Type a URL or search, then press Enter.".to_string(),
@@ -1114,11 +1127,128 @@ pub fn load_browser_guard_firewall(data_dir: &Path) -> Result<(SextantFirewall, 
     Ok((SextantFirewall::new(), "built-in defaults".to_string()))
 }
 
+/// Builds the browser's air-gap state, honoring the `SEXTANT_AIRGAP`
+/// environment variable (`online` | `isolated` | `hardened`). The instance is
+/// held on `BrowserApp` and consulted by every guard decision, so a non-Online
+/// mode actually blocks network navigation.
 #[cfg(feature = "xilem-shell")]
-pub fn init_browser_consent_vault() -> Result<CitadelVault, String> {
+pub fn init_browser_airgap() -> SextantAirGap {
+    let mut airgap = SextantAirGap::new();
+    if let Ok(value) = env::var("SEXTANT_AIRGAP") {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "isolated" => airgap.set_status(AirGapStatus::Isolated),
+            "hardened" => airgap.set_status(AirGapStatus::Hardened),
+            "online" | "" => {}
+            other => eprintln!(
+                "[sextant-browser] unknown SEXTANT_AIRGAP value '{other}'; staying Online"
+            ),
+        }
+    }
+    airgap
+}
+
+/// Resolves the passphrase protecting the browser's consent vault.
+///
+/// Order of precedence:
+/// 1. `SEXTANT_VAULT_PASSPHRASE` — a user-provided secret.
+/// 2. A per-profile machine secret (`captains-key.secret`) stored in the
+///    user-protected profile directory, generated once on first launch.
+///
+/// The compile-time constant passphrase this replaces made every launch mint a
+/// fresh, unverifiable Captain's Key.
+#[cfg(feature = "xilem-shell")]
+fn browser_vault_passphrase(data_dir: &Path) -> Result<String, String> {
+    if let Ok(value) = env::var("SEXTANT_VAULT_PASSPHRASE") {
+        let trimmed = value.trim();
+        if !trimmed.is_empty() {
+            return Ok(trimmed.to_string());
+        }
+    }
+
+    let secret_path = data_dir.join("captains-key.secret");
+    if let Ok(existing) = std::fs::read_to_string(&secret_path) {
+        let trimmed = existing.trim();
+        if !trimmed.is_empty() {
+            return Ok(trimmed.to_string());
+        }
+    }
+
+    // 2x UUIDv4 = 244 bits of OS randomness; enough for a machine secret.
+    let secret = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
+    std::fs::write(&secret_path, &secret).map_err(|error| {
+        format!(
+            "Failed to store consent vault secret {}: {}",
+            secret_path.display(),
+            error
+        )
+    })?;
+    Ok(secret)
+}
+
+/// Loads the persistent Captain's Key consent vault for this profile, creating
+/// it on first launch. The vault (salt, passphrase verifier, encrypted seed,
+/// personas/identities/secrets) is persisted so consent signatures recorded in
+/// the Captain's Log remain verifiable across sessions.
+#[cfg(feature = "xilem-shell")]
+pub fn init_browser_consent_vault(data_dir: &Path) -> Result<CitadelVault, String> {
+    let passphrase = browser_vault_passphrase(data_dir)?;
+    let vault_path = data_dir.join("consent-vault.json");
+
+    if vault_path.exists() {
+        let raw = std::fs::read_to_string(&vault_path).map_err(|error| {
+            format!(
+                "Failed to read consent vault {}: {}",
+                vault_path.display(),
+                error
+            )
+        })?;
+        let mut vault = CitadelVault::new();
+        let restored = vault
+            .import_encrypted(&raw)
+            .and_then(|()| vault.unlock(&passphrase));
+        match restored {
+            Ok(()) => return Ok(vault),
+            Err(error) => {
+                // Wrong/rotated secret or corrupt file. Keep the old vault for
+                // forensics and start fresh; consent signatures recorded under
+                // the old seed can no longer be re-verified.
+                let backup_path = data_dir.join(format!(
+                    "consent-vault.unreadable-{}.json",
+                    Utc::now().timestamp()
+                ));
+                let _ = std::fs::rename(&vault_path, &backup_path);
+                eprintln!(
+                    "[sextant-browser] consent vault could not be restored ({error}); \
+                     starting a new vault. Old vault preserved at {}",
+                    backup_path.display()
+                );
+            }
+        }
+    }
+
     let mut vault = CitadelVault::new();
-    let _mnemonic = vault.initialize_new("browser-captains-key")?;
+    let _mnemonic = vault.initialize_new(&passphrase)?;
+    persist_browser_consent_vault(data_dir, &vault)?;
     Ok(vault)
+}
+
+/// Writes the encrypted vault state back to the profile directory. Call after
+/// mutating vault contents (personas, identities, secrets) so the change
+/// survives a restart.
+#[cfg(feature = "xilem-shell")]
+pub fn persist_browser_consent_vault(
+    data_dir: &Path,
+    vault: &CitadelVault,
+) -> Result<(), String> {
+    let vault_path = data_dir.join("consent-vault.json");
+    let export = vault.export_encrypted()?;
+    std::fs::write(&vault_path, export).map_err(|error| {
+        format!(
+            "Failed to persist consent vault {}: {}",
+            vault_path.display(),
+            error
+        )
+    })
 }
 
 pub fn window_hwnd(window: &Window) -> Option<isize> {

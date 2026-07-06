@@ -184,8 +184,24 @@ impl SextantPilot {
     }
 
     /// Resumes execution after user provides Captain's Key consent.
+    ///
+    /// The signature is verified against the vault's consent MAC for the
+    /// pending consent message before the plan resumes: an arbitrary string
+    /// (or a signature minted for a different message) is rejected instead of
+    /// being recorded as authorization.
     pub async fn provide_consent(&mut self, signature: &str) -> Result<String, String> {
-        if let PilotStatus::AwaitingConsent(_) = self.status {
+        if let PilotStatus::AwaitingConsent(message) = self.status.clone() {
+            let expected = {
+                let vault = self.vault.lock().await;
+                vault.sign_consent(&message)?
+            };
+            if expected != signature {
+                return Err(
+                    "Consent signature did not verify against the Captain's Key; \
+                     consent not applied."
+                        .into(),
+                );
+            }
             self.plan_results.push(format!(
                 "Captain's Key Authorized. Signature: {}",
                 signature
@@ -426,7 +442,10 @@ fn search_url(intent: &str) -> Url {
         .expect("search URL should always be valid")
 }
 
-fn intent_needs_consent(intent: &str) -> bool {
+/// True if the user's phrasing of the intent reads as sensitive (purchases,
+/// deletions, transfers, signing, ...). One half of the consent floor; see
+/// [`plan_needs_consent`].
+pub fn intent_needs_consent(intent: &str) -> bool {
     let lowered = intent.to_ascii_lowercase();
     [
         "buy",
@@ -453,7 +472,7 @@ fn intent_needs_consent(intent: &str) -> bool {
 /// on a side-effecting endpoint. We bias toward asking — a few extra gates on
 /// order/billing pages are acceptable in a sovereign browser; a missed gate on
 /// a real purchase is not.
-fn navigation_is_sensitive(url: &Url) -> bool {
+pub fn navigation_is_sensitive(url: &Url) -> bool {
     let host = url.host_str().unwrap_or("").to_ascii_lowercase();
     let path = url.path().to_ascii_lowercase();
     let query = url.query().unwrap_or("").to_ascii_lowercase();
@@ -495,7 +514,10 @@ fn action_needs_consent(action: &PilotAction) -> bool {
 /// The consent floor: a plan must be gated when the intent reads as sensitive OR
 /// when any concrete action in it is sensitive. Combining both signals means a
 /// reworded intent can no longer slip a side-effecting plan past the gate.
-fn plan_needs_consent(intent: &str, plan: &[PilotAction]) -> bool {
+///
+/// This is the single source of truth for consent policy; shells must route
+/// their planners through it rather than re-implementing keyword checks.
+pub fn plan_needs_consent(intent: &str, plan: &[PilotAction]) -> bool {
     intent_needs_consent(intent) || plan.iter().any(action_needs_consent)
 }
 
@@ -951,6 +973,7 @@ mod tests {
         Arc<Mutex<SextantEngine>>,
         Arc<Mutex<DigitalWake>>,
         Arc<Mutex<CaptainsLog>>,
+        Arc<Mutex<CitadelVault>>,
     ) {
         let vault = Arc::new(Mutex::new(CitadelVault::new()));
         {
@@ -962,7 +985,7 @@ mod tests {
         let log = Arc::new(Mutex::new(CaptainsLog::new_in_memory().unwrap()));
 
         let mut pilot = SextantPilot::new(
-            vault,
+            vault.clone(),
             engine.clone(),
             wake.clone(),
             log.clone(),
@@ -970,13 +993,13 @@ mod tests {
         );
         pilot.set_persona(Some("default".to_string()));
 
-        (pilot, engine, wake, log)
+        (pilot, engine, wake, log, vault)
     }
 
     #[tokio::test]
     async fn open_tab_action_targets_the_new_tab() {
         let target_url = Url::parse("https://example.com").unwrap();
-        let (mut pilot, engine, _wake, _log) =
+        let (mut pilot, engine, _wake, _log, _vault) =
             create_test_pilot(vec![PilotAction::OpenTab(target_url.clone())]).await;
 
         let result = pilot.process_intent("open example in a new tab").await;
@@ -994,7 +1017,7 @@ mod tests {
     #[tokio::test]
     async fn process_intent_navigate_and_distill_records_to_wake() {
         let target_url = Url::parse("about:blank").unwrap();
-        let (mut pilot, engine, wake, log) = create_test_pilot(vec![
+        let (mut pilot, engine, wake, log, _vault) = create_test_pilot(vec![
             PilotAction::Navigate(target_url.clone()),
             PilotAction::Distill,
         ])
@@ -1037,7 +1060,7 @@ mod tests {
 
     #[tokio::test]
     async fn process_intent_request_consent_sets_awaiting_status_and_can_be_denied() {
-        let (mut pilot, _engine, _wake, log) =
+        let (mut pilot, _engine, _wake, log, _vault) =
             create_test_pilot(vec![PilotAction::RequestConsent(
                 "Authorize this sensitive action?".to_string(),
             )])
@@ -1070,7 +1093,7 @@ mod tests {
     #[tokio::test]
     async fn provide_consent_resumes_plan_and_finishes_successfully() {
         let target_url = Url::parse("about:blank").unwrap();
-        let (mut pilot, engine, wake, log) = create_test_pilot(vec![
+        let (mut pilot, engine, wake, log, vault) = create_test_pilot(vec![
             PilotAction::RequestConsent("Authorize blank-page navigation?".to_string()),
             PilotAction::Navigate(target_url.clone()),
             PilotAction::Distill,
@@ -1081,9 +1104,16 @@ mod tests {
             .process_intent("do the protected blank-page flow")
             .await;
         assert!(result.is_ok(), "pilot returned error: {:?}", result.err());
-        assert!(matches!(pilot.status(), PilotStatus::AwaitingConsent(_)));
+        let consent_message = match pilot.status() {
+            PilotStatus::AwaitingConsent(message) => message.clone(),
+            other => panic!("expected AwaitingConsent, got {other:?}"),
+        };
 
-        let resume_result = pilot.provide_consent("test-signature").await;
+        let signature = {
+            let vault_guard = vault.lock().await;
+            vault_guard.sign_consent(&consent_message).unwrap()
+        };
+        let resume_result = pilot.provide_consent(&signature).await;
         assert!(
             resume_result.is_ok(),
             "provide_consent returned error: {:?}",
@@ -1119,7 +1149,7 @@ mod tests {
         );
         assert_eq!(
             log_entries[0].consent_signature.as_deref(),
-            Some("test-signature")
+            Some(signature.as_str())
         );
         assert!(matches!(log_entries[0].status, LogStatus::Success));
     }

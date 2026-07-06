@@ -31,9 +31,9 @@ mod servo_runtime {
         DevicePoint, ImeEvent, InputEvent, JSValue, JavaScriptEvaluationError, Key, KeyState,
         KeyboardEvent, LoadStatus, MouseButton, MouseButtonAction, MouseButtonEvent,
         MouseMoveEvent, NamedKey, RenderingContext, Servo, ServoBuilder, SoftwareRenderingContext,
-        WebView, WebViewBuilder, WebViewDelegate, WheelDelta, WheelEvent, WheelMode,
+        WebView, WebViewBuilder, WebViewDelegate, WebViewId, WheelDelta, WheelEvent, WheelMode,
     };
-    use std::collections::{HashMap, VecDeque};
+    use std::collections::{HashMap, HashSet, VecDeque};
     use std::env;
     use std::panic::{self, AssertUnwindSafe};
     use std::path::PathBuf;
@@ -220,35 +220,54 @@ mod servo_runtime {
 
     struct ServoTabSession {
         webview: WebView,
+        // Each tab paints into its own rendering context; sharing one context
+        // across tabs let one tab's pixels be captured under another tab's
+        // identity (cross-tab frame corruption/leakage).
+        rendering_context: Rc<dyn RenderingContext>,
         viewport_size: (u32, u32),
     }
 
     struct ServoRuntimeState {
         servo: Servo,
-        rendering_context: Rc<dyn RenderingContext>,
+        // Kept only to hold the GL context that Servo was initialized against;
+        // per-tab painting and capture use the session's own context.
+        #[allow(dead_code)]
+        primary_rendering_context: Rc<dyn RenderingContext>,
+        default_viewport_size: (u32, u32),
         delegate: Rc<HeadlessWebViewDelegate>,
         sessions: HashMap<Uuid, ServoTabSession>,
     }
 
+    /// Tracks frame readiness per webview so one tab's freshly painted frame
+    /// can never satisfy another tab's capture.
     #[derive(Default)]
     struct HeadlessWebViewDelegate {
-        frame_ready: AtomicBool,
+        frames_ready: Mutex<HashSet<WebViewId>>,
     }
 
     impl HeadlessWebViewDelegate {
-        fn is_frame_ready(&self) -> bool {
-            self.frame_ready.load(Ordering::SeqCst)
+        fn is_frame_ready(&self, webview_id: WebViewId) -> bool {
+            self.frames_ready
+                .lock()
+                .map(|ready| ready.contains(&webview_id))
+                .unwrap_or(false)
         }
 
-        fn take_frame_ready(&self) -> bool {
-            self.frame_ready.swap(false, Ordering::SeqCst)
+        fn take_frame_ready(&self, webview_id: WebViewId) -> bool {
+            self.frames_ready
+                .lock()
+                .map(|mut ready| ready.remove(&webview_id))
+                .unwrap_or(false)
         }
     }
 
     impl WebViewDelegate for HeadlessWebViewDelegate {
         fn notify_new_frame_ready(&self, webview: WebView) {
+            let webview_id = webview.id();
             webview.paint();
-            self.frame_ready.store(true, Ordering::SeqCst);
+            if let Ok(mut ready) = self.frames_ready.lock() {
+                ready.insert(webview_id);
+            }
         }
     }
 
@@ -272,13 +291,6 @@ mod servo_runtime {
         }
 
         fn command_tx(&self) -> Result<mpsc::Sender<ServoCommand>, String> {
-            if self.failed.load(Ordering::SeqCst) {
-                return Err(
-                    "Servo service is unavailable after an internal failure; restart the app."
-                        .to_string(),
-                );
-            }
-
             let mut guard = self
                 .shared_command_tx
                 .lock()
@@ -287,14 +299,9 @@ mod servo_runtime {
                 return Ok(command_tx.clone());
             }
 
-            static SERVO_SERVICE_STARTED: AtomicBool = AtomicBool::new(false);
-            if SERVO_SERVICE_STARTED.swap(true, Ordering::SeqCst) {
-                return Err(
-                    "Servo service stopped; restart the app to create a new Servo runtime."
-                        .to_string(),
-                );
-            }
-
+            // No live service thread (first use, or the previous thread died and
+            // `mark_failed` cleared the sender): spawn a fresh one instead of
+            // permanently refusing service for the rest of the process lifetime.
             let (command_tx, command_rx) = mpsc::channel();
             let initial_viewport_size = self
                 .initial_viewport_size
@@ -306,6 +313,7 @@ mod servo_runtime {
                 .name("sextant-servo-service".into())
                 .spawn(move || run_service(command_rx, initial_viewport_size))
                 .map_err(|e| format!("failed to spawn Servo service thread: {}", e))?;
+            self.failed.store(false, Ordering::SeqCst);
             *guard = Some(command_tx.clone());
             Ok(command_tx)
         }
@@ -706,7 +714,9 @@ mod servo_runtime {
                     let _ = reply_tx.send(result);
                 }
                 ServoCommand::CloseTab { tab_id, reply_tx } => {
-                    runtime.sessions.remove(&tab_id);
+                    if let Some(session) = runtime.sessions.remove(&tab_id) {
+                        let _ = runtime.delegate.take_frame_ready(session.webview.id());
+                    }
                     let _ = reply_tx.send(Ok(()));
                 }
                 ServoCommand::InspectTab { tab_id, reply_tx } => {
@@ -1045,10 +1055,13 @@ mod servo_runtime {
         prime_windows_angle_runtime()?;
         eprintln!("[sextant-servo] creating runtime");
         let (width, height) = initial_viewport_size;
+        let default_viewport_size = (width.max(1), height.max(1));
         let rendering_context = Rc::new(
-            SoftwareRenderingContext::new(PhysicalSize::new(width.max(1), height.max(1))).map_err(
-                |e| format!("Failed to create Servo software rendering context: {:?}", e),
-            )?,
+            SoftwareRenderingContext::new(PhysicalSize::new(
+                default_viewport_size.0,
+                default_viewport_size.1,
+            ))
+            .map_err(|e| format!("Failed to create Servo software rendering context: {:?}", e))?,
         );
         rendering_context
             .make_current()
@@ -1059,7 +1072,8 @@ mod servo_runtime {
         eprintln!("[sextant-servo] runtime ready");
         Ok(ServoRuntimeState {
             servo,
-            rendering_context,
+            primary_rendering_context: rendering_context,
+            default_viewport_size,
             delegate,
             sessions: HashMap::new(),
         })
@@ -1073,16 +1087,26 @@ mod servo_runtime {
         runtime: &mut ServoRuntimeState,
         initial_url: Option<Url>,
     ) -> Result<ServoTabSession, String> {
-        let mut builder = WebViewBuilder::new(&runtime.servo, runtime.rendering_context.clone())
+        let (width, height) = runtime.default_viewport_size;
+        let rendering_context: Rc<dyn RenderingContext> = Rc::new(
+            SoftwareRenderingContext::new(PhysicalSize::new(width.max(1), height.max(1))).map_err(
+                |e| format!("Failed to create tab rendering context: {:?}", e),
+            )?,
+        );
+        rendering_context
+            .make_current()
+            .map_err(|e| format!("Failed to activate tab rendering context: {:?}", e))?;
+        let mut builder = WebViewBuilder::new(&runtime.servo, rendering_context.clone())
             .delegate(runtime.delegate.clone());
         if let Some(url) = initial_url {
             builder = builder.url(url);
         }
         let webview = builder.build();
-        let size = runtime.rendering_context.size();
+        let size = rendering_context.size();
 
         Ok(ServoTabSession {
             webview,
+            rendering_context,
             viewport_size: (size.width, size.height),
         })
     }
@@ -1117,6 +1141,7 @@ mod servo_runtime {
         if let Some((width, height)) = viewport_size {
             let size = PhysicalSize::new(width.max(1), height.max(1));
             if session.viewport_size != (size.width, size.height) {
+                session.rendering_context.resize(size);
                 session.webview.resize(size);
                 session.viewport_size = (size.width, size.height);
                 runtime.servo.spin_event_loop();
@@ -1186,20 +1211,20 @@ mod servo_runtime {
             .sessions
             .get(&tab_id)
             .ok_or_else(|| "Servo session was not created".to_string())?;
-        runtime
+        session
             .rendering_context
             .make_current()
             .map_err(|e| format!("Failed to make Servo rendering context current: {:?}", e))?;
-        if !runtime.delegate.take_frame_ready() {
+        if !runtime.delegate.take_frame_ready(session.webview.id()) {
             session.webview.paint();
         }
-        runtime.rendering_context.present();
-        let size = runtime.rendering_context.size();
+        session.rendering_context.present();
+        let size = session.rendering_context.size();
         let rect = DeviceIntRect::from_origin_and_size(
             DeviceIntPoint::new(0, 0),
             DeviceIntSize::new(size.width as i32, size.height as i32),
         );
-        let image = runtime
+        let image = session
             .rendering_context
             .read_to_image(rect)
             .ok_or_else(|| "Servo rendered no readable frame.".to_string())?;
@@ -1260,6 +1285,7 @@ mod servo_runtime {
         if session.viewport_size == (size.width, size.height) {
             return Ok(());
         }
+        session.rendering_context.resize(size);
         session.webview.resize(size);
         session.viewport_size = (size.width, size.height);
         runtime.servo.spin_event_loop();
@@ -1601,7 +1627,7 @@ mod servo_runtime {
         let previous_url = session.webview.url();
         if previous_url.as_ref() != Some(&url) {
             if return_on_first_frame {
-                let _ = delegate.take_frame_ready();
+                let _ = delegate.take_frame_ready(session.webview.id());
             }
             session.webview.load(url.clone());
         }
@@ -1619,7 +1645,7 @@ mod servo_runtime {
 
         if previous_url.as_ref() != Some(&url) && Some(&final_url) == previous_url.as_ref() {
             if return_on_first_frame {
-                let _ = delegate.take_frame_ready();
+                let _ = delegate.take_frame_ready(session.webview.id());
             }
             session.webview.load(url.clone());
             let retry_wait_started = Instant::now();
@@ -1785,7 +1811,7 @@ mod servo_runtime {
         timeout: Duration,
     ) -> Result<(), String> {
         wait_for(servo, webview, timeout, |webview| {
-            webview.load_status() == LoadStatus::Complete || delegate.is_frame_ready()
+            webview.load_status() == LoadStatus::Complete || delegate.is_frame_ready(webview.id())
         })
     }
 

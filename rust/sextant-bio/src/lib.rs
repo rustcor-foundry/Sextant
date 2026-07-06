@@ -1,3 +1,15 @@
+//! # SIMULATED biometric authentication — NOT a real authenticator
+//!
+//! This crate is a UI/architecture prototype. It performs no OS biometric
+//! prompt (Windows Hello / Touch ID / Face ID) and holds no hardware-backed
+//! key: the "hardware key" is a compile-time constant embedded in every build,
+//! so ANY process can mint a `BioProof` that `verify_proof` accepts.
+//!
+//! Consequently a `BioProof` proves nothing about the user's presence or
+//! identity, and nothing security-critical may rely on it. The vault treats it
+//! accordingly: `CitadelVault::unlock_with_bio` can never release the master
+//! key of a locked vault.
+
 use chrono::{DateTime, Utc};
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
@@ -12,6 +24,8 @@ pub enum BioMethod {
     Fingerprint,
 }
 
+/// SIMULATED biometric proof. Forgeable by any process (the signing key is a
+/// public compile-time constant); carries no authentication value.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct BioProof {
     pub id: Uuid,
@@ -20,6 +34,7 @@ pub struct BioProof {
     pub hardware_signature: String, // Simulated hardware-backed signature
 }
 
+/// SIMULATED biometric authenticator. See the crate-level docs.
 pub struct SextantBioAuth {
     enrolled_methods: Vec<BioMethod>,
     hardware_key: Vec<u8>,
@@ -39,6 +54,8 @@ impl SextantBioAuth {
         }
     }
 
+    /// SIMULATED: no OS biometric prompt occurs; the proof is minted from a
+    /// public compile-time constant and is forgeable by any process.
     pub fn authenticate(&self, method: BioMethod) -> Result<BioProof, String> {
         if !self.enrolled_methods.contains(&method) {
             return Err(format!("Method {:?} not enrolled on this device.", method));
@@ -63,6 +80,8 @@ impl SextantBioAuth {
         })
     }
 
+    /// SIMULATED: checks only that the proof was minted with the same public
+    /// constant key; it does NOT establish user presence or identity.
     pub fn verify_proof(&self, proof: &BioProof) -> bool {
         let payload = format!("{:?}-{}", proof.method, proof.timestamp.to_rfc3339());
         let Ok(mut mac) = Hmac::<Sha256>::new_from_slice(&self.hardware_key) else {

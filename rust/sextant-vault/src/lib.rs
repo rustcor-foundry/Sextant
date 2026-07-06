@@ -52,6 +52,12 @@ pub struct VaultIdentity {
     pub created_at: u64,
 }
 
+/// Plaintext magic decrypted at unlock time to verify the passphrase-derived
+/// key before it is trusted. Without this check any passphrase "unlocked" the
+/// vault and later decrypts produced garbage (or new data was encrypted under
+/// a wrong key, forking the vault contents).
+const KEY_CHECK_MAGIC: &[u8] = b"sextant-vault-key-check-v1";
+
 /// The secure container for all user identities and secrets.
 pub struct CitadelVault {
     personas: HashMap<String, Persona>,
@@ -61,6 +67,14 @@ pub struct CitadelVault {
     master_key: Option<[u8; 32]>,
     is_locked: bool,
     salt: Option<String>,
+    /// AES-GCM(master_key, KEY_CHECK_MAGIC); passphrase verifier.
+    key_check: Option<Vec<u8>>,
+    /// AES-GCM(master_key, master_seed); lets `unlock` restore the seed so
+    /// `lock`/`unlock` is non-destructive and the seed survives export/import.
+    encrypted_seed: Option<Vec<u8>>,
+    /// Identity secret keys imported while the vault was locked; decrypted and
+    /// applied on the next successful `unlock`.
+    pending_secret_keys: HashMap<String, Vec<u8>>,
     bio_auth: SextantBioAuth,
     pq_core: SextantPqCore,
     pq_identities: HashMap<String, PqIdentity>,
@@ -76,6 +90,9 @@ impl CitadelVault {
             master_key: None,
             is_locked: true,
             salt: None,
+            key_check: None,
+            encrypted_seed: None,
+            pending_secret_keys: HashMap::new(),
             bio_auth: SextantBioAuth::new(),
             pq_core: SextantPqCore::new(),
             pq_identities: HashMap::new(),
@@ -95,15 +112,22 @@ impl CitadelVault {
         let salt = SaltString::generate(&mut OsRng);
         let salt_str = salt.to_string();
         self.salt = Some(salt_str.clone());
-        self.unlock(passphrase, &salt_str)?;
+        let key = Self::derive_key(passphrase, &salt_str)?;
+        self.master_key = Some(key);
+        self.is_locked = false;
+
+        // Store the verifier and the seed (encrypted under the master key) so
+        // wrong passphrases are rejected at unlock and lock/unlock round-trips
+        // keep identity derivation and consent signing working.
+        self.key_check = Some(self.encrypt_data(KEY_CHECK_MAGIC)?);
+        self.encrypted_seed = Some(self.encrypt_data(&seed)?);
 
         Ok(phrase)
     }
 
-    pub fn unlock(&mut self, passphrase: &str, salt: &str) -> Result<(), String> {
+    fn derive_key(passphrase: &str, salt: &str) -> Result<[u8; 32], String> {
         let salt_obj = SaltString::from_b64(salt).map_err(|e| e.to_string())?;
         let argon2 = Argon2::default();
-
         let mut key = [0u8; 32];
         argon2
             .hash_password_into(
@@ -112,24 +136,90 @@ impl CitadelVault {
                 &mut key,
             )
             .map_err(|e| e.to_string())?;
+        Ok(key)
+    }
+
+    /// Unlocks the vault with the passphrase it was initialized with, using the
+    /// stored salt. The passphrase is verified against the stored key-check
+    /// value before the derived key is trusted; a wrong passphrase is rejected
+    /// here instead of producing garbage decrypts (or forked encrypts) later.
+    pub fn unlock(&mut self, passphrase: &str) -> Result<(), String> {
+        let salt = self
+            .salt
+            .clone()
+            .ok_or("Vault is not initialized (no salt stored).")?;
+        let key_check = self
+            .key_check
+            .clone()
+            .ok_or("Vault has no passphrase verifier; initialize it first.")?;
+
+        let mut key = Self::derive_key(passphrase, &salt)?;
+        let check = Self::decrypt_with_key(&key, &key_check);
+        match check {
+            Ok(plain) if plain == KEY_CHECK_MAGIC => {}
+            _ => {
+                key.zeroize();
+                return Err("Invalid passphrase.".into());
+            }
+        }
+
+        // Restore the master seed so identity derivation and consent signing
+        // survive a lock/unlock cycle.
+        if let Some(encrypted_seed) = self.encrypted_seed.clone() {
+            let seed_bytes = Self::decrypt_with_key(&key, &encrypted_seed)
+                .map_err(|e| format!("Failed to restore master seed: {e}"))?;
+            let seed: [u8; 64] = seed_bytes
+                .as_slice()
+                .try_into()
+                .map_err(|_| "Stored master seed has an invalid length.".to_string())?;
+            self.master_seed = Some(seed);
+        }
 
         self.master_key = Some(key);
-        self.salt = Some(salt.to_string());
         self.is_locked = false;
+
+        // Apply identity secret keys that were imported while locked.
+        if !self.pending_secret_keys.is_empty() {
+            let pending = std::mem::take(&mut self.pending_secret_keys);
+            for (id, encrypted) in pending {
+                let secret_key = self.decrypt_data(&encrypted).map_err(|e| {
+                    format!("Failed to restore secret key for identity {id}: {e}")
+                })?;
+                if let Some(identity) = self.identities.get_mut(&id) {
+                    identity.secret_key = secret_key;
+                }
+            }
+        }
         Ok(())
     }
 
+    fn decrypt_with_key(key: &[u8; 32], encrypted_data: &[u8]) -> Result<Vec<u8>, String> {
+        let cipher = Aes256Gcm::new_from_slice(key).map_err(|e| e.to_string())?;
+        if encrypted_data.len() < 12 {
+            return Err("Invalid encrypted data format".into());
+        }
+        let (nonce_bytes, ciphertext) = encrypted_data.split_at(12);
+        let nonce = Nonce::from_slice(nonce_bytes);
+        cipher.decrypt(nonce, ciphertext).map_err(|e| e.to_string())
+    }
+
+    /// SIMULATED: `SextantBioAuth` is a software simulation (no OS biometric or
+    /// secure-enclave integration), so this can never release the master key of
+    /// a locked vault. It only clears the locked flag while the master key is
+    /// still resident in memory (i.e. the vault was never locked since unlock).
     pub fn unlock_with_bio(&mut self, proof: &BioProof) -> Result<(), String> {
         if self.bio_auth.verify_proof(proof) {
-            // In a real app, the master key would be stored in the Secure Enclave
-            // and released only upon successful biometric authentication.
-            // Here we simulate this by using a "hardware-backed" key if it was previously set.
+            // A real implementation would release the master key from the OS
+            // secure enclave upon successful biometric authentication. The
+            // simulation cannot do that: once `lock()` has zeroized the master
+            // key, only the passphrase can restore it.
             if self.master_key.is_some() {
                 self.is_locked = false;
                 Ok(())
             } else {
                 Err(
-                    "Vault must be initialized with a passphrase before Bio-Auth can be used."
+                    "Vault is locked; simulated Bio-Auth cannot release the master key. \
+                     Unlock with the passphrase instead."
                         .into(),
                 )
             }
@@ -138,6 +228,9 @@ impl CitadelVault {
         }
     }
 
+    /// Locks the vault, wiping key material from memory. The encrypted seed and
+    /// passphrase verifier are retained, so `unlock` fully restores signing and
+    /// identity derivation.
     pub fn lock(&mut self) {
         if let Some(mut key) = self.master_key.take() {
             key.zeroize();
@@ -211,8 +304,14 @@ impl CitadelVault {
         }
     }
 
-    /// Derives a new identity from the master seed using a derivation path.
-    /// Path format: m/purpose'/coin_type'/account'/change/address_index
+    /// Derives a new identity from the master seed, keyed by persona and path.
+    ///
+    /// NOTE: this is a custom deterministic KDF — a single HMAC-SHA512 over
+    /// `persona_id + "/" + path` keyed by the BIP-39 master seed. It is NOT
+    /// BIP-32/SLIP-10 hierarchical derivation: the path string (e.g.
+    /// `m/44'/0'/0'/0/0`) is treated as an opaque label, so identities are not
+    /// interoperable with external BIP-32 wallets and cannot be recovered by
+    /// one. Recovery requires this codebase plus the original mnemonic.
     pub fn derive_identity(
         &mut self,
         persona_id: &str,
@@ -377,7 +476,9 @@ impl CitadelVault {
     }
 
     /// Persists the encrypted vault state to a JSON string.
-    /// Note: Master key and seed are NEVER persisted.
+    /// Note: the master key and plaintext seed are NEVER persisted; the seed is
+    /// only stored encrypted under the passphrase-derived master key, alongside
+    /// the passphrase verifier, so the vault survives restarts and lock cycles.
     pub fn export_encrypted(&self) -> Result<String, String> {
         #[derive(Serialize)]
         struct Export {
@@ -391,6 +492,8 @@ impl CitadelVault {
             secret_keys: HashMap<String, Vec<u8>>,
             secrets: HashMap<String, Vec<u8>>,
             salt: Option<String>,
+            key_check: Option<Vec<u8>>,
+            encrypted_seed: Option<Vec<u8>>,
         }
 
         let mut secret_keys = HashMap::new();
@@ -406,11 +509,17 @@ impl CitadelVault {
             secret_keys,
             secrets: self.secrets.clone(),
             salt: self.salt.clone(),
+            key_check: self.key_check.clone(),
+            encrypted_seed: self.encrypted_seed.clone(),
         };
 
         serde_json::to_string(&export).map_err(|e| e.to_string())
     }
 
+    /// Restores vault state from an `export_encrypted` payload. Works on a
+    /// locked vault: encrypted identity secret keys are stashed and decrypted
+    /// on the next successful `unlock`. On an unlocked vault they are decrypted
+    /// immediately (with the current master key).
     pub fn import_encrypted(&mut self, data: &str) -> Result<(), String> {
         #[derive(Deserialize)]
         struct Import {
@@ -420,22 +529,33 @@ impl CitadelVault {
             secret_keys: HashMap<String, Vec<u8>>,
             secrets: HashMap<String, Vec<u8>>,
             salt: Option<String>,
+            #[serde(default)]
+            key_check: Option<Vec<u8>>,
+            #[serde(default)]
+            encrypted_seed: Option<Vec<u8>>,
         }
 
         let import: Import = serde_json::from_str(data).map_err(|e| e.to_string())?;
         let mut identities = import.identities;
-        // Restore the encrypted identity private keys (skipped on serialize) so
-        // imported identities can sign. Requires the vault be unlocked with the
-        // master key the keys were encrypted under.
-        for (id, encrypted) in &import.secret_keys {
-            if let Some(identity) = identities.get_mut(id) {
-                identity.secret_key = self.decrypt_data(encrypted)?;
+        let mut pending_secret_keys = HashMap::new();
+        if self.master_key.is_some() {
+            // Restore the encrypted identity private keys (skipped on serialize)
+            // so imported identities can sign.
+            for (id, encrypted) in &import.secret_keys {
+                if let Some(identity) = identities.get_mut(id) {
+                    identity.secret_key = self.decrypt_data(encrypted)?;
+                }
             }
+        } else {
+            pending_secret_keys = import.secret_keys;
         }
         self.personas = import.personas;
         self.identities = identities;
         self.secrets = import.secrets;
         self.salt = import.salt;
+        self.key_check = import.key_check;
+        self.encrypted_seed = import.encrypted_seed;
+        self.pending_secret_keys = pending_secret_keys;
         Ok(())
     }
 
@@ -555,5 +675,94 @@ mod tests {
             .expect("imported identity should still sign");
         // Ed25519 is deterministic, so a preserved key reproduces the signature.
         assert_eq!(sig_before, sig_after);
+    }
+
+    #[test]
+    fn unlock_rejects_wrong_passphrase() {
+        let mut vault = CitadelVault::new();
+        vault.initialize_new("correct horse battery staple").unwrap();
+        vault.lock();
+
+        assert!(vault.unlock("wrong passphrase").is_err());
+        assert!(vault.is_locked());
+
+        vault.unlock("correct horse battery staple").unwrap();
+        assert!(!vault.is_locked());
+    }
+
+    #[test]
+    fn unlock_requires_initialization() {
+        let mut vault = CitadelVault::new();
+        assert!(vault.unlock("anything").is_err());
+        assert!(vault.is_locked());
+    }
+
+    #[test]
+    fn lock_unlock_round_trip_restores_seed_operations() {
+        let mut vault = CitadelVault::new();
+        vault.initialize_new("password123").unwrap();
+        let persona = vault.create_persona("Default", "Primary").unwrap();
+
+        let consent_before = vault.sign_consent("approve plan v1").unwrap();
+
+        vault.lock();
+        assert!(vault.sign_consent("approve plan v1").is_err());
+        assert!(vault
+            .derive_identity(&persona.id, "Post-lock", KeyType::Ed25519, "m/44'/0'/1'/0/0")
+            .is_err());
+
+        vault.unlock("password123").unwrap();
+
+        // Consent MAC is deterministic per seed, so an unchanged seed reproduces it.
+        let consent_after = vault.sign_consent("approve plan v1").unwrap();
+        assert_eq!(consent_before, consent_after);
+
+        vault
+            .derive_identity(&persona.id, "Post-unlock", KeyType::Ed25519, "m/44'/0'/1'/0/0")
+            .expect("identity derivation should survive a lock/unlock cycle");
+    }
+
+    #[test]
+    fn export_import_into_fresh_vault_restores_after_unlock() {
+        let mut vault = CitadelVault::new();
+        vault.initialize_new("password123").unwrap();
+        let persona = vault.create_persona("Default", "Primary").unwrap();
+        let identity = vault
+            .derive_identity(&persona.id, "Main", KeyType::Ed25519, "m/44'/0'/0'/0/0")
+            .unwrap();
+        vault.store_secret("api-key", "s3cret").unwrap();
+        let consent_before = vault.sign_consent("approve plan v1").unwrap();
+        let msg = b"cross-session signing";
+        let sig_before = vault.sign_with_identity(&identity.id, msg).unwrap();
+        let exported = vault.export_encrypted().unwrap();
+
+        // Simulate a fresh process: new vault, import while locked, then unlock.
+        let mut restored = CitadelVault::new();
+        restored.import_encrypted(&exported).unwrap();
+        assert!(restored.unlock("wrong").is_err());
+        restored.unlock("password123").unwrap();
+
+        assert_eq!(restored.get_secret("api-key").unwrap(), "s3cret");
+        assert_eq!(
+            restored.sign_consent("approve plan v1").unwrap(),
+            consent_before
+        );
+        assert_eq!(
+            restored.sign_with_identity(&identity.id, msg).unwrap(),
+            sig_before
+        );
+    }
+
+    #[test]
+    fn simulated_bio_unlock_cannot_open_locked_vault() {
+        let mut vault = CitadelVault::new();
+        vault.initialize_new("password123").unwrap();
+        vault.lock();
+
+        let proof = SextantBioAuth::new()
+            .authenticate(sextant_bio::BioMethod::TouchID)
+            .unwrap();
+        assert!(vault.unlock_with_bio(&proof).is_err());
+        assert!(vault.is_locked());
     }
 }

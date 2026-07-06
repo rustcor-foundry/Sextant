@@ -254,25 +254,47 @@ impl BrowserApp {
                 return;
             }
 
-            let plan = match plan_native_intent(&intent) {
-                Ok(plan) => plan,
-                Err(error) => {
-                    self.pilot_status = "FAILED".to_string();
-                    self.pilot_result = error.clone();
-                    self.last_status = error.clone();
-                    self.last_ok = false;
-                    self.validation.error_seen = true;
-                    let _ = self.record_log(
-                        &format!("native intent {}", intent),
-                        LogStatus::Failure(error),
-                    );
-                    return;
-                }
-            };
+            self.run_native_plan(&intent);
+        }
+    }
 
-            self.pilot_plan = plan.steps.clone();
-            self.pilot_status = "NAVIGATING".to_string();
-            self.navigate_to(plan.target.clone());
+    /// Plans and executes a native intent in the reader lane. Shared by the
+    /// direct dispatch path and the post-consent resume path so an authorized
+    /// gated intent actually runs instead of being dropped.
+    #[cfg(not(feature = "xilem-shell"))]
+    pub fn run_native_plan(&mut self, intent: &str) {
+        let plan = match plan_native_intent(intent) {
+            Ok(plan) => plan,
+            Err(error) => {
+                self.pilot_status = "FAILED".to_string();
+                self.pilot_result = error.clone();
+                self.last_status = error.clone();
+                self.last_ok = false;
+                self.validation.error_seen = true;
+                let _ = self.record_log(
+                    &format!("native intent {}", intent),
+                    LogStatus::Failure(error),
+                );
+                return;
+            }
+        };
+
+        self.pilot_plan = plan.steps.clone();
+        self.pilot_status = "NAVIGATING".to_string();
+        self.navigate_to(plan.target.clone());
+        if !self.last_ok {
+            self.pilot_status = "FAILED".to_string();
+            self.pilot_result = self.last_status.clone();
+            let _ = self.record_log(
+                &format!("native intent {}", plan.intent),
+                LogStatus::Failure(self.last_status.clone()),
+            );
+            return;
+        }
+
+        if plan.should_distill {
+            self.pilot_status = "DISTILLING".to_string();
+            self.distill_active();
             if !self.last_ok {
                 self.pilot_status = "FAILED".to_string();
                 self.pilot_result = self.last_status.clone();
@@ -282,37 +304,23 @@ impl BrowserApp {
                 );
                 return;
             }
-
-            if plan.should_distill {
-                self.pilot_status = "DISTILLING".to_string();
-                self.distill_active();
-                if !self.last_ok {
-                    self.pilot_status = "FAILED".to_string();
-                    self.pilot_result = self.last_status.clone();
-                    let _ = self.record_log(
-                        &format!("native intent {}", plan.intent),
-                        LogStatus::Failure(self.last_status.clone()),
-                    );
-                    return;
-                }
-            }
-
-            self.pilot_status = "COMPLETE".to_string();
-            self.pilot_result = if plan.should_distill {
-                format!(
-                    "Opened {} and stored the distilled page in Wake.",
-                    short_url(&plan.target)
-                )
-            } else {
-                format!("Opened {}.", short_url(&plan.target))
-            };
-            self.last_status = format!("Intent complete: {}", truncate(&plan.intent, 58));
-            self.last_ok = true;
-            let _ = self.record_log(
-                &format!("native intent {}", plan.intent),
-                LogStatus::Success,
-            );
         }
+
+        self.pilot_status = "COMPLETE".to_string();
+        self.pilot_result = if plan.should_distill {
+            format!(
+                "Opened {} and stored the distilled page in Wake.",
+                short_url(&plan.target)
+            )
+        } else {
+            format!("Opened {}.", short_url(&plan.target))
+        };
+        self.last_status = format!("Intent complete: {}", truncate(&plan.intent, 58));
+        self.last_ok = true;
+        let _ = self.record_log(
+            &format!("native intent {}", plan.intent),
+            LogStatus::Success,
+        );
     }
 
     #[cfg(feature = "xilem-shell")]
@@ -771,6 +779,16 @@ impl BrowserApp {
                 self.refresh_logs();
             }
         }
+
+        // Reader lane: resume the gated native plan now that consent is
+        // recorded. Previously authorization was logged but the plan was
+        // silently dropped.
+        #[cfg(not(feature = "xilem-shell"))]
+        {
+            self.pilot_status = "CONSENT RESUMING".to_string();
+            self.run_native_plan(&pending.intent);
+            self.refresh_logs();
+        }
     }
 
     pub fn deny_pilot_consent(&mut self) {
@@ -800,10 +818,13 @@ impl BrowserApp {
         {
             self.consent_vault.sign_consent(&pending.payload())
         }
+        // Reader-lane builds don't link the vault, so there is no key material
+        // to sign with. Return an explicitly UNSIGNED marker rather than a
+        // random string that could be mistaken for a cryptographic signature.
         #[cfg(not(feature = "xilem-shell"))]
         {
             Ok(format!(
-                "reader-consent-{}-{}",
+                "UNSIGNED-reader-lane-consent-{}-{}",
                 Uuid::new_v4(),
                 truncate(&pending.payload(), 12)
             ))

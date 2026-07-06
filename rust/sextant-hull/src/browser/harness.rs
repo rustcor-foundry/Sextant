@@ -1638,22 +1638,33 @@ pub fn native_intent_body(input: &str) -> Option<String> {
 }
 
 pub fn intent_needs_consent(intent: &str) -> bool {
-    let lower = intent.to_ascii_lowercase();
-    [
-        "buy",
-        "purchase",
-        "checkout",
-        "delete",
-        "remove",
-        "transfer",
-        "wire",
-        "sign",
-        "authorize",
-        "submit payment",
-        "send money",
-    ]
-    .iter()
-    .any(|term| lower.contains(term))
+    // Delegate to the pilot crate wherever it is compiled in, so the shell and
+    // pilot cannot diverge on what counts as a sensitive intent.
+    #[cfg(feature = "xilem-shell")]
+    {
+        sextant_pilot::intent_needs_consent(intent)
+    }
+    // Reader-lane builds don't link sextant-pilot; keep this keyword list in
+    // sync with `sextant_pilot::intent_needs_consent`.
+    #[cfg(not(feature = "xilem-shell"))]
+    {
+        let lower = intent.to_ascii_lowercase();
+        [
+            "buy",
+            "purchase",
+            "checkout",
+            "delete",
+            "remove",
+            "transfer",
+            "wire",
+            "sign",
+            "authorize",
+            "submit payment",
+            "send money",
+        ]
+        .iter()
+        .any(|term| lower.contains(term))
+    }
 }
 
 pub fn plan_native_intent(intent: &str) -> Result<NativeIntentPlan, String> {
@@ -1686,8 +1697,13 @@ pub fn plan_native_intent(intent: &str) -> Result<NativeIntentPlan, String> {
 
 #[cfg(feature = "xilem-shell")]
 pub fn pilot_action_plan(intent: &str) -> Result<Vec<PilotAction>, String> {
-    if intent_needs_consent(intent) {
-        let plan = plan_native_intent(intent)?;
+    let plan = plan_native_intent(intent)?;
+    // Unified consent floor from sextant-pilot: gate on sensitive intent
+    // phrasing OR a sensitive navigation target (checkout/payment/transfer/...
+    // endpoints). Checking only intent keywords here let innocuously worded
+    // intents ("finalize my order") reach side-effecting URLs ungated.
+    let proposed = [PilotAction::Navigate(plan.target.clone())];
+    if sextant_pilot::plan_needs_consent(intent, &proposed) {
         return Ok(vec![
             PilotAction::Analyze(
                 "Sensitive browser action detected; Captain's Key consent is required.".to_string(),
@@ -1707,7 +1723,6 @@ pub fn pilot_action_plan(intent: &str) -> Result<Vec<PilotAction>, String> {
         ]);
     }
 
-    let plan = plan_native_intent(intent)?;
     let mut actions = vec![PilotAction::Navigate(plan.target.clone())];
     if plan.should_distill {
         actions.push(PilotAction::Distill);

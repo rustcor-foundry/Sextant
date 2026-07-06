@@ -472,7 +472,13 @@ fn browser_shell_can_authorize_pending_pilot_consent() -> Result<(), String> {
     assert_eq!(app.pilot_status, "AWAITING CONSENT");
 
     app.authorize_pilot_consent();
+    #[cfg(feature = "xilem-shell")]
     assert_eq!(app.pilot_status, "CONSENT AUTHORIZED");
+    #[cfg(not(feature = "xilem-shell"))]
+    assert_eq!(
+        app.pilot_status, "COMPLETE",
+        "reader lane resumes the gated native plan after consent"
+    );
     assert!(app.pending_consent.is_none());
     app.refresh_logs();
     assert!(app.recent_logs.iter().any(|entry| {
@@ -500,7 +506,13 @@ fn visible_consent_controls_authorize_pending_request() -> Result<(), String> {
     let authorize_rect = app.consent_authorize_rect;
     click_rect(&mut app, authorize_rect, "authorize consent")?;
 
+    #[cfg(feature = "xilem-shell")]
     assert_eq!(app.pilot_status, "CONSENT AUTHORIZED");
+    #[cfg(not(feature = "xilem-shell"))]
+    assert_eq!(
+        app.pilot_status, "COMPLETE",
+        "reader lane resumes the gated native plan after consent"
+    );
     assert!(app.pending_consent.is_none());
 
     let _ = std::fs::remove_dir_all(data_dir);

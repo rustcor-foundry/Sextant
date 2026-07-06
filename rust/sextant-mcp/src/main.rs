@@ -5,10 +5,11 @@ use serde_json::{json, Value};
 use sextant_firewall::FirewallPolicy;
 use sextant_log::{CaptainsLog, LogEntry, LogStatus};
 use std::env;
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
-use std::time::Instant;
+use std::process::{Command, Output, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 const PROTOCOL_VERSION: &str = "2025-11-25";
@@ -5768,6 +5769,7 @@ fn run_browser_command_with_env(
     envs: &[(String, String)],
 ) -> Result<Output, String> {
     let runner = BrowserRunner::locate()?;
+    let timeout = parent_timeout_for_args(args);
     match runner {
         BrowserRunner::Binary(path) => {
             let mut command = Command::new(path);
@@ -5775,13 +5777,15 @@ fn run_browser_command_with_env(
             for (key, value) in envs {
                 command.env(key, value);
             }
-            command.output().map_err(|error| error.to_string())
+            run_command_with_timeout(command, timeout, "sextant-browser")
         }
         BrowserRunner::Cargo { workspace } => {
             let mut cargo_args = vec![
                 "run".to_string(),
                 "-p".to_string(),
-                "sextant-hull".to_string(),
+                // The sextant-browser binary lives in the sextant-browser
+                // crate; `-p sextant-hull` made every cargo-lane launch fail.
+                "sextant-browser".to_string(),
                 "--bin".to_string(),
                 "sextant-browser".to_string(),
                 "--".to_string(),
@@ -5792,18 +5796,20 @@ fn run_browser_command_with_env(
             for (key, value) in envs {
                 command.env(key, value);
             }
-            command.output().map_err(|error| error.to_string())
+            run_command_with_timeout(command, timeout, "cargo run sextant-browser")
         }
     }
 }
 
 fn run_direct_servo_command(args: &[String]) -> Result<Output, String> {
     let runner = DirectServoRunner::locate()?;
+    let timeout = parent_timeout_for_args(args);
     match runner {
-        DirectServoRunner::Binary(path) => Command::new(path)
-            .args(args)
-            .output()
-            .map_err(|error| error.to_string()),
+        DirectServoRunner::Binary(path) => {
+            let mut command = Command::new(path);
+            command.args(args);
+            run_command_with_timeout(command, timeout, "sextant-servo-direct")
+        }
         DirectServoRunner::Cargo { workspace } => {
             let mut cargo_args = vec![
                 "run".to_string(),
@@ -5814,11 +5820,117 @@ fn run_direct_servo_command(args: &[String]) -> Result<Output, String> {
                 "--".to_string(),
             ];
             cargo_args.extend(args.iter().cloned());
-            Command::new("cargo")
-                .current_dir(workspace)
-                .args(cargo_args)
-                .output()
-                .map_err(|error| error.to_string())
+            let mut command = Command::new("cargo");
+            command.current_dir(workspace).args(cargo_args);
+            run_command_with_timeout(command, timeout, "cargo run sextant-servo-direct")
+        }
+    }
+}
+
+/// Parent-side wall-clock cap for a spawned child. The `timeout_seconds`
+/// advertised by MCP tools is enforced *inside* the child; if the child (or a
+/// `cargo` build step) hangs, only this cap keeps the blocking MCP stdin loop
+/// from stalling forever.
+fn parent_timeout_for_args(args: &[String]) -> Duration {
+    // Take the largest child-side timeout declared in the args and add
+    // headroom for cargo compilation and process shutdown.
+    let mut child_timeout: u64 = 0;
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        let is_timeout_flag = matches!(
+            arg.as_str(),
+            "--operator-timeout"
+                | "--window-smoke-timeout"
+                | "--hosted-direct-smoke-timeout"
+                | "--smoke-timeout"
+                | "--timeout-seconds"
+        );
+        if is_timeout_flag {
+            if let Some(value) = iter.next() {
+                if let Ok(seconds) = value.trim().parse::<u64>() {
+                    child_timeout = child_timeout.max(seconds);
+                }
+            }
+        }
+    }
+    const HEADROOM_SECONDS: u64 = 300;
+    const DEFAULT_CAP_SECONDS: u64 = 600;
+    let seconds = if child_timeout > 0 {
+        child_timeout.saturating_add(HEADROOM_SECONDS)
+    } else {
+        DEFAULT_CAP_SECONDS
+    };
+    let seconds = env::var("SEXTANT_MCP_PARENT_TIMEOUT_SECS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(seconds);
+    Duration::from_secs(seconds)
+}
+
+/// Runs a child process to completion with a hard wall-clock cap, killing it
+/// if the cap elapses. Output is drained on reader threads so a chatty child
+/// cannot deadlock on a full pipe while we wait.
+fn run_command_with_timeout(
+    mut command: Command,
+    timeout: Duration,
+    label: &str,
+) -> Result<Output, String> {
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("failed to spawn {label}: {error}"))?;
+
+    let stdout = child.stdout.take();
+    let stdout_reader = thread::spawn(move || {
+        let mut buffer = Vec::new();
+        if let Some(mut stream) = stdout {
+            let _ = stream.read_to_end(&mut buffer);
+        }
+        buffer
+    });
+    let stderr = child.stderr.take();
+    let stderr_reader = thread::spawn(move || {
+        let mut buffer = Vec::new();
+        if let Some(mut stream) = stderr {
+            let _ = stream.read_to_end(&mut buffer);
+        }
+        buffer
+    });
+
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let stdout = stdout_reader.join().unwrap_or_default();
+                let stderr = stderr_reader.join().unwrap_or_default();
+                return Ok(Output {
+                    status,
+                    stdout,
+                    stderr,
+                });
+            }
+            Ok(None) => {
+                if started.elapsed() >= timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    let _ = stdout_reader.join();
+                    let _ = stderr_reader.join();
+                    return Err(format!(
+                        "{label} did not exit within {}s; killed by MCP parent-side timeout",
+                        timeout.as_secs()
+                    ));
+                }
+                thread::sleep(Duration::from_millis(100));
+            }
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("failed to wait for {label}: {error}"));
+            }
         }
     }
 }
