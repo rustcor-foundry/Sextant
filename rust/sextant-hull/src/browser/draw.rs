@@ -1491,15 +1491,7 @@ pub fn draw_settings_panel(buffer: &mut [u32], width: u32, height: u32, app: &Br
         );
         for (theme, rect) in settings_theme_button_rects(panel) {
             let selected = app.chrome_ui_theme == theme;
-            draw_button(
-                buffer,
-                width,
-                height,
-                rect,
-                theme.label(),
-                selected,
-                true,
-            );
+            draw_button(buffer, width, height, rect, theme.label(), selected, true);
         }
         draw_text(
             buffer,

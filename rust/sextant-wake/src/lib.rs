@@ -507,7 +507,12 @@ impl DigitalWake {
     }
 
     #[cfg(test)]
-    fn test_insert_old_entry(&self, persona_id: &str, importance: f32, age_days: i64) -> Result<()> {
+    fn test_insert_old_entry(
+        &self,
+        persona_id: &str,
+        importance: f32,
+        age_days: i64,
+    ) -> Result<()> {
         let timestamp = (Utc::now() - chrono::Duration::days(age_days)).to_rfc3339();
         self.conn.execute(
             "INSERT INTO wake_entries (

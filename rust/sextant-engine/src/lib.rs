@@ -1089,9 +1089,8 @@ mod servo_runtime {
     ) -> Result<ServoTabSession, String> {
         let (width, height) = runtime.default_viewport_size;
         let rendering_context: Rc<dyn RenderingContext> = Rc::new(
-            SoftwareRenderingContext::new(PhysicalSize::new(width.max(1), height.max(1))).map_err(
-                |e| format!("Failed to create tab rendering context: {:?}", e),
-            )?,
+            SoftwareRenderingContext::new(PhysicalSize::new(width.max(1), height.max(1)))
+                .map_err(|e| format!("Failed to create tab rendering context: {:?}", e))?,
         );
         rendering_context
             .make_current()

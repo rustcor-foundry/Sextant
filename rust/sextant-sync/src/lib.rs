@@ -131,8 +131,8 @@ impl SextantSync {
         let signature_bytes = base64::engine::general_purpose::STANDARD
             .decode(&payload.signature)
             .map_err(|_| SyncError::InvalidSignature)?;
-        let signature = EdSignature::from_slice(&signature_bytes)
-            .map_err(|_| SyncError::InvalidSignature)?;
+        let signature =
+            EdSignature::from_slice(&signature_bytes).map_err(|_| SyncError::InvalidSignature)?;
         verifying_key
             .verify(message.as_bytes(), &signature)
             .map_err(|_| SyncError::InvalidSignature)?;

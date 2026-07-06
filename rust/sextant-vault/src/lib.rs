@@ -182,9 +182,9 @@ impl CitadelVault {
         if !self.pending_secret_keys.is_empty() {
             let pending = std::mem::take(&mut self.pending_secret_keys);
             for (id, encrypted) in pending {
-                let secret_key = self.decrypt_data(&encrypted).map_err(|e| {
-                    format!("Failed to restore secret key for identity {id}: {e}")
-                })?;
+                let secret_key = self
+                    .decrypt_data(&encrypted)
+                    .map_err(|e| format!("Failed to restore secret key for identity {id}: {e}"))?;
                 if let Some(identity) = self.identities.get_mut(&id) {
                     identity.secret_key = secret_key;
                 }
@@ -680,7 +680,9 @@ mod tests {
     #[test]
     fn unlock_rejects_wrong_passphrase() {
         let mut vault = CitadelVault::new();
-        vault.initialize_new("correct horse battery staple").unwrap();
+        vault
+            .initialize_new("correct horse battery staple")
+            .unwrap();
         vault.lock();
 
         assert!(vault.unlock("wrong passphrase").is_err());
@@ -708,7 +710,12 @@ mod tests {
         vault.lock();
         assert!(vault.sign_consent("approve plan v1").is_err());
         assert!(vault
-            .derive_identity(&persona.id, "Post-lock", KeyType::Ed25519, "m/44'/0'/1'/0/0")
+            .derive_identity(
+                &persona.id,
+                "Post-lock",
+                KeyType::Ed25519,
+                "m/44'/0'/1'/0/0"
+            )
             .is_err());
 
         vault.unlock("password123").unwrap();
@@ -718,7 +725,12 @@ mod tests {
         assert_eq!(consent_before, consent_after);
 
         vault
-            .derive_identity(&persona.id, "Post-unlock", KeyType::Ed25519, "m/44'/0'/1'/0/0")
+            .derive_identity(
+                &persona.id,
+                "Post-unlock",
+                KeyType::Ed25519,
+                "m/44'/0'/1'/0/0",
+            )
             .expect("identity derivation should survive a lock/unlock cycle");
     }
 

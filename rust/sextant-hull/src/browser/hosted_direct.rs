@@ -53,10 +53,18 @@ pub fn run_hosted_direct_app(
     let hosted_smoke_started = Instant::now();
     let mut hosted_smoke_completed = false;
     let mut hosted_smoke_action_requested = false;
+    #[cfg_attr(
+        not(all(target_os = "windows", feature = "servo-backend")),
+        allow(unused_mut)
+    )]
     let mut hosted_smoke_action_relaunched = false;
     let mut hosted_smoke_certificate_fingerprint: Option<String> = None;
     let hosted_smoke_result: Arc<Mutex<Option<Result<(), String>>>> = Arc::new(Mutex::new(None));
     let hosted_smoke_result_for_loop = Arc::clone(&hosted_smoke_result);
+    #[cfg_attr(
+        not(all(target_os = "windows", feature = "servo-backend")),
+        allow(unused_mut)
+    )]
     let mut hosted_local_appliance_cert_fingerprint = local_appliance_cert_fingerprint;
     let mut direct_child = Some(spawn_hosted_direct_child(
         parent_hwnd,
@@ -368,7 +376,9 @@ pub const HOSTED_DIRECT_CHROME_POINTS: f32 = 108.0;
 /// Physical chrome height for the egui hosted-direct shell at the given scale.
 #[cfg(all(target_os = "windows", feature = "servo-backend"))]
 pub fn hosted_direct_egui_chrome_height_px(scale_factor: f32) -> u32 {
-    (HOSTED_DIRECT_CHROME_POINTS * scale_factor).round().max(1.0) as u32
+    (HOSTED_DIRECT_CHROME_POINTS * scale_factor)
+        .round()
+        .max(1.0) as u32
 }
 
 /// Deterministic favicon badge color from a tab URL/host (placeholder until real
@@ -376,9 +386,9 @@ pub fn hosted_direct_egui_chrome_height_px(scale_factor: f32) -> u32 {
 #[cfg(all(target_os = "windows", feature = "servo-backend"))]
 pub fn hosted_direct_tab_favicon_rgb(url: &str) -> (u8, u8, u8) {
     let key = hosted_direct_tab_site(url);
-    let hash = key
-        .bytes()
-        .fold(0u32, |acc, byte| acc.wrapping_mul(31).wrapping_add(u32::from(byte)));
+    let hash = key.bytes().fold(0u32, |acc, byte| {
+        acc.wrapping_mul(31).wrapping_add(u32::from(byte))
+    });
     (
         72 + ((hash >> 16) & 0x7f) as u8,
         72 + ((hash >> 8) & 0x7f) as u8,
@@ -1421,8 +1431,7 @@ impl HostedDirectShellState {
             self.address_cursor = 0;
             self.address_replace_on_text = false;
         }
-        self.address_cursor =
-            clamp_char_boundary(&self.address_input, self.address_cursor);
+        self.address_cursor = clamp_char_boundary(&self.address_input, self.address_cursor);
         self.address_input.insert_str(self.address_cursor, value);
         // IME commits and pasted text can be multi-byte; keep the cursor on a
         // scalar boundary so `address_input[..cursor]` never panics.
@@ -1791,10 +1800,7 @@ pub fn hosted_direct_child_bounds(
         0,
         chrome as i32,
         parent_size.width.max(320),
-        parent_size
-            .height
-            .saturating_sub(chrome)
-            .max(240),
+        parent_size.height.saturating_sub(chrome).max(240),
     )
 }
 

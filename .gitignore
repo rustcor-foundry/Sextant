@@ -2,6 +2,7 @@ node_modules/
 build/
 dist/
 coverage/
+graphify-out/
 runtimes/
 rust/target/
 *.db

@@ -294,7 +294,10 @@ mod tests {
         // "*.google.com" Allow rule in the Work persona.
         let apex = Url::parse("https://google.com/").unwrap();
         let sub = Url::parse("https://docs.google.com/").unwrap();
-        assert_eq!(firewall.check_access("Work", &apex).0, FirewallAction::Allow);
+        assert_eq!(
+            firewall.check_access("Work", &apex).0,
+            FirewallAction::Allow
+        );
         assert_eq!(firewall.check_access("Work", &sub).0, FirewallAction::Allow);
 
         // A lookalike domain sharing the suffix must NOT match the Allow rule;
@@ -312,7 +315,10 @@ mod tests {
 
         // Subdomains of a blacklisted host are blocked...
         let sub = Url::parse("https://cdn.malicious-site.net/x").unwrap();
-        assert_eq!(firewall.check_access("Personal", &sub).0, FirewallAction::Block);
+        assert_eq!(
+            firewall.check_access("Personal", &sub).0,
+            FirewallAction::Block
+        );
 
         // ...but hosts that merely contain the entry as a substring are not.
         let lookalike = Url::parse("https://verymalicious-site.net.example.com/").unwrap();

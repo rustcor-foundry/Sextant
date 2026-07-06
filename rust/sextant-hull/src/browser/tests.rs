@@ -164,10 +164,7 @@ fn hosted_direct_egui_child_bounds_track_scaled_chrome() {
         ),
         (0, 108, 1180, 652)
     );
-    assert_eq!(
-        hosted_direct_egui_chrome_height_px(1.5),
-        162
-    );
+    assert_eq!(hosted_direct_egui_chrome_height_px(1.5), 162);
 }
 
 #[cfg(all(target_os = "windows", feature = "servo-backend"))]

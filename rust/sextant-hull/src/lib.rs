@@ -1236,10 +1236,7 @@ pub fn init_browser_consent_vault(data_dir: &Path) -> Result<CitadelVault, Strin
 /// mutating vault contents (personas, identities, secrets) so the change
 /// survives a restart.
 #[cfg(feature = "xilem-shell")]
-pub fn persist_browser_consent_vault(
-    data_dir: &Path,
-    vault: &CitadelVault,
-) -> Result<(), String> {
+pub fn persist_browser_consent_vault(data_dir: &Path, vault: &CitadelVault) -> Result<(), String> {
     let vault_path = data_dir.join("consent-vault.json");
     let export = vault.export_encrypted()?;
     std::fs::write(&vault_path, export).map_err(|error| {

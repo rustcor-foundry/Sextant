@@ -55,8 +55,7 @@ pub fn run_hosted_direct_app_egui(
         None,
     );
 
-    let mut chrome_px =
-        hosted_direct_egui_chrome_height_px(window.scale_factor() as f32);
+    let mut chrome_px = hosted_direct_egui_chrome_height_px(window.scale_factor() as f32);
 
     let mut child = Some(spawn_hosted_direct_child(
         parent_hwnd,
@@ -347,13 +346,8 @@ fn draw_hosted_direct_chrome_egui(
                         } else {
                             for (index, tab) in summary.tabs.iter().enumerate() {
                                 let site = hosted_direct_tab_site(&tab.url);
-                                let response = egui_tab_chip(
-                                    ui,
-                                    &site,
-                                    &tab.url,
-                                    tab.active,
-                                    multi_tab,
-                                );
+                                let response =
+                                    egui_tab_chip(ui, &site, &tab.url, tab.active, multi_tab);
                                 if response.clicked && !tab.active {
                                     action = Some(HostedDirectChromeAction::SelectTab(index));
                                 }
@@ -420,10 +414,7 @@ fn draw_hosted_direct_chrome_egui(
                         "Certificate warning",
                     );
                     if let Some(fingerprint) = summary.certificate_fingerprint_sha256.as_deref() {
-                        ui.label(format!(
-                            "SHA-256 {}",
-                            compact_fingerprint(fingerprint)
-                        ));
+                        ui.label(format!("SHA-256 {}", compact_fingerprint(fingerprint)));
                     }
                     if ui.button("Go back").clicked() {
                         action = Some(HostedDirectChromeAction::Child(

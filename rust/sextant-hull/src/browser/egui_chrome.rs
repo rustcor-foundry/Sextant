@@ -39,9 +39,7 @@ pub fn egui_chip(ui: &mut egui::Ui, label: &str, active: bool) -> bool {
         .inner_margin(egui::Margin::symmetric(8.0, 4.0))
         .stroke(egui_chip_stroke(active))
         .show(ui, |ui| {
-            let response = ui.add(
-                egui::Label::new(label).sense(egui::Sense::click()),
-            );
+            let response = ui.add(egui::Label::new(label).sense(egui::Sense::click()));
             clicked = response.clicked();
         });
     clicked
@@ -124,7 +122,10 @@ pub fn egui_metric_card(
     egui::Frame::none()
         .fill(egui::Color32::from_rgb(24, 28, 38))
         .rounding(8.0)
-        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(0x31, 0x3d, 0x48)))
+        .stroke(egui::Stroke::new(
+            1.0,
+            egui::Color32::from_rgb(0x31, 0x3d, 0x48),
+        ))
         .inner_margin(egui::Margin::symmetric(12.0, 8.0))
         .show(ui, |ui| {
             ui.set_width(140.0);
@@ -147,7 +148,10 @@ pub fn egui_panel_card<R>(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui
     egui::Frame::none()
         .fill(egui::Color32::from_rgb(24, 28, 38))
         .rounding(6.0)
-        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(0x31, 0x3d, 0x48)))
+        .stroke(egui::Stroke::new(
+            1.0,
+            egui::Color32::from_rgb(0x31, 0x3d, 0x48),
+        ))
         .inner_margin(egui::Margin::symmetric(10.0, 8.0))
         .show(ui, add_contents)
         .inner

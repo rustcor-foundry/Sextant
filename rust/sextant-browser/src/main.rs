@@ -14,7 +14,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{TrayIconBuilder, TrayIconEvent};
+#[cfg(feature = "servo-backend")]
 use url::Url;
+#[cfg(feature = "servo-backend")]
 use uuid::Uuid;
 use winit::dpi::PhysicalSize;
 use winit::event::{ElementState, Event, MouseButton, WindowEvent};

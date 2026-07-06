@@ -84,9 +84,13 @@ fn egui_bridge_central(
                                         .small(),
                                 );
                                 ui.add_space(4.0);
-                                egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
-                                    ui.label(egui::RichText::new(page.content.clone()).color(dim));
-                                });
+                                egui::ScrollArea::vertical()
+                                    .max_height(220.0)
+                                    .show(ui, |ui| {
+                                        ui.label(
+                                            egui::RichText::new(page.content.clone()).color(dim),
+                                        );
+                                    });
                             }
                             None => {
                                 ui.label(
@@ -428,7 +432,11 @@ fn egui_bridge_central(
                             );
                             ui.label(egui::RichText::new(row.label).strong());
                         });
-                        ui.label(egui::RichText::new(truncate(&row.detail, 120)).color(dim).small());
+                        ui.label(
+                            egui::RichText::new(truncate(&row.detail, 120))
+                                .color(dim)
+                                .small(),
+                        );
                     });
                     ui.add_space(4.0);
                 }
