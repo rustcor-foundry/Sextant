@@ -11,7 +11,7 @@ use sextant_airgap::SextantAirGap;
 use sextant_log::CaptainsLog;
 use sextant_pilot::{AnthropicBrain, GeminiBrain, OpenAIBrain, SextantPilot};
 use sextant_privacy::PrivacyLevel;
-use sextant_vault::{CitadelVault, KeyType};
+use sextant_vault::KeyType;
 use sextant_wake::DigitalWake;
 use state::SextantState;
 use std::env;

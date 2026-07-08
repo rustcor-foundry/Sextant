@@ -9,6 +9,15 @@ Current high-signal history only. Older detailed session logs are archived under
 
 ---
 
+## 2026-07-06 - AI Settings Polish
+
+- Pushed the pending local stack to Gitea (`main` now matched `origin/main` after the cleanup commit).
+- Added editable local AI endpoint/model fields to the egui bridge Settings tab, with Apply/Revert controls.
+- Applying custom settings validates non-empty HTTP(S) endpoints, persists to `<profile>/ai-provider.json`, rebuilds `PilotBrainLane`, and keeps the existing in-flight intent guard so model calls are not interrupted mid-run.
+- Added tests for backend selection draft sync, custom endpoint/model persistence, and invalid endpoint rejection without rebuilding the active lane.
+
+---
+
 ## 2026-06-13 - egui Hosted Direct Chrome
 
 - Added `run_hosted_direct_app_egui`: the interactive hosted-direct shell now renders its chrome with egui (egui 0.27 + egui-winit 0.27 + egui-wgpu 0.27, aligned to the existing winit 0.29 / wgpu 0.19) through a wgpu surface on the parent window, hosting the embedded Servo child below.

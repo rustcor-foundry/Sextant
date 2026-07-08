@@ -116,16 +116,38 @@ fn egui_bridge_central(
                 }
             });
             ui.add_space(6.0);
-            ui.label(
-                egui::RichText::new(format!("Endpoint  {}", app.ai_config.endpoint))
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Endpoint").color(dim).small());
+                ui.add(
+                    egui::TextEdit::singleline(&mut app.ai_endpoint_input)
+                        .desired_width(320.0)
+                        .hint_text("http://127.0.0.1:8101"),
+                );
+            });
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Model").color(dim).small());
+                ui.add(
+                    egui::TextEdit::singleline(&mut app.ai_model_input)
+                        .desired_width(320.0)
+                        .hint_text("qwen2.5-coder-32b"),
+                );
+            });
+            ui.horizontal(|ui| {
+                if ui.button("Apply").clicked() {
+                    app.apply_ai_settings_draft();
+                }
+                if ui.button("Revert").clicked() {
+                    app.reset_ai_settings_draft();
+                }
+                ui.label(
+                    egui::RichText::new(format!(
+                        "Active {} @ {}",
+                        app.ai_config.model, app.ai_config.endpoint
+                    ))
                     .color(dim)
                     .small(),
-            );
-            ui.label(
-                egui::RichText::new(format!("Model     {}", app.ai_config.model))
-                    .color(dim)
-                    .small(),
-            );
+                );
+            });
             ui.add_space(10.0);
             egui_section_heading(ui, "Chrome theme");
             ui.horizontal(|ui| {
