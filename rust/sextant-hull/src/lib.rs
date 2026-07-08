@@ -257,6 +257,10 @@ pub struct BrowserApp {
     pub last_pilot_run: Option<PilotRunArtifact>,
     #[cfg(feature = "xilem-shell")]
     pub ai_config: AiLocalConfig,
+    #[cfg(feature = "xilem-shell")]
+    pub ai_endpoint_input: String,
+    #[cfg(feature = "xilem-shell")]
+    pub ai_model_input: String,
     #[cfg(any(feature = "xilem-shell", feature = "servo-backend"))]
     pub chrome_ui_theme: ChromeUiTheme,
     #[cfg(feature = "xilem-shell")]
@@ -457,7 +461,11 @@ impl BrowserApp {
             #[cfg(feature = "xilem-shell")]
             last_pilot_run: None,
             #[cfg(feature = "xilem-shell")]
-            ai_config,
+            ai_config: ai_config.clone(),
+            #[cfg(feature = "xilem-shell")]
+            ai_endpoint_input: ai_config.endpoint.clone(),
+            #[cfg(feature = "xilem-shell")]
+            ai_model_input: ai_config.model.clone(),
             #[cfg(any(feature = "xilem-shell", feature = "servo-backend"))]
             chrome_ui_theme,
             #[cfg(feature = "xilem-shell")]

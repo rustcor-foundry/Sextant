@@ -188,13 +188,7 @@ impl BrowserApp {
     /// next intent plans through the newly selected server.
     #[cfg(feature = "xilem-shell")]
     pub fn apply_ai_backend(&mut self, backend: &str) {
-        if self.pending_pilot_plan.is_some() || self.pending_pilot_analysis.is_some() {
-            // Rebuilding the lane joins its worker thread, which would block on an
-            // in-flight model call. Make the user finish the current intent first.
-            self.last_status =
-                "Finish the current intent before changing the AI backend.".to_string();
-            self.last_ok = false;
-            self.validation.error_seen = true;
+        if !self.ai_settings_can_rebuild() {
             return;
         }
         if self.ai_config.backend == backend {
@@ -209,6 +203,8 @@ impl BrowserApp {
         match config.save(&self.profile_data_dir) {
             Ok(()) => {
                 self.ai_config = config;
+                self.ai_endpoint_input = self.ai_config.endpoint.clone();
+                self.ai_model_input = self.ai_config.model.clone();
                 self.pilot_brain_lane = PilotBrainLane::new(&self.ai_config);
                 self.last_status = format!(
                     "AI backend set to {} @ {} ({}).",
@@ -219,6 +215,106 @@ impl BrowserApp {
                 self.last_ok = true;
                 let _ = self.record_log(
                     &format!("ai backend {}", self.ai_config.backend),
+                    LogStatus::Success,
+                );
+            }
+            Err(error) => {
+                self.last_status = format!("Failed to save AI settings: {error}");
+                self.last_ok = false;
+                self.validation.error_seen = true;
+            }
+        }
+    }
+
+    #[cfg(feature = "xilem-shell")]
+    fn ai_settings_can_rebuild(&mut self) -> bool {
+        if self.pending_pilot_plan.is_some() || self.pending_pilot_analysis.is_some() {
+            // Rebuilding the lane joins its worker thread, which would block on an
+            // in-flight model call. Make the user finish the current intent first.
+            self.last_status =
+                "Finish the current intent before changing the AI backend.".to_string();
+            self.last_ok = false;
+            self.validation.error_seen = true;
+            return false;
+        }
+        true
+    }
+
+    #[cfg(feature = "xilem-shell")]
+    pub fn reset_ai_settings_draft(&mut self) {
+        self.ai_endpoint_input = self.ai_config.endpoint.clone();
+        self.ai_model_input = self.ai_config.model.clone();
+        self.last_status = "AI settings draft reset to the active configuration.".to_string();
+        self.last_ok = true;
+    }
+
+    /// Persist endpoint/model edits from the Settings tab and rebuild the local
+    /// brain lane. Backend chips still select safe defaults; this applies the
+    /// advanced per-server override for the currently selected backend.
+    #[cfg(feature = "xilem-shell")]
+    pub fn apply_ai_settings_draft(&mut self) {
+        if !self.ai_settings_can_rebuild() {
+            return;
+        }
+        let endpoint = self.ai_endpoint_input.trim().to_string();
+        let model = self.ai_model_input.trim().to_string();
+        if endpoint.is_empty() {
+            self.last_status = "AI endpoint cannot be empty.".to_string();
+            self.last_ok = false;
+            self.validation.error_seen = true;
+            return;
+        }
+        if model.is_empty() {
+            self.last_status = "AI model cannot be empty.".to_string();
+            self.last_ok = false;
+            self.validation.error_seen = true;
+            return;
+        }
+        match Url::parse(&endpoint) {
+            Ok(url) if matches!(url.scheme(), "http" | "https") => {}
+            Ok(url) => {
+                self.last_status =
+                    format!("AI endpoint must use http or https, not {}.", url.scheme());
+                self.last_ok = false;
+                self.validation.error_seen = true;
+                return;
+            }
+            Err(error) => {
+                self.last_status = format!("AI endpoint is not a valid URL: {error}");
+                self.last_ok = false;
+                self.validation.error_seen = true;
+                return;
+            }
+        }
+
+        let mut config = self.ai_config.clone();
+        config.endpoint = endpoint;
+        config.model = model;
+        config.normalize();
+        if config.endpoint == self.ai_config.endpoint
+            && config.model == self.ai_config.model
+            && config.backend == self.ai_config.backend
+        {
+            self.last_status = "AI settings are already active.".to_string();
+            self.last_ok = true;
+            return;
+        }
+
+        match config.save(&self.profile_data_dir) {
+            Ok(()) => {
+                self.ai_config = config;
+                self.ai_endpoint_input = self.ai_config.endpoint.clone();
+                self.ai_model_input = self.ai_config.model.clone();
+                self.pilot_brain_lane = PilotBrainLane::new(&self.ai_config);
+                self.last_status = format!(
+                    "AI settings applied: {} @ {} ({}).",
+                    AiLocalConfig::backend_label(&self.ai_config.backend),
+                    self.ai_config.endpoint,
+                    self.ai_config.model
+                );
+                self.last_ok = true;
+                let _ = self.record_log(
+                    &format!("ai settings {}", self.ai_config.backend),
                     LogStatus::Success,
                 );
             }

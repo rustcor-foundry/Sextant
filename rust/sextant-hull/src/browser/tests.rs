@@ -342,6 +342,8 @@ fn settings_backend_selection_persists_and_rebuilds() -> Result<(), String> {
     );
     assert_eq!(app.ai_config.backend, "ollama");
     assert_eq!(app.ai_config.endpoint, "http://127.0.0.1:11434");
+    assert_eq!(app.ai_endpoint_input, app.ai_config.endpoint);
+    assert_eq!(app.ai_model_input, app.ai_config.model);
 
     // Persisted to <profile>/ai-provider.json (read directly to avoid env overrides).
     let raw = std::fs::read_to_string(AiLocalConfig::config_path(&app.profile_data_dir))
@@ -354,6 +356,71 @@ fn settings_backend_selection_persists_and_rebuilds() -> Result<(), String> {
     app.apply_ai_backend("llamacpp");
     assert_eq!(app.ai_config.endpoint, "http://127.0.0.1:8101");
     assert_eq!(app.ai_config.model, "qwen2.5-coder-32b");
+
+    let _ = std::fs::remove_dir_all(&data_dir);
+    Ok(())
+}
+
+#[cfg(feature = "xilem-shell")]
+#[test]
+fn settings_custom_ai_endpoint_and_model_persist() -> Result<(), String> {
+    let data_dir = env::temp_dir().join(format!(
+        "sextant-browser-ai-settings-custom-{}",
+        Uuid::new_v4()
+    ));
+    let mut app = BrowserApp::new_with_data_dir(data_dir.clone())?;
+
+    app.ai_endpoint_input = "http://127.0.0.1:9999".to_string();
+    app.ai_model_input = "custom-local-model".to_string();
+    app.apply_ai_settings_draft();
+
+    assert!(
+        app.last_ok,
+        "custom AI settings should apply: {}",
+        app.last_status
+    );
+    assert_eq!(app.ai_config.endpoint, "http://127.0.0.1:9999");
+    assert_eq!(app.ai_config.model, "custom-local-model");
+    assert_eq!(
+        app.pilot_brain_lane.describe(),
+        "custom-local-model @ http://127.0.0.1:9999"
+    );
+
+    let raw = std::fs::read_to_string(AiLocalConfig::config_path(&app.profile_data_dir))
+        .map_err(|error| error.to_string())?;
+    let saved: AiLocalConfig = serde_json::from_str(&raw).map_err(|error| error.to_string())?;
+    assert_eq!(saved.endpoint, "http://127.0.0.1:9999");
+    assert_eq!(saved.model, "custom-local-model");
+
+    let _ = std::fs::remove_dir_all(&data_dir);
+    Ok(())
+}
+
+#[cfg(feature = "xilem-shell")]
+#[test]
+fn settings_rejects_invalid_ai_endpoint_without_rebuilding() -> Result<(), String> {
+    let data_dir = env::temp_dir().join(format!(
+        "sextant-browser-ai-settings-invalid-{}",
+        Uuid::new_v4()
+    ));
+    let mut app = BrowserApp::new_with_data_dir(data_dir.clone())?;
+    let original_endpoint = app.ai_config.endpoint.clone();
+    let original_model = app.ai_config.model.clone();
+    let original_lane = app.pilot_brain_lane.describe();
+
+    app.ai_endpoint_input = "not a url".to_string();
+    app.ai_model_input = "custom-local-model".to_string();
+    app.apply_ai_settings_draft();
+
+    assert!(!app.last_ok);
+    assert!(app.last_status.contains("valid URL"));
+    assert_eq!(app.ai_config.endpoint, original_endpoint);
+    assert_eq!(app.ai_config.model, original_model);
+    assert_eq!(app.pilot_brain_lane.describe(), original_lane);
+
+    app.reset_ai_settings_draft();
+    assert_eq!(app.ai_endpoint_input, app.ai_config.endpoint);
+    assert_eq!(app.ai_model_input, app.ai_config.model);
 
     let _ = std::fs::remove_dir_all(&data_dir);
     Ok(())
