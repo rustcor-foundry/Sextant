@@ -19,7 +19,9 @@ jobs:
   # secret with read access to rustcor/wsky-distiller (the auto github.token is
   # scoped to this repo only).
   fast-linux:
-    runs-on: lx-ws02
+    # lx-ws02 is offline pending a replacement drive. Linux CI belongs on
+    # lx-ws01, which is the only Linux runner outside pve1.
+    runs-on: [self-hosted, linux, lx-ws01]
     steps:
       - name: Checkout + fmt + check + test + clippy
         env:
