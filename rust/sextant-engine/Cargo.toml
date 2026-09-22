@@ -24,6 +24,7 @@ sextant-firewall = { path = "../sextant-firewall" }
 sextant-bridge = { path = "../sextant-bridge" }
 sextant-privacy = { path = "../sextant-privacy" }
 rand = "0.8"
-# Optional sibling checkout; CI clones wsky-distiller beside this repo. See docs/architecture.md.
-distill = { path = "../../../wsky-distiller/distill" }
+# Fetched from the public repository rather than a sibling checkout, so a
+# plain clone of Sextant builds without needing another repo next to it.
+distill = { git = "https://github.com/rustcor-foundry/wsky-distiller.git", tag = "v1.0.0" }
 rustls = { version = "0.23", features = ["ring"] }
