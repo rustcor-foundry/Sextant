@@ -14,7 +14,12 @@ To build the native browser on your local machine:
 
 1.  **Install Rust**: Ensure you have the latest stable Rust toolchain installed.
 2.  **Install Dependencies**:
-    -   Linux: `libdbus-1-dev`, `libvulkan-dev`, `pkg-config`.
+    -   Linux: `pkg-config`, `libdbus-1-dev`, `libvulkan-dev`, `libgtk-3-dev`,
+        `libsoup-3.0-dev`, `libwebkit2gtk-4.1-dev`, `libxdo-dev`.
+        (`libgtk-3-dev` brings cairo, pango, gdk-pixbuf and atk with it.)
+        These arrive transitively through the GUI crates, so nothing declares
+        them up front -- without them the build gets a long way in and then
+        fails on a missing `.pc` file, one library at a time.
     -   macOS: Xcode Command Line Tools.
     -   Windows: Visual Studio Build Tools with the C++ toolset. Build from a
         **Developer Command Prompt** (or run `vcvars64.bat` first) so `INCLUDE`,
