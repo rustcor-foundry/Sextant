@@ -2163,6 +2163,7 @@ dependencies = [
 [[package]]
 name = "distill"
 version = "1.0.0"
+source = "git+https://github.com/rustcor-foundry/wsky-distiller.git?tag=v1.0.0#9a52be82bd306055c1cd99b1397eb59c721571f8"
 dependencies = [
  "anyhow",
  "chrono",

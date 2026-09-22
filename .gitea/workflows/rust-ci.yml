@@ -12,12 +12,6 @@ jobs:
   # clippy preinstalled). Whole workspace WITHOUT default features so it never
   # pulls the heavy Servo git dependency. One run step (no Node-based
   # actions/checkout): manual git checkout, then fmt / check / test / clippy.
-  #
-  # sextant-engine path-depends on ../../../wsky-distiller/distill (a sibling
-  # repo, rustcor/wsky-distiller), so we clone that next to the workspace first
-  # or cargo metadata can't resolve the workspace. WSKY_TOKEN is a Gitea Actions
-  # secret with read access to rustcor/wsky-distiller (the auto github.token is
-  # scoped to this repo only).
   fast-linux:
     # lx-ws02 is offline pending a replacement drive. Linux CI belongs on
     # lx-ws01, which is the only Linux runner outside pve1.
@@ -26,7 +20,6 @@ jobs:
       - name: Checkout + fmt + check + test + clippy
         env:
           TOKEN: ${{ github.token }}
-          WSKY_TOKEN: ${{ secrets.WSKY_TOKEN }}
         run: |
           set -euo pipefail
           export PATH="$HOME/.cargo/bin:$PATH"
@@ -37,17 +30,7 @@ jobs:
           git -C "$WORK" fetch --no-tags origin "$GITHUB_SHA" || true
           git -C "$WORK" checkout --quiet "$GITHUB_SHA"
 
-          DISTILLER="${RUNNER_TEMP:-/tmp}/wsky-distiller"
-          rm -rf "$DISTILLER"
-          # Pin the sibling crate to a known-good rev; local dev keeps the live
-          # path dep, CI builds against a frozen distill so HEAD drift can't break
-          # an unrelated Sextant push. Full clone (no --depth) so the rev resolves.
-          git clone --no-tags "https://${WSKY_TOKEN}@gitea.w-sky.net/rustcor/wsky-distiller.git" "$DISTILLER"
-          git -C "$DISTILLER" checkout --quiet c12146d891642b96314715d1223ea59bc95bd524
-
           cd "$WORK/rust"
-          # fmt only the Sextant members; --all would also format the external
-          # distill path dep (wsky-distiller), which we shouldn't gate on here.
           cargo fmt --check
           cargo check --workspace --no-default-features --locked
           cargo test --workspace --no-default-features --locked
@@ -55,9 +38,8 @@ jobs:
 
   # Product gate: the Servo-backed sextant-browser as it ships (default features),
   # on the ws-ws01 Windows runner (MSVC + Servo toolchain). Heavy Servo build, so
-  # it runs on push/dispatch only (not every PR). Manual git checkout + sibling
-  # clone like fast-linux; a persistent CARGO_TARGET_DIR builds Servo once then
-  # incrementally. Earlier this job died in 15s on the same missing-distill issue.
+  # it runs on push/dispatch only (not every PR). Manual git checkout; a
+  # persistent CARGO_TARGET_DIR builds Servo once then incrementally.
   windows-product:
     runs-on: windows
     if: github.event_name != 'pull_request'
@@ -66,7 +48,6 @@ jobs:
         shell: pwsh
         env:
           TOKEN: ${{ github.token }}
-          WSKY_TOKEN: ${{ secrets.WSKY_TOKEN }}
           CARGO_TARGET_DIR: C:\gitea-runner\cache\sextant-target
         run: |
           $ErrorActionPreference = 'Stop'
@@ -78,12 +59,6 @@ jobs:
           if (Test-Path $work) { Remove-Item -Recurse -Force $work }
           git clone --no-tags "https://$($env:TOKEN)@gitea.w-sky.net/$($env:GITHUB_REPOSITORY).git" $work
           git -C $work checkout --quiet $env:GITHUB_SHA
-
-          $sibling = Join-Path $base 'wsky-distiller'
-          if (Test-Path $sibling) { Remove-Item -Recurse -Force $sibling }
-          # Pin to the same frozen rev as fast-linux (see note there).
-          git clone --no-tags "https://$($env:WSKY_TOKEN)@gitea.w-sky.net/rustcor/wsky-distiller.git" $sibling
-          git -C $sibling checkout --quiet c12146d891642b96314715d1223ea59bc95bd524
 
           Set-Location "$work\rust"
           cargo check -p sextant-browser --bin sextant-browser --locked
