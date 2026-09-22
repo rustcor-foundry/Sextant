@@ -16,7 +16,11 @@ To build the native browser on your local machine:
 2.  **Install Dependencies**:
     -   Linux: `libdbus-1-dev`, `libvulkan-dev`, `pkg-config`.
     -   macOS: Xcode Command Line Tools.
-    -   Windows: Visual Studio Build Tools.
+    -   Windows: Visual Studio Build Tools with the C++ toolset. Build from a
+        **Developer Command Prompt** (or run `vcvars64.bat` first) so `INCLUDE`,
+        `LIB` and `link.exe` are on the environment. The repository does not
+        pin a toolchain location -- `cargo build` from a normal shell will fail
+        to link.
 3.  **Build the Workspace**:
     ```bash
     cargo build --release

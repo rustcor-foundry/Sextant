@@ -60,5 +60,21 @@ jobs:
           git clone --no-tags "https://$($env:TOKEN)@gitea.w-sky.net/$($env:GITHUB_REPOSITORY).git" $work
           git -C $work checkout --quiet $env:GITHUB_SHA
 
+          # MSVC environment. The repo used to ship rust/.cargo/config.toml with
+          # absolute paths to one specific Build Tools install, which only ever
+          # worked on this runner. Resolve whatever is installed here instead and
+          # import the variables vcvars sets (INCLUDE, LIB, and link.exe on PATH).
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsPath = & $vswhere -latest -products * `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+            -property installationPath
+          if (-not $vsPath) { throw "No Visual Studio Build Tools with the C++ toolset found" }
+          cmd /c "`"$vsPath\VC\Auxiliary\Build\vcvars64.bat`" >nul && set" |
+            ForEach-Object {
+              if ($_ -match '^([^=]+)=(.*)$') {
+                Set-Item -Path "env:$($matches[1])" -Value $matches[2]
+              }
+            }
+
           Set-Location "$work\rust"
           cargo check -p sextant-browser --bin sextant-browser --locked
