@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  workspace:
+    name: fmt, check, test, clippy
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+
+      # The GUI stack arrives transitively through cairo-sys-rs, pango-sys and
+      # gdk-sys, so nothing in the manifests declares it and a bare runner
+      # fails partway through the build on a missing .pc file, one library at a
+      # time. libgtk-3-dev brings cairo, pango, gdk-pixbuf and atk with it.
+      # Keep this list in step with rust/README.md.
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libdbus-1-dev libvulkan-dev libgtk-3-dev \
+            libsoup-3.0-dev libwebkit2gtk-4.1-dev libxdo-dev
+
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+
+      - name: Format check
+        run: cargo fmt --check
+
+      # --no-default-features throughout: the default feature set pulls Servo,
+      # whose build is far too heavy for a hosted runner. The Servo-backed
+      # sextant-browser product gate stays on the self-hosted Windows runner
+      # (.gitea/workflows/rust-ci.yml).
+      - name: Check
+        run: cargo check --workspace --no-default-features --locked
+
+      - name: Test
+        run: cargo test --workspace --no-default-features --locked
+
+      - name: Clippy
+        run: cargo clippy --workspace --no-default-features
